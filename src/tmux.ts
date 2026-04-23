@@ -1,0 +1,202 @@
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { TmuxSessionRow } from './types';
+
+const execFileP = promisify(execFile);
+
+export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
+
+const DEFAULT_CONF = `# Terminal Sessions — tmux config
+# Location: ~/.terminal-sessions/tmux.conf  (safe to edit; never overwritten on update)
+# Edit and run "Terminal Sessions: Reload tmux Config" to apply.
+
+# ── Essentials ────────────────────────────────────────────────────────────
+set -g mouse on
+set -g history-limit 50000
+set -sg escape-time 10
+set -g focus-events on
+set -g exit-empty off
+
+# ── Colors ────────────────────────────────────────────────────────────────
+set -g default-terminal "xterm-256color"
+set -ga terminal-overrides ",*256col*:Tc"
+
+# ── Clipboard (OSC 52 — works in Cursor/VS Code/iTerm) ────────────────────
+set -g set-clipboard on
+
+# ── Mouse-drag selection stays in copy-mode (don't jump to prompt) ────────
+unbind -T copy-mode    MouseDragEnd1Pane
+unbind -T copy-mode-vi MouseDragEnd1Pane
+bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-selection-no-clear
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-no-clear
+
+# ── Right-click: let Cursor show its context menu (no double-menu) ────────
+unbind -T root MouseDown3Pane
+unbind -T root M-MouseDown3Pane
+
+# ── Prefix: Ctrl+A instead of Ctrl+B (screen-style, more ergonomic) ───────
+unbind C-b
+set -g prefix C-a
+bind C-a send-prefix
+
+# ── Tmux menu on prefix + q (Ctrl+A q) ────────────────────────────────────
+unbind q
+bind q display-menu \\
+  -T "#[align=centre]#{pane_index} (#{pane_id})" \\
+  -x P -y P \\
+  "Copy Mode / Scroll"  c "copy-mode" \\
+  "Paste"               p "paste-buffer" \\
+  "" \\
+  "Horizontal Split"    h "split-window -h" \\
+  "Vertical Split"      v "split-window -v" \\
+  "" \\
+  "Zoom Pane"           z "resize-pane -Z" \\
+  "Rename Window"       r "command-prompt -p 'window:' 'rename-window %%%'" \\
+  "Kill Pane"           X "kill-pane" \\
+  "Respawn Pane"        R "respawn-pane -k" \\
+  "" \\
+  "Reload tmux Config"  l "source-file ~/.terminal-sessions/tmux.conf"
+
+# ── Wheel scroll: 1 line per tick (smooth on trackpad, OK on mouse) ───────
+bind-key -T copy-mode    WheelUpPane   send-keys -X scroll-up
+bind-key -T copy-mode    WheelDownPane send-keys -X scroll-down
+bind-key -T copy-mode-vi WheelUpPane   send-keys -X scroll-up
+bind-key -T copy-mode-vi WheelDownPane send-keys -X scroll-down
+
+# Enter exits copy-mode (in addition to q/Esc)
+bind-key -T copy-mode    Enter send-keys -X cancel
+bind-key -T copy-mode-vi Enter send-keys -X cancel
+
+# ── Appearance: hide tmux status bar (Cursor has its own UI) ──────────────
+set -g status off
+
+# ── Optional: inherit your personal tmux.conf if present ──────────────────
+if-shell '[ -f ~/.tmux.conf ]' 'source-file ~/.tmux.conf'
+`;
+
+export function ensureConf(): void {
+  try {
+    fs.mkdirSync(path.dirname(CONF_PATH), { recursive: true });
+    if (!fs.existsSync(CONF_PATH)) fs.writeFileSync(CONF_PATH, DEFAULT_CONF);
+  } catch { /* best effort */ }
+}
+
+export async function reloadConfig(tmuxPath: string): Promise<void> {
+  await execFileP(tmuxPath, ['source-file', CONF_PATH]);
+}
+
+export async function createDetachedSession(
+  tmuxPath: string,
+  name: string,
+  cwd: string,
+): Promise<void> {
+  ensureConf();
+  await execFileP(tmuxPath, ['-f', CONF_PATH, 'new-session', '-d', '-s', name, '-c', cwd]);
+}
+
+/** Returns the current foreground command in the pane (e.g. "zsh", "bash", "node"). */
+export async function getPaneCommand(tmuxPath: string, sessionName: string): Promise<string> {
+  try {
+    const { stdout } = await execFileP(tmuxPath, [
+      'display-message', '-p', '-t', sessionName, '#{pane_current_command}',
+    ]);
+    return stdout.trim();
+  } catch {
+    return '';
+  }
+}
+
+export function isShellCommand(cmd: string): boolean {
+  return /^(zsh|bash|sh|fish|nu|xonsh|tcsh|ksh|dash)$/i.test(cmd);
+}
+
+const COMMON_PATHS = [
+  '/opt/homebrew/bin/tmux',
+  '/usr/local/bin/tmux',
+  '/usr/bin/tmux',
+  '/bin/tmux',
+];
+
+let _cachedPath: string | undefined;
+
+export function clearTmuxPathCache(): void { _cachedPath = undefined; }
+
+export async function detectTmuxPath(configured: string): Promise<string | undefined> {
+  if (_cachedPath) return _cachedPath;
+  if (configured && fs.existsSync(configured)) {
+    _cachedPath = configured;
+    return configured;
+  }
+  for (const p of COMMON_PATHS) {
+    if (fs.existsSync(p)) { _cachedPath = p; return p; }
+  }
+  try {
+    const { stdout } = await execFileP('/usr/bin/which', ['tmux']);
+    const p = stdout.trim();
+    if (p && fs.existsSync(p)) { _cachedPath = p; return p; }
+  } catch { /* not found */ }
+  return undefined;
+}
+
+export async function listSessions(tmux: string, prefix: string): Promise<TmuxSessionRow[]> {
+  try {
+    const fmt = '#{session_name}|#{session_created}|#{session_last_attached}|#{session_attached}';
+    const { stdout } = await execFileP(tmux, ['list-sessions', '-F', fmt]);
+    const rows: TmuxSessionRow[] = [];
+    for (const line of stdout.split('\n')) {
+      if (!line.trim()) continue;
+      const [name, created, lastAttached, attached] = line.split('|');
+      if (!name.startsWith(`${prefix}-`)) continue;
+      rows.push({
+        name,
+        created: parseInt(created, 10) || 0,
+        lastAttached: parseInt(lastAttached, 10) || 0,
+        attached: (parseInt(attached, 10) || 0) > 0,
+      });
+    }
+    return rows;
+  } catch (e: unknown) {
+    const err = e as { stderr?: string };
+    if ((err.stderr || '').includes('no server running')) return [];
+    throw e;
+  }
+}
+
+export async function hasSession(tmux: string, name: string): Promise<boolean> {
+  try {
+    await execFileP(tmux, ['has-session', '-t', name]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export async function killSession(tmux: string, name: string): Promise<void> {
+  await execFileP(tmux, ['kill-session', '-t', name]).catch(() => { /* already gone */ });
+}
+
+export async function capturePane(tmux: string, name: string, lines = 100): Promise<string> {
+  try {
+    const { stdout } = await execFileP(tmux, ['capture-pane', '-p', '-S', `-${lines}`, '-t', name]);
+    return stdout;
+  } catch {
+    return '(no content — session may have no panes)';
+  }
+}
+
+export async function renameSession(tmux: string, oldName: string, newName: string): Promise<void> {
+  await execFileP(tmux, ['rename-session', '-t', oldName, newName]);
+}
+
+export function buildAttachOrCreateArgs(name: string, cwd: string): string[] {
+  ensureConf();
+  return ['-f', CONF_PATH, 'new-session', '-A', '-s', name, '-c', cwd];
+}
+
+export function buildAttachArgs(name: string): string[] {
+  ensureConf();
+  return ['-f', CONF_PATH, 'attach-session', '-t', name];
+}

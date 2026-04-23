@@ -1,0 +1,352 @@
+{
+  "name": "terminal-sessions",
+  "displayName": "Terminal Sessions",
+  "description": "Persistent terminal sessions for Cursor/VSCode via tmux. Survives editor restart. Workspace-scoped. Native notifications for long-running commands and Claude Code Stop events. Right-click any folder in Explorer to open a persistent terminal there.",
+  "version": "0.4.8",
+  "publisher": "visul",
+  "license": "MIT",
+  "icon": "media/extension-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/visul/terminal-sessions.git"
+  },
+  "bugs": {
+    "url": "https://github.com/visul/terminal-sessions/issues"
+  },
+  "homepage": "https://github.com/visul/terminal-sessions#readme",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "terminal",
+    "tmux",
+    "sessions",
+    "persistent",
+    "claude",
+    "claude-code",
+    "cursor",
+    "resume"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "contributes": {
+    "configuration": {
+      "title": "Terminal Sessions",
+      "properties": {
+        "terminalSessions.tmuxPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to tmux binary. Leave empty to autodetect from common locations and PATH."
+        },
+        "terminalSessions.sessionPrefix": {
+          "type": "string",
+          "default": "ts",
+          "description": "Prefix for all tmux session names created by this extension."
+        },
+        "terminalSessions.autoRestore": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ask",
+            "off"
+          ],
+          "default": "ask",
+          "description": "Behavior when opening a workspace that has detached sessions: auto-resume all, ask via toast, or off."
+        },
+        "terminalSessions.autoRestoreMaxAgeHours": {
+          "type": "number",
+          "default": 72,
+          "description": "Skip auto-restore for sessions untouched longer than this (hours)."
+        },
+        "terminalSessions.pruneAfterDays": {
+          "type": "number",
+          "default": 14,
+          "description": "Offer to prune sessions untouched longer than this (days). Set to 0 to disable."
+        },
+        "terminalSessions.enableCostTracker": {
+          "type": "boolean",
+          "default": false,
+          "description": "Reserved. Cost tracking was removed in v0.4.2 (API rate card was misleading for Max/Team plan users). Tokens usage is still available via Claude's own `claude /status` command."
+        },
+        "terminalSessions.enableLongRunNotifications": {
+          "type": "boolean",
+          "default": true,
+          "description": "Notify when a terminal command takes longer than the threshold."
+        },
+        "terminalSessions.longRunThresholdSeconds": {
+          "type": "number",
+          "default": 30,
+          "description": "Minimum duration (seconds) for long-run command notifications."
+        },
+        "terminalSessions.nativeNotifications": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "always",
+            "never"
+          ],
+          "default": "auto",
+          "description": "macOS Notification Center behavior. auto = native when Cursor unfocused, toast when focused; always = always native; never = only VS Code toast."
+        },
+        "terminalSessions.notificationSound": {
+          "type": "string",
+          "enum": [
+            "Basso",
+            "Blow",
+            "Bottle",
+            "Frog",
+            "Funk",
+            "Glass",
+            "Hero",
+            "Morse",
+            "Ping",
+            "Pop",
+            "Purr",
+            "Sosumi",
+            "Submarine",
+            "Tink"
+          ],
+          "default": "Glass",
+          "description": "Default sound for native notifications (macOS built-in sounds). Errors override with Basso."
+        },
+        "terminalSessions.notifyOnClaudeStop": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a notification when Claude Code finishes a response. Requires Claude hook installed."
+        },
+        "terminalSessions.claudeStopMinDurationSeconds": {
+          "type": "number",
+          "default": 15,
+          "description": "Only notify on Claude Stop if session has been running at least N seconds (avoids notif-storm on short turns)."
+        },
+        "terminalSessions.autoResumeClaude": {
+          "type": "boolean",
+          "default": false,
+          "description": "After recreating sessions post-reboot, auto-run `claude --resume <id>` in the attached terminal. OFF by default because it can accidentally send text into a running Claude process. Safer: let the summary toast hint you the command and run it manually."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "terminalSessions.newPersistent",
+        "title": "Terminal Sessions: New Persistent Terminal",
+        "icon": "$(add)"
+      },
+      {
+        "command": "terminalSessions.newPersistentInFolder",
+        "title": "Open in Integrated Terminal (Pers)"
+      },
+      {
+        "command": "terminalSessions.attachTo",
+        "title": "Terminal Sessions: Attach to Session..."
+      },
+      {
+        "command": "terminalSessions.kill",
+        "title": "Kill Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "terminalSessions.killAllStale",
+        "title": "Terminal Sessions: Kill All Stale Sessions"
+      },
+      {
+        "command": "terminalSessions.killWorkspace",
+        "title": "Terminal Sessions: Kill All Sessions for This Workspace"
+      },
+      {
+        "command": "terminalSessions.refreshSidebar",
+        "title": "Refresh",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "terminalSessions.revealSidebar",
+        "title": "Terminal Sessions: Reveal Sidebar"
+      },
+      {
+        "command": "terminalSessions.preview",
+        "title": "Preview Scrollback",
+        "icon": "$(eye)"
+      },
+      {
+        "command": "terminalSessions.rename",
+        "title": "Rename Session",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "terminalSessions.resumeAll",
+        "title": "Terminal Sessions: Resume All For Workspace"
+      },
+      {
+        "command": "terminalSessions.setAsDefaultProfile",
+        "title": "Terminal Sessions: Set as Default Terminal Profile"
+      },
+      {
+        "command": "terminalSessions.openTmuxConfig",
+        "title": "Terminal Sessions: Open tmux.conf"
+      },
+      {
+        "command": "terminalSessions.reloadTmuxConfig",
+        "title": "Terminal Sessions: Reload tmux config"
+      },
+      {
+        "command": "terminalSessions.setIcon",
+        "title": "Change Icon...",
+        "icon": "$(symbol-color)"
+      },
+      {
+        "command": "terminalSessions.setColor",
+        "title": "Change Color...",
+        "icon": "$(paintcan)"
+      },
+      {
+        "command": "terminalSessions.mirror",
+        "title": "Open Mirror (attach to same session)",
+        "icon": "$(split-horizontal)"
+      },
+      {
+        "command": "terminalSessions.restoreFromIndex",
+        "title": "Terminal Sessions: Recreate Sessions from Index (after reboot)"
+      },
+      {
+        "command": "terminalSessions.testNotification",
+        "title": "Terminal Sessions: Test Native Notification"
+      },
+      {
+        "command": "terminalSessions.installClaudeHook",
+        "title": "Terminal Sessions: Install Claude Code Hook"
+      },
+      {
+        "command": "terminalSessions.uninstallClaudeHook",
+        "title": "Terminal Sessions: Uninstall Claude Code Hook"
+      },
+      {
+        "command": "terminalSessions.restart",
+        "title": "Restart Session (kill + fresh shell)",
+        "icon": "$(debug-restart)"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "terminalSessions.newPersistentInFolder",
+          "group": "navigation"
+        }
+      ],
+      "view/title": [
+        {
+          "command": "terminalSessions.newPersistent",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation"
+        },
+        {
+          "command": "terminalSessions.refreshSidebar",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "terminalSessions.preview",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "inline@1"
+        },
+        {
+          "command": "terminalSessions.mirror",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "inline@2"
+        },
+        {
+          "command": "terminalSessions.restart",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "inline@3"
+        },
+        {
+          "command": "terminalSessions.kill",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "inline@4"
+        },
+        {
+          "command": "terminalSessions.restart",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "danger@0"
+        },
+        {
+          "command": "terminalSessions.rename",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "edit@1"
+        },
+        {
+          "command": "terminalSessions.setIcon",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "edit@2"
+        },
+        {
+          "command": "terminalSessions.setColor",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "edit@3"
+        },
+        {
+          "command": "terminalSessions.mirror",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "open@1"
+        },
+        {
+          "command": "terminalSessions.preview",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "open@2"
+        },
+        {
+          "command": "terminalSessions.kill",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "danger@1"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "terminalSessionsContainer",
+          "title": "Terminal Sessions",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "terminalSessionsContainer": [
+        {
+          "id": "terminalSessions.sessions",
+          "name": "Sessions",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "terminal": {
+      "profiles": [
+        {
+          "id": "terminalSessions.persistent",
+          "title": "Persistent Session",
+          "icon": "terminal-bash"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "package": "npx @vscode/vsce package",
+    "install-extension": "code --install-extension terminal-sessions-0.1.0.vsix --force"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "typescript": "^5.4.0"
+  }
+}

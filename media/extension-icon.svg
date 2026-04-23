@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1e293b"/>
+      <stop offset="1" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#34d399"/>
+      <stop offset="1" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="128" height="128" rx="22" fill="url(#bg)"/>
+
+  <!-- persistence loop: curved arrow wrapping top-right corner -->
+  <path d="M 86 18 A 46 46 0 0 1 118 62"
+        stroke="url(#accent)" stroke-width="5" stroke-linecap="round" fill="none"/>
+  <path d="M 110 56 L 118 62 L 112 70"
+        stroke="url(#accent)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- terminal window -->
+  <rect x="22" y="38" width="76" height="60" rx="7" fill="#0b1220" stroke="#475569" stroke-width="2"/>
+
+  <!-- title bar -->
+  <rect x="22" y="38" width="76" height="12" rx="7" fill="#1e293b"/>
+  <rect x="22" y="44" width="76" height="6" fill="#1e293b"/>
+
+  <!-- traffic lights -->
+  <circle cx="30" cy="44" r="2" fill="#ef4444"/>
+  <circle cx="37" cy="44" r="2" fill="#f59e0b"/>
+  <circle cx="44" cy="44" r="2" fill="#22c55e"/>
+
+  <!-- prompt chevron > -->
+  <path d="M 32 66 L 44 75 L 32 84"
+        stroke="url(#accent)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+  <!-- cursor _ -->
+  <rect x="50" y="81" width="14" height="4" rx="1.5" fill="url(#accent)"/>
+
+  <!-- alive indicator -->
+  <circle cx="88" cy="83" r="2.5" fill="#34d399"/>
+  <circle cx="88" cy="83" r="5.5" fill="#34d399" opacity="0.25"/>
+</svg>
