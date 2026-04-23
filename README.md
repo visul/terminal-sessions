@@ -62,7 +62,7 @@ Two commands let you tweak it:
 - `Terminal Sessions: Reload tmux Config` — applies changes to all running sessions
 
 ### Portability / recovery
-- **Remote-SSH support** — extension is `extensionKind: ["workspace"]`, so it runs on the remote host when you open a remote folder. One VSIX works both local and remote.
+- **Remote-SSH support** — runs on whichever side hosts the workspace (remote when connected over SSH, local otherwise). Install on both, the right copy activates per window. One VSIX works both local and remote.
 - **No lock-in** — everything is plain tmux. If the extension breaks you can `tmux ls` and `tmux attach -t ts-xxx` from any system terminal.
 - **Index file** at `~/.terminal-sessions/index.json` maps workspace hashes to readable paths and labels (for debugging or external tools).
 
@@ -96,7 +96,7 @@ npm run package   # produces terminal-sessions-<ver>.vsix
 ```
 
 ### On SSH Remote
-`extensionKind: ["workspace"]` means the extension runs wherever the folder lives.
+The extension runs on the workspace side (remote when connected over SSH, local otherwise). Install it on both so the right copy picks up per window.
 
 1. Install tmux on the remote server.
 2. In a Remote-SSH window: Cmd+Shift+P → "Extensions: Install from VSIX..." → pick your local `.vsix`. Cursor uploads and installs on the remote automatically.
