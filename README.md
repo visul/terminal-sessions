@@ -33,7 +33,7 @@ VS Code's built-in `terminal.integrated.persistentSessionReviveProcess` only sur
 - **Smart click behavior** — clicking a session that's already attached focuses its existing terminal tab instead of opening a duplicate
 - **Terminal tab name tracking** — renaming a tab in Cursor saves the label so it survives restart
 - **Right-click context menu** on sidebar items — Preview, Mirror, Restart, Rename, Icon, Color, Kill
-- **Explorer right-click** — "Open in Integrated Terminal (Pers)" on any folder opens a persistent tmux session with that folder as CWD, auto-labeled with the folder name
+- **Explorer right-click** — "Open in Integrated Terminal - Persistent" on any folder opens a persistent tmux session with that folder as CWD, auto-labeled with the folder name
 
 ### Notifications & Claude Code integration
 - **Long-running command alerts** — notification when a command takes longer than a configurable threshold (default 30s); useful for builds, migrations, deploys

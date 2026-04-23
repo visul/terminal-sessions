@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux. Survives editor restart. Workspace-scoped. Native notifications for long-running commands and Claude Code Stop events. Right-click any folder in Explorer to open a persistent terminal there.",
-  "version": "0.4.9",
+  "version": "0.5.0",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -139,7 +139,7 @@
       },
       {
         "command": "terminalSessions.newPersistentInFolder",
-        "title": "Open in Integrated Terminal (Pers)"
+        "title": "Open in Integrated Terminal - Persistent"
       },
       {
         "command": "terminalSessions.attachTo",
