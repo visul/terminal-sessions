@@ -79,6 +79,30 @@ export class SessionIndex {
     this.save();
   }
 
+  setSessionLastActive(hash: string, sessionName: string): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    ws.sessions[sessionName].lastActiveAt = new Date().toISOString();
+    this.save();
+  }
+
+  setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (order === undefined) delete ws.sessions[sessionName].sortOrder;
+    else ws.sessions[sessionName].sortOrder = order;
+    this.save();
+  }
+
+  clearWorkspaceSortOrder(hash: string): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws) return;
+    for (const name of Object.keys(ws.sessions)) {
+      delete ws.sessions[name].sortOrder;
+    }
+    this.save();
+  }
+
   removeSession(hash: string, sessionName: string): void {
     const ws = this.data.workspaces[hash];
     if (!ws) return;
@@ -137,6 +161,8 @@ export async function enrichSessions(
       color: meta?.color,
       createdAt: new Date(row.created * 1000),
       lastAttached: new Date((row.lastAttached || row.created) * 1000),
+      lastActiveAt: meta?.lastActiveAt ? new Date(meta.lastActiveAt) : undefined,
+      sortOrder: meta?.sortOrder,
       attached: row.attached,
     });
   }

@@ -1,8 +1,10 @@
 # Terminal Sessions
 
-Persistent terminal sessions for Cursor and VS Code. Sessions survive editor restarts, scoped per workspace. Works locally on macOS/Linux and over Remote-SSH.
+Persistent terminal sessions for Cursor and VS Code, with first-class Claude Code status integration. Sessions survive editor restarts, scoped per workspace. Works locally on macOS/Linux and over Remote-SSH.
 
 Wraps every terminal in tmux automatically so the underlying shell and any running processes (Claude Code, dev servers, REPLs) keep running when you quit or restart the editor. Reopen the workspace and everything is right where you left it.
+
+On top of persistence, the sidebar surfaces live Claude state per session — current activity (working/tool/waiting), context-window usage, per-session API-equivalent cost in USD, last user/assistant messages, model, turn count — plus a fuzzy search across every past Claude conversation on your machine.
 
 ## Why
 
@@ -35,9 +37,23 @@ VS Code's built-in `terminal.integrated.persistentSessionReviveProcess` only sur
 - **Right-click context menu** on sidebar items — Preview, Mirror, Restart, Rename, Icon, Color, Kill
 - **Explorer right-click** — "Open in Integrated Terminal - Persistent" on any folder opens a persistent tmux session with that folder as CWD, auto-labeled with the folder name
 
-### Notifications & Claude Code integration
+### Sidebar sort modes
+- **Custom** — drag sessions in the sidebar to rearrange; order persisted across restarts (stored per-session in `~/.terminal-sessions/index.json`)
+- **Recently used** — most recently focused session floats to top
+- **Creation order** — oldest first (default, backward-compatible)
+- **Alphabetical** — by session label
+- Toggle via the `$(list-ordered)` icon in the sidebar title bar; dragging automatically switches to Custom
+
+### Claude Code integration (live status in the sidebar)
+- **Per-session state indicator** — icon + description reflect whether Claude is `working`, running a `tool` (with tool name), `waiting` for user permission, or `idle` (with time-since). State is derived from the transcript .jsonl directly so it stays correct even when hooks are out of date
+- **API-equivalent cost in USD** — real cost per session computed from the transcript using the live Anthropic rate card, per-model (Opus 4.7 at $5/$25 in/out, Opus 4.1 at $15/$75, Sonnet at $3/$15, Haiku at $1/$5, plus separate cache-read and 5-min/1-hour cache-write tiers). Retried turns are de-duplicated by `message.id`; subagents on different models are counted automatically with their own rate. Sidebar shows `opus · $55.25 · 364 turns`; tooltip shows per-model breakdown and the raw token totals
+- **Context-window gauge** — the `31% ctx` suffix appears next to every Claude-active session so you know how much of the context window is used. Crosses `terminalSessions.contextWarnPct` (default 0.8) → `⚠ 87% ctx`. Limit is auto-detected per session (1M if any turn exceeded 200k, else 200k). Subagent turns are excluded because they have their own context
+- **Nested detail rows** — under each active session, rows show last user message, last Claude reply, model/cost/turns, current tool with its input (e.g. `Bash: "npm run build"`); configurable `auto | always | off`
+- **Search past sessions** — `$(search)` button in the sidebar (or `Terminal Sessions: Find Session by Prompt…` command) opens a fuzzy picker over every transcript on your machine. Jump to transcript, copy session ID, or reveal the cwd
+
+### Notifications
 - **Long-running command alerts** — notification when a command takes longer than a configurable threshold (default 30s); useful for builds, migrations, deploys
-- **Claude Code Stop hook** — opt-in hook that installs into `~/.claude/settings.json` and fires a notification each time Claude finishes a response (with a min-duration filter to avoid notif-storms on short turns)
+- **Claude Stop notification** — opt-in via `~/.claude/settings.json` Stop hook; fires when Claude finishes a response (min-duration filter prevents notif-storms on short turns)
 - **Native macOS Notification Center** — mode-switchable (`auto`: native when Cursor is unfocused / toast when focused; `always`; `never`)
 - **Sound picker** — 14 macOS built-in sounds (Glass, Ping, Hero, Pop, …); errors override with Basso
 - **Post-reboot recovery** — "Recreate Sessions from Index" rebuilds your sessions after a macOS reboot wiped the tmux server; optional `claude --resume <id>` hint toast so you can reattach Claude Code sessions by ID
@@ -172,9 +188,17 @@ tmux kill-session -t ts-...     # kill from CLI if extension won't
 
 ## Roadmap
 
+- Budget-alert thresholds (warn when a session's cost crosses $X)
+- Daily / workspace-level cost rollup in the status bar
+- Stuck / error detection from `tool_result` content
+- Inline sidebar action buttons on Claude-active sessions (Interrupt, `/compact`, Open transcript)
 - Zellij backend as a tmux alternative
-- Multi-window cross-session view (like `claude-terminal-manager`)
+- Multi-window cross-session view
 - Windows / WSL testing and support
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 

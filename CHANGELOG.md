@@ -1,0 +1,90 @@
+# Changelog
+
+All notable changes to the Terminal Sessions extension.
+
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
+
+## [0.9.3] — 2026-04-23
+
+### Fixed
+- **Sidebar stayed stuck on `idle` while Claude was actually generating.** Claude Code reads `~/.claude/settings.json` once at startup, so when the extension upgraded the hook set mid-session the new `UserPromptSubmit` / `PreToolUse` hooks never fired for the already-running session. State updates now fall back to the transcript: if `lastUserMessageAt > lastAssistantMessageAt`, the session is `working`; otherwise `idle`. Hook events are still used when they arrive (for `tool` and `waiting input`) but are no longer required for the `working`/`idle` flip.
+- **Context % only showed above the warn threshold.** Now it shows on every Claude-active session regardless of value (e.g. `idle 3m · 31% ctx`). When it crosses `terminalSessions.contextWarnPct`, a `⚠` prefix is added (`idle · ⚠ 87% ctx`).
+
+## [0.9.2] — 2026-04-23
+
+### Fixed
+- **API cost calculation used Opus 4.1 rates for all Opus models, overstating cost by ~3x for Opus 4.5/4.6/4.7.** Verified against the live [Anthropic pricing page](https://platform.claude.com/docs/en/about-claude/pricing): Opus 4.5+ is `$5/$25/$6.25/$10/$0.50` (input / output / 5m cache / 1h cache / cache read) per MTok, vs Opus 4/4.1 at `$15/$75/$18.75/$30/$1.50`. Re-ran on the in-progress session: result dropped from `$160.74` to `$55.25`, much closer to reality.
+- **Cost double-counted retried turns.** Claude Code sometimes writes the same `assistant` event multiple times to the transcript when the API call is retried. Cost is now deduplicated by `message.id` so a retried turn is billed once.
+- **Cache creation was always billed at the 5-minute rate** even when the transcript recorded 1-hour cache writes (2× the 5-minute rate). The new logic reads `usage.cache_creation.ephemeral_1h_input_tokens` and `ephemeral_5m_input_tokens` separately and applies the correct multiplier to each.
+
+### Added
+- **`claude-pricing.ts`** module with an up-to-date Anthropic rate card covering Opus 4 / 4.1 / 4.5 / 4.6 / 4.7, Sonnet 4 / 4.5 / 4.6, Haiku 3.5 / 4.5. Selection keys off the model string in the transcript (e.g. `claude-opus-4-7` → Opus 4.5+ tier).
+- **Tooltip now shows cost breakdown per model** (e.g. `opus: $5.80 · sonnet: $0.18`) alongside the tokens breakdown (input / output / cache read / cache 5m / cache 1h) for transparency.
+
+## [0.9.1] — superseded by 0.9.2
+
+Attempted to drop the cost feature after the v0.9.0 numbers disagreed with `ccusage`. Investigation in 0.9.2 revealed the rate-card was wrong (Opus 4.7 was treated as Opus 4.1), not the methodology — so cost is restored with the correct prices.
+
+### Fixed
+- **Context % was computed against the wrong window limit.** Opus-4.7 with the 1M-context beta header was being measured against a hardcoded 200k ceiling, producing nonsensical values like `124% ctx`. Limit is now inferred dynamically per session: if any single turn's input + cache-read + cache-create has exceeded 200k, the session is treated as 1M-context; otherwise 200k.
+- **Subagent turns were inflating the main-thread context %.** Entries with `isSidechain: true` (subagent invocations) are now excluded from the context-window gauge because subagents have their own context, separate from the main conversation.
+
+## [0.9.0] — superseded by 0.9.2
+
+Initial attempt at real-cost tracking and 1M context detection. Both issues surfaced in live use — see 0.9.1 (context) and 0.9.2 (cost) for the resolutions.
+
+### Added
+- **Find-Session command** (`terminalSessions.findSession`) + `$(search)` button in the sidebar title. Opens a fuzzy picker across every Claude transcript under `~/.claude/projects/` — matches the first/last user prompt, cwd, and session ID. Selecting a result offers: open transcript in editor, copy session ID, reveal cwd. The search index is persisted at `~/.terminal-sessions/search-index.json` (~600 bytes per session, refreshed on activation and incrementally on new files).
+- **Context-window usage badge** next to the Claude state. When the latest turn crosses `terminalSessions.contextWarnPct` (default 0.8 = 80%), a `87% ctx` suffix is appended so you know when to run `/compact`.
+- **Theme colors for Claude state icons** via `contributes.colors`: `terminalSessions.workingIcon` (yellow), `toolIcon` (blue), `waitingIcon` (orange), `idleIcon` (green). Override in your theme or `workbench.colorCustomizations`.
+
+## [0.8.1] — 2026-04-23
+
+### Fixed
+- **Interrupt detection** — when the user presses Esc to interrupt Claude, the Stop hook doesn't always fire. The tracker now treats a new user message in the transcript (or the literal string `[Request interrupted by user]`) as an end-of-turn signal and resets state to `idle`.
+- **Misleading token total** — `97.0M tok` was the sum of cache-read tokens across every message (same context re-read dozens of times). Now the detail row shows only the net output total (`403k out`).
+
+## [0.8.0] — 2026-04-23
+
+### Added
+- **Live Claude Code status in the sidebar** — per-session indicator for `working | tool | waiting | idle | none`, icon color per state, and nested detail rows under each session showing last user message, last Claude reply, model, token output, turn count.
+- **Transcript tailing** — watches `~/.claude/projects/<slug>/<sessionId>.jsonl` in real time to extract preview messages, model, and token usage.
+- **Setting `terminalSessions.claudeSidebarDetails`** with modes `auto | always | off` to control whether the detail rows appear under each session.
+
+### Fixed
+- **Claude hook was not capturing session IDs** — the shell script read `CLAUDE_SESSION_ID` from env (never set) instead of parsing the JSON payload on stdin. The rewrite reads stdin JSON and also extracts `tool_name`, `tool_input`, and `transcript_path`. Installing hooks now registers `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`; old one-event installs are auto-upgraded on activation.
+
+## [0.7.1] — 2026-04-23
+
+### Fixed
+- **Drag-and-drop one-position moves** in the sidebar did nothing. The drop handler always inserted before the target; now it detects direction against the source's original index and inserts before or after accordingly.
+
+## [0.7.0] — 2026-04-23
+
+### Added
+- **Sidebar sort modes** — setting `terminalSessions.sidebarSortMode` with values `custom | mru | created | alphabetical`, exposed as the `$(list-ordered)` icon in the view title. Custom mode is drag-reorderable with the order persisted in `~/.terminal-sessions/index.json`; dragging from any mode auto-switches to Custom.
+- **MRU tracking** via `onDidChangeActiveTerminal` — the terminal you just focused floats to top when sort mode is `mru`.
+
+### Removed
+- **`syncSidebarOrderToTabs` setting** — dropped because VS Code's `vscode.window.terminals` array is in creation order, not visual tab order, so the setting never actually did what its name suggested. Replaced with the more honest sort-mode picker above.
+
+## [0.6.0] — 2026-04-23
+
+### Added (removed in 0.7.0)
+- Attempted one-way sync from terminal tab order to sidebar. Abandoned after discovering the underlying API limitation — see 0.7.0 notes.
+
+## [0.5.0] — 2026-04-22
+
+### Changed
+- Explorer right-click context menu entry renamed `Open in Integrated Terminal (Pers)` → `Open in Integrated Terminal - Persistent`.
+
+## [0.4.x] — 2026-04-22
+
+### Added
+- **Explorer right-click** → "Open in Integrated Terminal - Persistent" opens a workspace-scoped tmux session rooted at the clicked folder, auto-labeled with the folder basename.
+- **Smart click behavior** — clicking a session that's already attached focuses the existing terminal tab instead of opening a duplicate.
+- Publisher renamed `adi` → `visul` (GitHub + OpenVSX).
+
+## [0.3.x and earlier]
+
+Initial releases. Core tmux-backed persistent terminals, workspace-scoped naming, sidebar, status bar, auto-restore, managed `tmux.conf`, Claude Stop notifications (v1 hook).

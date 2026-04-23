@@ -1,6 +1,6 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { COMMAND, getConfig } from './config';
+import { COMMAND, getConfig, setSortMode, SidebarSortMode, SORT_MODES } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, metaIconAndColor } from './profile-provider';
@@ -11,6 +11,7 @@ import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
 import { notify } from './notifications';
 import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInstalled } from './claude-tracker';
+import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 
 async function requireTmux(): Promise<string | undefined> {
   const cfg = getConfig();
@@ -26,6 +27,7 @@ export function registerCommands(
   ctx: vscode.ExtensionContext,
   index: SessionIndex,
   claudeTracker: ClaudeTracker,
+  searchIndex: ClaudeSearchIndex,
 ): void {
   ctx.subscriptions.push(
     vscode.commands.registerCommand(COMMAND.newPersistent, () => cmdNewPersistent(index)),
@@ -51,6 +53,121 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook()),
     vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, item)),
+    vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
+    vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
+  );
+}
+
+async function cmdFindSession(searchIndex: ClaudeSearchIndex): Promise<void> {
+  // Best-effort refresh in the background while the picker is open
+  void searchIndex.refresh();
+  interface Pick extends vscode.QuickPickItem { entry: SessionIndexEntry }
+  const qp = vscode.window.createQuickPick<Pick>();
+  qp.placeholder = 'Search Claude sessions by prompt, cwd, or session id…';
+  qp.matchOnDescription = true;
+  qp.matchOnDetail = true;
+  const render = (q: string): void => {
+    const entries = q ? searchIndex.search(q) : searchIndex.list();
+    qp.items = entries.slice(0, 100).map(e => ({
+      label: e.title || '(no prompt)',
+      description: `${path.basename(e.cwd || '')} · ${e.turns} turns · ${humanAge(new Date(e.lastModified))}`,
+      detail: e.lastPrompt !== e.firstPrompt ? `last: ${e.lastPrompt}` : undefined,
+      entry: e,
+    }));
+  };
+  qp.onDidChangeValue(render);
+  render('');
+  qp.onDidAccept(async () => {
+    const sel = qp.selectedItems[0];
+    qp.hide();
+    if (!sel) return;
+    await openSessionActions(sel.entry);
+  });
+  qp.show();
+}
+
+async function openSessionActions(entry: SessionIndexEntry): Promise<void> {
+  const pick = await vscode.window.showQuickPick(
+    [
+      { label: '$(file-code) Open transcript file', action: 'open' as const },
+      { label: '$(copy) Copy session ID', action: 'copyId' as const },
+      { label: '$(folder-opened) Reveal cwd in OS', action: 'revealCwd' as const },
+    ],
+    { placeHolder: entry.title || entry.sessionId },
+  );
+  if (!pick) return;
+  switch (pick.action) {
+    case 'open': {
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.transcriptPath));
+      await vscode.window.showTextDocument(doc, { preview: true });
+      break;
+    }
+    case 'copyId':
+      await vscode.env.clipboard.writeText(entry.sessionId);
+      vscode.window.setStatusBarMessage(`Copied session ID ${entry.sessionId}`, 2500);
+      break;
+    case 'revealCwd':
+      if (entry.cwd) {
+        await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(entry.cwd));
+      }
+      break;
+  }
+}
+
+const SORT_MODE_LABELS: Record<SidebarSortMode, { label: string; detail: string }> = {
+  custom: {
+    label: 'Custom',
+    detail: 'Drag sessions in the sidebar to set your own order',
+  },
+  mru: {
+    label: 'Recently used',
+    detail: 'Most recently focused session first',
+  },
+  created: {
+    label: 'Creation order',
+    detail: 'Oldest session first (default)',
+  },
+  alphabetical: {
+    label: 'Alphabetical',
+    detail: 'By session label (A to Z)',
+  },
+};
+
+async function cmdPickSortMode(index: SessionIndex): Promise<void> {
+  const current = getConfig().sidebarSortMode;
+  interface Pick extends vscode.QuickPickItem { mode: SidebarSortMode }
+  const items: Pick[] = SORT_MODES.map(m => {
+    const meta = SORT_MODE_LABELS[m];
+    return {
+      label: m === current ? `$(check) ${meta.label}` : `     ${meta.label}`,
+      detail: meta.detail,
+      mode: m,
+    };
+  });
+  items.push({
+    label: '     Reset custom order',
+    detail: 'Clear drag-reorder memory for every workspace (sort mode unchanged)',
+    mode: current,
+    description: 'reset',
+  } as Pick & { description: string });
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: `Sidebar sort (current: ${SORT_MODE_LABELS[current].label})`,
+  });
+  if (!pick) return;
+  if ((pick as Pick & { description?: string }).description === 'reset') {
+    for (const hash of Object.keys(index.getAllWorkspaces())) {
+      index.clearWorkspaceSortOrder(hash);
+    }
+    refreshSidebar();
+    vscode.window.setStatusBarMessage('Terminal Sessions: custom order cleared', 2500);
+    return;
+  }
+  if (pick.mode === current) return;
+  await setSortMode(pick.mode);
+  refreshSidebar();
+  vscode.window.setStatusBarMessage(
+    `Terminal Sessions: sort → ${SORT_MODE_LABELS[pick.mode].label}`,
+    2500,
   );
 }
 

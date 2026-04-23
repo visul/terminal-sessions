@@ -70,18 +70,22 @@ export function registerPersistentProfile(index: SessionIndex): vscode.Disposabl
   });
 }
 
+export function sessionNameForTerminal(t: vscode.Terminal): string | undefined {
+  const opts = t.creationOptions;
+  if (!opts || typeof opts !== 'object' || 'pty' in opts) return undefined;
+  const shellArgs = (opts as vscode.TerminalOptions).shellArgs;
+  if (!shellArgs) return undefined;
+  const args = Array.isArray(shellArgs) ? shellArgs : [shellArgs];
+  const sIdx = args.indexOf('-s');
+  const tIdx = args.indexOf('-t');
+  const nameIdx = sIdx >= 0 ? sIdx + 1 : (tIdx >= 0 ? tIdx + 1 : -1);
+  if (nameIdx < 0 || nameIdx >= args.length) return undefined;
+  return args[nameIdx];
+}
+
 export function findTerminalForSession(name: string): vscode.Terminal | undefined {
   for (const t of vscode.window.terminals) {
-    const opts = t.creationOptions;
-    if (!opts || typeof opts !== 'object' || 'pty' in opts) continue;
-    const shellArgs = (opts as vscode.TerminalOptions).shellArgs;
-    if (!shellArgs) continue;
-    const args = Array.isArray(shellArgs) ? shellArgs : [shellArgs];
-    const sIdx = args.indexOf('-s');
-    const tIdx = args.indexOf('-t');
-    const nameIdx = sIdx >= 0 ? sIdx + 1 : (tIdx >= 0 ? tIdx + 1 : -1);
-    if (nameIdx < 0 || nameIdx >= args.length) continue;
-    if (args[nameIdx] === name) return t;
+    if (sessionNameForTerminal(t) === name) return t;
   }
   return undefined;
 }

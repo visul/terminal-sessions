@@ -1,8 +1,8 @@
 {
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
-  "description": "Persistent terminal sessions for Cursor/VSCode via tmux. Survives editor restart. Workspace-scoped. Native notifications for long-running commands and Claude Code Stop events. Right-click any folder in Explorer to open a persistent terminal there.",
-  "version": "0.5.0",
+  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
+  "version": "0.9.3",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -128,6 +128,36 @@
           "type": "boolean",
           "default": false,
           "description": "After recreating sessions post-reboot, auto-run `claude --resume <id>` in the attached terminal. OFF by default because it can accidentally send text into a running Claude process. Safer: let the summary toast hint you the command and run it manually."
+        },
+        "terminalSessions.contextWarnPct": {
+          "type": "number",
+          "default": 0.8,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Show a context-window warning badge (e.g. `87% ctx`) next to the Claude state when the latest turn crossed this percentage of the model's context limit. Set to 1 to disable the badge. Default 0.8 = warn at 80%."
+        },
+        "terminalSessions.claudeSidebarDetails": {
+          "type": "string",
+          "enum": ["auto", "always", "off"],
+          "enumDescriptions": [
+            "Expand Claude details (last message, tool, model, tokens) only while Claude is actively working or needs input.",
+            "Always show Claude details as nested rows under every session that has a Claude history.",
+            "Never show Claude details as nested rows. Info stays in the tooltip."
+          ],
+          "default": "auto",
+          "description": "Show per-session Claude Code details (last user/assistant message, current tool, model, tokens) as nested rows in the sidebar. Requires the Claude hook to be installed."
+        },
+        "terminalSessions.sidebarSortMode": {
+          "type": "string",
+          "enum": ["custom", "mru", "created", "alphabetical"],
+          "enumDescriptions": [
+            "User-defined order — drag sessions in the sidebar to rearrange; persisted across restarts.",
+            "Most recently focused session first.",
+            "Creation order (oldest first) — default.",
+            "Alphabetical by session label."
+          ],
+          "default": "created",
+          "description": "How to sort sessions under each workspace in the sidebar. Click the list-ordered icon in the sidebar title bar to switch modes interactively. Dragging a session switches automatically to 'custom'."
         }
       }
     },
@@ -228,6 +258,16 @@
         "command": "terminalSessions.restart",
         "title": "Restart Session (kill + fresh shell)",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "terminalSessions.pickSortMode",
+        "title": "Terminal Sessions: Change Sidebar Sort",
+        "icon": "$(list-ordered)"
+      },
+      {
+        "command": "terminalSessions.findSession",
+        "title": "Terminal Sessions: Find Session by Prompt...",
+        "icon": "$(search)"
       }
     ],
     "menus": {
@@ -239,14 +279,24 @@
       ],
       "view/title": [
         {
+          "command": "terminalSessions.findSession",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@0"
+        },
+        {
+          "command": "terminalSessions.pickSortMode",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@1"
+        },
+        {
           "command": "terminalSessions.newPersistent",
           "when": "view == terminalSessions.sessions",
-          "group": "navigation"
+          "group": "navigation@2"
         },
         {
           "command": "terminalSessions.refreshSidebar",
           "when": "view == terminalSessions.sessions",
-          "group": "navigation"
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -333,7 +383,29 @@
           "icon": "terminal-bash"
         }
       ]
-    }
+    },
+    "colors": [
+      {
+        "id": "terminalSessions.workingIcon",
+        "description": "Icon color when Claude is actively generating a response.",
+        "defaults": { "dark": "#E2C08D", "light": "#B8860B", "highContrast": "#FFE082" }
+      },
+      {
+        "id": "terminalSessions.toolIcon",
+        "description": "Icon color when Claude is executing a tool (Bash, Edit, etc.).",
+        "defaults": { "dark": "#75BEFF", "light": "#007ACC", "highContrast": "#75BEFF" }
+      },
+      {
+        "id": "terminalSessions.waitingIcon",
+        "description": "Icon color when Claude is waiting for user permission / input.",
+        "defaults": { "dark": "#FF9E2D", "light": "#D97706", "highContrast": "#FFB74D" }
+      },
+      {
+        "id": "terminalSessions.idleIcon",
+        "description": "Icon color when Claude finished responding and is idle.",
+        "defaults": { "dark": "#73C991", "light": "#389E0D", "highContrast": "#81C784" }
+      }
+    ]
   },
   "scripts": {
     "compile": "tsc -p ./",

@@ -8,7 +8,11 @@ import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
 import { registerLongRunNotifier } from './long-run-notifier';
 import { maybeOfferRestore } from './restore';
-import { ClaudeTracker, isClaudeHookInstalled } from './claude-tracker';
+import { ClaudeTracker, isClaudeHookInstalled, needsHookUpgrade } from './claude-tracker';
+import { ClaudeSearchIndex } from './claude-search';
+import { sessionNameForTerminal } from './profile-provider';
+import { parseSessionName } from './workspace-id';
+import { getConfig } from './config';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -19,9 +23,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   claudeTracker.start();
   ctx.subscriptions.push({ dispose: () => claudeTracker.dispose() });
 
+  const searchIndex = new ClaudeSearchIndex();
+  void searchIndex.load().then(() => searchIndex.refresh());
+
   ctx.subscriptions.push(registerPersistentProfile(index));
-  registerCommands(ctx, index, claudeTracker);
-  registerSidebar(ctx, index);
+  registerCommands(ctx, index, claudeTracker, searchIndex);
+  registerSidebar(ctx, index, claudeTracker);
 
   // Prompt once to install the Claude hook (remembers declination).
   maybePromptInstallClaudeHook(ctx);
@@ -39,7 +46,29 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(
     vscode.window.onDidCloseTerminal(() => refreshSidebar()),
     vscode.window.onDidOpenTerminal(() => refreshSidebar()),
+    vscode.window.onDidChangeActiveTerminal(t => {
+      if (!t) return;
+      const name = sessionNameForTerminal(t);
+      if (!name) return;
+      const parsed = parseSessionName(name, getConfig().sessionPrefix);
+      if (!parsed) return;
+      index.setSessionLastActive(parsed.hash, name);
+      if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
+    }),
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (
+        e.affectsConfiguration('terminalSessions.sidebarSortMode') ||
+        e.affectsConfiguration('terminalSessions.claudeSidebarDetails')
+      ) refreshSidebar();
+    }),
   );
+
+  // One-shot: if hook is installed but missing new events, silently upgrade so
+  // users on old v0.5 hook start capturing PreToolUse/UserPromptSubmit/etc.
+  if (isClaudeHookInstalled() && needsHookUpgrade()) {
+    try { await vscode.commands.executeCommand('terminalSessions.installClaudeHook'); }
+    catch { /* silent — user can manually reinstall from command palette */ }
+  }
 
   const resumeTimer = setTimeout(async () => {
     try {

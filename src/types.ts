@@ -9,6 +9,8 @@ export interface SessionInfo {
   color?: string;  // theme color id, e.g. "terminal.ansiGreen"
   createdAt: Date;
   lastAttached: Date;
+  lastActiveAt?: Date;
+  sortOrder?: number;
   attached: boolean;
 }
 
@@ -29,6 +31,8 @@ export interface SessionLabel {
   icon?: string;
   color?: string;
   createdAt: string;
+  lastActiveAt?: string;
+  sortOrder?: number;
 }
 
 export interface TmuxSessionRow {
