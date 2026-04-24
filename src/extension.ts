@@ -70,6 +70,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     catch { /* silent — user can manually reinstall from command palette */ }
   }
 
+  // One-shot: offer to regenerate tmux.conf if the user is on the pre-v2
+  // template (missing DECSET 2026 passthrough / correct default-terminal).
+  void maybeOfferConfUpgrade(ctx);
+
   const resumeTimer = setTimeout(async () => {
     try {
       const result = await maybeOfferRestore(index, claudeTracker);
@@ -101,6 +105,31 @@ async function maybePromptInstallClaudeHook(ctx: vscode.ExtensionContext): Promi
       await ctx.globalState.update(KEY, true);
     }
   }, 4000);
+}
+
+async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void> {
+  const { isConfOutOfDate, regenerateConf } = await import('./tmux');
+  if (!isConfOutOfDate()) return;
+  const KEY = 'tmuxConfUpgradeDismissed-v2';
+  if (ctx.globalState.get(KEY)) return;
+  setTimeout(async () => {
+    const choice = await vscode.window.showInformationMessage(
+      'Your Terminal Sessions tmux.conf is missing Claude-Code-friendly rendering settings '
+      + '(synchronized output, correct default-terminal). Update now? '
+      + 'A backup is saved next to the current file.',
+      'Update', 'Not now', "Don't ask again",
+    );
+    if (choice === 'Update') {
+      const backup = regenerateConf();
+      const msg = backup
+        ? `tmux.conf updated. Previous version backed up at ${backup}. `
+          + 'Run "Terminal Sessions: Reload tmux Config" to apply to live sessions.'
+        : 'Could not update tmux.conf (permissions?). Check ~/.terminal-sessions/tmux.conf.';
+      vscode.window.showInformationMessage(msg);
+    } else if (choice === "Don't ask again") {
+      await ctx.globalState.update(KEY, true);
+    }
+  }, 6000);
 }
 
 export function deactivate(): void { /* handled via ctx.subscriptions */ }

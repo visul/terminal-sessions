@@ -55,7 +55,116 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
+    vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
   );
+}
+
+async function cmdFixClaudeRendering(): Promise<void> {
+  const shell = process.env.SHELL || '';
+  const home = process.env.HOME || require('os').homedir();
+  const fs = require('fs');
+  const pathMod = require('path');
+  const rcFile = shell.includes('zsh') ? '.zshrc'
+    : shell.includes('bash') ? '.bashrc'
+    : shell.includes('fish') ? '.config/fish/config.fish'
+    : '.profile';
+  const rcPath = pathMod.join(home, rcFile);
+  const isFish = rcFile.endsWith('config.fish');
+
+  // DISABLE_MOUSE_CLICKS (not DISABLE_MOUSE): clicks go to tmux so you can
+  // select panes natively, but scroll events still reach Claude Code so the
+  // trackpad scrolls the conversation view. DISABLE_MOUSE=1 would break
+  // trackpad scroll inside Claude.
+  const EXPORTS = [
+    'export CLAUDE_CODE_NO_FLICKER=1',
+    'export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1',
+  ];
+  const FISH_SET = [
+    'set -gx CLAUDE_CODE_NO_FLICKER 1',
+    'set -gx CLAUDE_CODE_DISABLE_MOUSE_CLICKS 1',
+  ];
+  const lines = isFish ? FISH_SET : EXPORTS;
+  const block = '\n# Terminal Sessions — Claude Code rendering fix\n' + lines.join('\n') + '\n';
+
+  // Match the old DISABLE_MOUSE var (without _CLICKS) so we can migrate users
+  // who ran an earlier iteration of this command.
+  const oldMouseLine = isFish
+    ? /^set -gx CLAUDE_CODE_DISABLE_MOUSE 1\s*$/m
+    : /^export CLAUDE_CODE_DISABLE_MOUSE=1\s*$/m;
+  const newMouseLine = lines[1];
+
+  let existing = '';
+  try { existing = fs.readFileSync(rcPath, 'utf8'); } catch { /* file may not exist yet */ }
+
+  const alreadyFullyPresent = lines.every((l: string) => existing.includes(l));
+  if (alreadyFullyPresent) {
+    const action = await vscode.window.showInformationMessage(
+      `The Claude Code rendering env vars are already in ~/${rcFile}. `
+      + 'Open a new shell (or restart the tmux pane) to pick them up in a running Claude session.',
+      'Open rc file',
+    );
+    if (action === 'Open rc file') {
+      const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(rcPath));
+      await vscode.window.showTextDocument(doc);
+    }
+    return;
+  }
+
+  // Migration path: user has the old DISABLE_MOUSE=1 line (broke trackpad
+  // scroll in Claude). Replace it in place.
+  if (oldMouseLine.test(existing)) {
+    const choice = await vscode.window.showInformationMessage(
+      `Your ~/${rcFile} has an older variant (CLAUDE_CODE_DISABLE_MOUSE=1) that blocks `
+      + 'trackpad scroll inside Claude Code. Replace with CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1 '
+      + '(clicks still go to tmux, wheel reaches Claude)?',
+      { modal: true },
+      'Replace', 'Cancel',
+    );
+    if (choice !== 'Replace') return;
+    let updated = existing.replace(oldMouseLine, newMouseLine);
+    // Ensure NO_FLICKER also present (it was paired with the old var).
+    if (!updated.includes(lines[0])) updated += '\n' + lines[0] + '\n';
+    try {
+      fs.writeFileSync(rcPath, updated);
+      vscode.window.showInformationMessage(
+        `Updated ~/${rcFile}. Open a new shell (or restart the tmux pane) to activate.`,
+      );
+    } catch (e) {
+      vscode.window.showErrorMessage(`Could not write to ${rcPath}: ${String(e).slice(0, 120)}`);
+    }
+    return;
+  }
+
+  const choice = await vscode.window.showInformationMessage(
+    `Append Claude Code rendering env vars to ~/${rcFile}?\n\n`
+    + lines.join('\n') + '\n\n'
+    + 'These put Claude Code into fullscreen (alt-screen) mode so the scrollback '
+    + 'stays clean, and route trackpad scroll to Claude (clicks still go to tmux '
+    + 'for pane select). Copy text from Claude: press Ctrl+O then [ to dump the '
+    + 'conversation into tmux scrollback, then drag-select normally.\n\n'
+    + 'Requires Claude Code ≥ 2.1.110. Running tmux panes pick up the change only '
+    + 'after Restart Session + relaunch of claude.',
+    { modal: true },
+    'Append', 'Show only (I paste manually)',
+  );
+  if (!choice) return;
+  if (choice === 'Show only (I paste manually)') {
+    const doc = await vscode.workspace.openTextDocument({
+      content: block,
+      language: isFish ? 'fish' : 'shellscript',
+    });
+    await vscode.window.showTextDocument(doc);
+    return;
+  }
+  try {
+    fs.appendFileSync(rcPath, block);
+    vscode.window.showInformationMessage(
+      `Appended env vars to ~/${rcFile}. Open a new terminal (or reload shell) to activate. `
+      + 'Note: running tmux panes need to be restarted to pick up the new environment.',
+    );
+  } catch (e) {
+    vscode.window.showErrorMessage(`Could not write to ${rcPath}: ${String(e).slice(0, 120)}`);
+  }
 }
 
 async function cmdFindSession(searchIndex: ClaudeSearchIndex): Promise<void> {

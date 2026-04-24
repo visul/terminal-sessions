@@ -186,13 +186,49 @@ tmux attach -t ts-a3f2c71d-1    # attach from any system terminal
 tmux kill-session -t ts-...     # kill from CLI if extension won't
 ```
 
+## Claude Code rendering in tmux
+
+Claude Code's TUI writes full-frame redraws into the main terminal buffer on every state change, which tmux faithfully captures — producing scrambled scrollback, duplicate prompts, and corruption after detach/reattach or during heavy subagent use. This is a Claude-Code-side issue (Ink/React renderer), not tmux. See `anthropics/claude-code#29937`, `#41814`, `#46981`.
+
+### Fix
+
+Set two environment variables in your shell so Claude Code runs in fullscreen (alt-screen) mode and keeps tmux's mouse behavior usable:
+
+```bash
+export CLAUDE_CODE_NO_FLICKER=1
+export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1
+```
+
+Requires Claude Code **≥ 2.1.110** (earlier versions had a regression that wiped scrollback). Easiest way to add them: run **`Terminal Sessions: Fix Claude Code Rendering in Shell`** from the command palette — it detects your shell (zsh/bash/fish), shows you exactly what will be appended in a modal, and writes to your rc file after confirmation.
+
+### What the vars do
+
+- **`CLAUDE_CODE_NO_FLICKER=1`** — Claude Code renders into the alternate screen buffer (like `vim`, `less`, `htop`). tmux no longer captures each intermediate frame, so scrollback stays clean across detach/reattach and parallel subagents.
+- **`CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1`** — clicks are handed to tmux (so you can still click-select panes, tabs, the sidebar, etc.) but scroll events still reach Claude Code. That means the trackpad scrolls Claude's conversation view directly, and it also scrolls tmux scrollback normally when Claude is not focused. The alternative `DISABLE_MOUSE=1` would block trackpad scroll inside Claude, which is usually not what you want.
+
+### Copy / paste workflow
+
+- **From plain shell output (git, build logs, bash):** drag-select with the trackpad as usual. Selection copies to the macOS clipboard via OSC 52.
+- **From the Claude conversation:** press `Ctrl+O` then `[` inside Claude. That dumps the current conversation view into the main tmux scrollback. From there, drag-select normally. Press `Ctrl+O` then `/` for Claude's own in-view search.
+- **Cmd+F / tmux copy-mode search** only sees content in the main buffer. The live Claude view lives in alt-screen, so it is not searchable that way — use `Ctrl+O` `/` inside Claude instead.
+
+### After changing the rc file
+
+Env vars are read by Claude Code at startup. To apply them to a session that is already running:
+
+1. Right-click the session in the sidebar → **Restart Session** (or run the command from the palette). This kills the tmux pane and spawns a fresh shell that reads your updated rc file.
+2. In the new shell, run `claude --resume <sessionId>` to continue the same conversation (the session ID is stored in `~/.terminal-sessions/claude-map.json` and is also copyable from the Find Session picker).
+
+### tmux.conf
+
+The extension's managed tmux.conf is also tuned for TUI rendering: DECSET 2026 synchronized-output passthrough (`terminal-features ',xterm*:sync'`), `default-terminal tmux-256color`, `RGB` truecolor cap, extended-keys, `allow-passthrough on`. On existing installs you will see a one-time prompt offering to regenerate the config; the previous version is backed up with a timestamped suffix before any rewrite.
+
 ## Roadmap
 
 - Budget-alert thresholds (warn when a session's cost crosses $X)
 - Daily / workspace-level cost rollup in the status bar
 - Stuck / error detection from `tool_result` content
 - Inline sidebar action buttons on Claude-active sessions (Interrupt, `/compact`, Open transcript)
-- Zellij backend as a tmux alternative
 - Multi-window cross-session view
 - Windows / WSL testing and support
 

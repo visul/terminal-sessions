@@ -87,4 +87,5 @@ export const COMMAND = {
   restart: 'terminalSessions.restart',
   pickSortMode: 'terminalSessions.pickSortMode',
   findSession: 'terminalSessions.findSession',
+  fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
 } as const;
