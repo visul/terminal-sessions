@@ -14,6 +14,7 @@ import {
   TranscriptTailer,
   TranscriptSnapshot,
   transcriptPathFor,
+  SubagentSnapshot,
 } from './claude-transcript';
 
 export type ClaudeState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';
@@ -45,6 +46,10 @@ export interface ClaudeSnapshot {
   contextTokens?: number;
   contextLimit?: number;
   contextPct?: number;
+  /** Path to the transcript jsonl (used by `Open Subagent Transcript`). */
+  transcriptPath?: string;
+  /** Flat list of subagents (tree is built at render time from parentId). */
+  subagents?: SubagentSnapshot[];
 }
 
 interface ClaudeEvent {
@@ -179,6 +184,8 @@ export class ClaudeTracker {
     if (snap.sessionId) {
       const t = this.transcript.getSnapshot(snap.sessionId);
       if (t) {
+        snap.transcriptPath = t.path;
+        snap.subagents = t.subagents;
         snap.model = t.model;
         snap.lastUserMessage = t.lastUserMessage;
         snap.lastAssistantMessage = t.lastAssistantMessage;
@@ -234,6 +241,19 @@ export class ClaudeTracker {
           snap.toolInput = t.currentToolInput;
         }
       }
+    }
+
+    // When the parent session has been idle for a while, any subagent still
+    // flagged as working almost certainly missed its tool_result (Claude
+    // crashed mid-Task, user interrupted, etc.). Don't keep the sidebar
+    // spinning on those forever — but wait 2 minutes before overriding so
+    // short idle windows don't clobber a legitimately running subagent.
+    if (snap.state === 'idle' && snap.lastStopAt
+        && Date.now() - snap.lastStopAt.getTime() > 120_000
+        && snap.subagents?.some((s) => s.state !== 'done')) {
+      snap.subagents = snap.subagents.map((s) =>
+        s.state === 'done' ? s : { ...s, state: 'done' as const, completedAt: s.completedAt || new Date() },
+      );
     }
     return snap;
   }

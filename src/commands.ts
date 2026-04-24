@@ -7,7 +7,7 @@ import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
-import { SessionTreeItem } from './sidebar/items';
+import { SessionTreeItem, SubagentTreeItem } from './sidebar/items';
 import { refreshSidebar } from './sidebar/tree-provider';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
@@ -64,6 +64,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
+    vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
+    vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
   );
 
   // Keep a VS Code context var in sync with the global alert setting so the
@@ -86,6 +88,45 @@ async function cmdSetAllAlerts(value?: boolean): Promise<void> {
   await c.update('notifyOnClaudeWaiting', next, vscode.ConfigurationTarget.Global);
   vscode.window.showInformationMessage(
     `Claude waiting alerts ${next ? 'enabled' : 'disabled'} globally.`,
+  );
+}
+
+async function cmdOpenSubagentTranscript(item?: SubagentTreeItem): Promise<void> {
+  if (!item) {
+    vscode.window.showErrorMessage('Use the sidebar context menu on a subagent.');
+    return;
+  }
+  if (!item.transcriptPath || !fs.existsSync(item.transcriptPath)) {
+    vscode.window.showWarningMessage('Transcript file is no longer on disk.');
+    return;
+  }
+  try {
+    // Convert the subagent's byte offset to a line number so VS Code can
+    // scroll the editor to the exact spot where this subagent begins.
+    let line = 0;
+    if (item.subagent.firstOffset !== undefined && item.subagent.firstOffset > 0) {
+      const head = fs.readFileSync(item.transcriptPath).slice(0, item.subagent.firstOffset);
+      line = head.toString('utf8').split('\n').length - 1;
+    }
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(item.transcriptPath));
+    const editor = await vscode.window.showTextDocument(doc);
+    if (line > 0) {
+      const pos = new vscode.Position(line, 0);
+      editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenter);
+      editor.selection = new vscode.Selection(pos, pos);
+    }
+  } catch (e) {
+    vscode.window.showErrorMessage(`Open transcript failed: ${String(e).slice(0, 200)}`);
+  }
+}
+
+async function cmdToggleShowCompletedSubagents(): Promise<void> {
+  const c = vscode.workspace.getConfiguration('terminalSessions');
+  const current = c.get<boolean>('showCompletedSubagents', false);
+  await c.update('showCompletedSubagents', !current, vscode.ConfigurationTarget.Global);
+  refreshSidebar();
+  vscode.window.showInformationMessage(
+    `Completed subagents ${!current ? 'shown' : 'hidden'} in the sidebar.`,
   );
 }
 

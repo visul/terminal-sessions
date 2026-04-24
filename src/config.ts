@@ -29,6 +29,7 @@ export interface Config {
   sidebarSortMode: SidebarSortMode;
   claudeSidebarDetails: ClaudeDetailsMode;
   contextWarnPct: number;
+  showCompletedSubagents: boolean;
 }
 
 export function getConfig(): Config {
@@ -62,6 +63,7 @@ export function getConfig(): Config {
       return v === 'always' || v === 'off' || v === 'auto' ? v : 'auto';
     })(),
     contextWarnPct: Math.max(0, Math.min(1, c.get<number>('contextWarnPct', 0.8))),
+    showCompletedSubagents: c.get('showCompletedSubagents', true),
   };
 }
 
@@ -104,4 +106,6 @@ export const COMMAND = {
   pickSortMode: 'terminalSessions.pickSortMode',
   findSession: 'terminalSessions.findSession',
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
+  openSubagentTranscript: 'terminalSessions.openSubagentTranscript',
+  toggleShowCompletedSubagents: 'terminalSessions.toggleShowCompletedSubagents',
 } as const;

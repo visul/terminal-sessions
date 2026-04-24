@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode } from '../config';
-import { WorkspaceTreeItem, SessionTreeItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, buildClaudeDetails } from './items';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
 
@@ -130,7 +130,69 @@ class SessionsTreeProvider
     if (el instanceof SessionTreeItem) {
       const snap = el.claude;
       if (!snap) return [];
-      return buildClaudeDetails(snap);
+      const children: vscode.TreeItem[] = buildClaudeDetails(snap);
+      // Wrap subagents under a single collapsible folder so sessions with
+      // many spawned agents stay tidy. Folder is rendered only when at least
+      // one subagent survives the `showCompletedSubagents` filter.
+      const subs = snap.subagents || [];
+      const showCompleted = cfg.showCompletedSubagents;
+      const top = subs.filter((s) =>
+        !s.parentId && (showCompleted || s.state !== 'done'),
+      );
+      if (top.length > 0) {
+        children.push(new SubagentsFolderItem(
+          el.session,
+          snap.transcriptPath,
+          top,
+          subs,
+        ));
+      }
+      return children;
+    }
+    if (el instanceof SubagentsFolderItem) {
+      const cfgNow = getConfig();
+      const showCompleted = cfgNow.showCompletedSubagents;
+      return el.topLevelSubagents.map((s) => {
+        const nested = el.allSubagents.filter(
+          (x) => x.parentId === s.id && (showCompleted || x.state !== 'done'),
+        );
+        return new SubagentTreeItem(el.parentSession, el.transcriptPath, s, nested);
+      });
+    }
+    if (el instanceof SubagentTreeItem) {
+      const out: vscode.TreeItem[] = [];
+      // Nested subagents first, then the current tool row, then last message.
+      const showCompleted = cfg.showCompletedSubagents;
+      const nested = el.nestedChildren.filter((s) => showCompleted || s.state !== 'done');
+      // To build recursive tree, we also need this subagent's grandchildren
+      // accessible via its own snapshot.subagents lookup. We re-resolve via
+      // the parent session's Claude snapshot.
+      const sessionSnap = this.claude.getSnapshot(el.parentSession.name);
+      const allSubs = sessionSnap?.subagents || [];
+      for (const s of nested) {
+        const grandchildren = allSubs.filter((x) => x.parentId === s.id && (showCompleted || x.state !== 'done'));
+        out.push(new SubagentTreeItem(el.parentSession, el.transcriptPath, s, grandchildren));
+      }
+      if (el.subagent.currentTool) {
+        const preview = el.subagent.currentToolInput ? ` "${el.subagent.currentToolInput}"` : '';
+        const item = new vscode.TreeItem(
+          `${el.subagent.currentTool}${preview}`,
+          vscode.TreeItemCollapsibleState.None,
+        );
+        item.iconPath = new vscode.ThemeIcon('tools');
+        item.contextValue = 'subagentDetail';
+        out.push(item);
+      }
+      if (el.subagent.lastMessage) {
+        const item = new vscode.TreeItem(
+          `"${el.subagent.lastMessage}"`,
+          vscode.TreeItemCollapsibleState.None,
+        );
+        item.iconPath = new vscode.ThemeIcon('hubot');
+        item.contextValue = 'subagentDetail';
+        out.push(item);
+      }
+      return out;
     }
     return [];
   }

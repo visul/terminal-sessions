@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.11.0",
+  "version": "0.12.3",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -171,6 +171,11 @@
           "default": "auto",
           "description": "Show per-session Claude Code details (last user/assistant message, current tool, model, tokens) as nested rows in the sidebar. Requires the Claude hook to be installed."
         },
+        "terminalSessions.showCompletedSubagents": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show subagents that have already finished (Task tool_result received) in the sidebar. On by default so short-running agents don't flicker in and out; flip to false if the tree gets too busy in sessions with many completed agents."
+        },
         "terminalSessions.sidebarSortMode": {
           "type": "string",
           "enum": ["custom", "mru", "created", "alphabetical"],
@@ -320,6 +325,15 @@
         "command": "terminalSessions.unmuteSession",
         "title": "Unmute Notifications",
         "icon": "$(bell)"
+      },
+      {
+        "command": "terminalSessions.openSubagentTranscript",
+        "title": "Open Subagent Transcript",
+        "icon": "$(file-code)"
+      },
+      {
+        "command": "terminalSessions.toggleShowCompletedSubagents",
+        "title": "Terminal Sessions: Toggle Show Completed Subagents"
       }
     ],
     "menus": {
@@ -426,6 +440,16 @@
           "command": "terminalSessions.unmuteSession",
           "when": "view == terminalSessions.sessions && viewItem == session.muted",
           "group": "edit@4"
+        },
+        {
+          "command": "terminalSessions.openSubagentTranscript",
+          "when": "view == terminalSessions.sessions && viewItem == subagent",
+          "group": "inline@1"
+        },
+        {
+          "command": "terminalSessions.openSubagentTranscript",
+          "when": "view == terminalSessions.sessions && viewItem == subagent",
+          "group": "open@1"
         }
       ]
     },

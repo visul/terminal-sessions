@@ -4,6 +4,86 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.12.3] — 2026-04-25
+
+Live visibility into Claude Code subagents. v0.12 introduced the subagent
+tree; 0.12.1–0.12.3 refined it through real-world use to land the final
+shape: a single tidy `🤖 Agents (N)` folder per session, background agents
+parsed from their own per-agent transcripts (not the main jsonl sidechain),
+and state inferred from file mtime + tool_use outstanding.
+
+### Added
+- **`🤖 Agents (N running · M done)` folder per Claude-active session.** A
+  single collapsible group row wraps every subagent, so a session that
+  spawned 6 agents doesn't dump 6 rows on the main list. Expanded by
+  default while anything is live; collapsed when all are done. Tooltip
+  previews the first five agents.
+- **Live per-subagent tree row.** Each subagent shows state icon
+  (spinner / tools / check), elapsed time, current tool with input
+  preview, and last streamed message. Inline label comes from the `Agent`
+  tool input — `<subagent_type> — <description>`, e.g.
+  `researcher — MCP servers for note apps`. Subagents nest recursively for
+  agents that spawn sub-subagents.
+- **Inline subagent counter in the session description** — `Terminal
+  Sessions waiting input · 69% ctx · 🤖 2 running` (falls back to
+  `🤖 N done` when everything completed). Surfaces agent activity without
+  having to expand the session.
+- **Background-agent transcripts support.** Claude Code ≥ 2.1.119 spawns
+  subagents via the `Agent` tool with `run_in_background: true`; their
+  activity is NOT written as sidechain messages in the main jsonl, but
+  into `<main-jsonl-path-without-ext>/subagents/agent-<id>.jsonl` plus
+  `agent-<id>.meta.json`. The transcript tailer now scans this sibling
+  directory on every 3-second poll (fs.watch only sees the main file),
+  reads each agent's last `tool_use` / `text` block, and infers state
+  from mtime: **< 30 s since last write = live; otherwise done.** The
+  classic synchronous `Task` tool path (with sidechain messages in the
+  same jsonl) keeps working.
+- **Setting `terminalSessions.showCompletedSubagents`** (default `true`) —
+  keep completed agents visible so short-running ones don't flicker in and
+  out. Flip to `false` (or run `Terminal Sessions: Toggle Show Completed
+  Subagents`) to focus only on live work.
+- **`Open Subagent Transcript` command** — right-click a subagent row to
+  open its transcript in an editor tab at the first line where that agent
+  was first registered. For background agents this is the per-agent
+  jsonl (much smaller and more readable than the main one).
+
+### Changed
+- **Sidebar children order under a session** — subagents group appears
+  last, below the existing detail rows (last user, last Claude, current
+  tool, metadata). Rationale: the conversation headline stays above the
+  fold; subagents are auxiliary context you drill into when you need it.
+- **Auto-done on parent session idle** is now time-gated (2 min grace)
+  instead of firing instantly. Short idle flickers no longer clobber a
+  legitimately running subagent's state.
+
+### Internal
+- New `SubagentSnapshot` type in `claude-transcript.ts` with fields for
+  id, parent id, depth, agent type, description, current tool, last
+  message, state, timestamps, and `firstOffset`.
+- `TailState` now carries `subagentMap` (id → snapshot) + `msgInfo`
+  (uuid → belongsTo + spawnedTasks) for main-thread sidechain
+  attribution.
+- New `scanBackgroundAgents(state)` helper reads the `subagents/`
+  directory on every tick, pairs `.jsonl` + `.meta.json`, and computes a
+  fresh `SubagentSnapshot` per agent. Deltas are diffed against the map
+  so unchanged agents don't trigger sidebar refreshes.
+- TranscriptTailer now owns a 3-second `setInterval` poll that calls
+  `readDelta` for every tracked session, specifically to pick up
+  background-agent file changes that `fs.watch` on the main jsonl
+  misses.
+- Sidebar: new `SubagentsFolderItem` (group header) and `SubagentTreeItem`
+  (leaf) classes in `sidebar/items.ts`. Tree provider's `getChildren`
+  branches on both to render the nested layout.
+
+### Known limitations
+- **Multi-Task messages in one assistant turn.** When a single message
+  spawns more than one synchronous `Task` at once (uncommon but supported
+  by the API), our parser attributes incoming sidechain messages to the
+  most recently unresolved Task from that parent. Final done/working
+  state remains correct because it relies on `tool_use_id` matching;
+  only interior activity attribution can shift between parallel siblings.
+- **Per-subagent cost breakdown** is not surfaced yet (roadmap v0.13).
+
 ## [0.11.0] — 2026-04-24
 
 Major productivity release. Highlights: Claude rendering fix is now automatic
