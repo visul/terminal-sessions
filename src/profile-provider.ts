@@ -110,12 +110,14 @@ export async function openTerminalForSession(
 
   let termName = name;
   let meta: SessionLabel | undefined;
+  let workspaceCwd: string | undefined = cwd;
   if (index) {
     const parsed = parseSessionName(name, cfg.sessionPrefix);
     if (parsed) {
       meta = index.getSessionMeta(parsed.hash, name);
       const ws = index.getWorkspace(parsed.hash);
       termName = displayName(meta?.label, ws?.label || parsed.hash, parsed.tabId);
+      if (!workspaceCwd && ws?.path) workspaceCwd = ws.path;
     }
   }
 

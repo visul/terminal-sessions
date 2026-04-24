@@ -99,14 +99,17 @@ export class SessionTreeItem extends vscode.TreeItem {
         : vscode.TreeItemCollapsibleState.Collapsed;
     }
     super(label, collapsible);
-    this.contextValue = 'session';
+    // contextValue drives view/item/context menus. Shapes like "session" and
+    // "session.muted" are matched by existing menus via =~ /^session/.
+    this.contextValue = session.muted ? 'session.muted' : 'session';
 
     const attachedHint = session.attached ? ' · attached' : '';
+    const mutedHint = session.muted ? ' · 🔕' : '';
     const claudeDesc = claude ? claudeStateDescription(claude, contextPctAlert) : undefined;
     const ageHint = humanAge(session.lastAttached);
     this.description = claudeDesc
-      ? `${claudeDesc}${attachedHint}`
-      : `${ageHint}${attachedHint}`;
+      ? `${claudeDesc}${attachedHint}${mutedHint}`
+      : `${ageHint}${attachedHint}${mutedHint}`;
 
     const customized = Boolean(session.icon || session.color || session.label);
     const claudeIcon = claude ? STATE_ICONS[claude.state] : '';

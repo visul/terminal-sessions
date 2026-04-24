@@ -12,6 +12,7 @@ export interface SessionInfo {
   lastActiveAt?: Date;
   sortOrder?: number;
   attached: boolean;
+  muted?: boolean;  // when true, notifications are suppressed for this session
 }
 
 export interface WorkspaceIndex {
@@ -33,6 +34,7 @@ export interface SessionLabel {
   createdAt: string;
   lastActiveAt?: string;
   sortOrder?: number;
+  muted?: boolean;   // when true, suppress Claude Stop/Waiting notifications for this session
 }
 
 export interface TmuxSessionRow {

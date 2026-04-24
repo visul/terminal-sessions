@@ -232,7 +232,18 @@ export class TranscriptTailer {
         + Number(msg.usage.cache_creation_input_tokens || 0);
       snap.currentContextTokens = ctx;
       if (ctx > snap.maxContextSeen) snap.maxContextSeen = ctx;
-      snap.currentContextLimit = snap.maxContextSeen > 200_000 ? 1_000_000 : 200_000;
+      // Context window inference:
+      //   (1) If we've directly observed a single turn > 200k tokens, we know
+      //       the session is running with the 1M-context beta header.
+      //   (2) Otherwise fall back to the model's STANDARD window. Opus and
+      //       Sonnet 4.5+ default to 1M with Claude Code Pro/Max (matches
+      //       what Claude's own status bar reports); older models stay 200k.
+      // Previously we only used (1), which overstated ctx % for fresh Opus
+      // sessions that hadn't yet crossed 200k in any single turn.
+      const modelStr = typeof msg.model === 'string' ? msg.model : '';
+      const is1MDefault = /claude-(opus|sonnet)-4-[5-9]/i.test(modelStr);
+      const fallbackLimit = is1MDefault ? 1_000_000 : 200_000;
+      snap.currentContextLimit = snap.maxContextSeen > 200_000 ? 1_000_000 : fallbackLimit;
     }
     const preview = extractText(msg.content);
     if (preview) {

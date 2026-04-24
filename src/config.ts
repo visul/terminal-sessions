@@ -7,6 +7,8 @@ export type ClaudeDetailsMode = 'auto' | 'always' | 'off';
 
 export const SORT_MODES: SidebarSortMode[] = ['custom', 'mru', 'created', 'alphabetical'];
 
+export type WaitingAlertStyle = 'banner' | 'alert';
+
 export interface Config {
   tmuxPath: string;
   sessionPrefix: string;
@@ -18,7 +20,10 @@ export interface Config {
   longRunThresholdSeconds: number;
   nativeNotifications: NativeNotifMode;
   notificationSound: string;
+  notificationSoundWaiting: string;
   notifyOnClaudeStop: boolean;
+  notifyOnClaudeWaiting: boolean;
+  waitingAlertStyle: WaitingAlertStyle;
   claudeStopMinDurationSeconds: number;
   autoResumeClaude: boolean;
   sidebarSortMode: SidebarSortMode;
@@ -42,7 +47,13 @@ export function getConfig(): Config {
     longRunThresholdSeconds: c.get('longRunThresholdSeconds', 30),
     nativeNotifications: c.get('nativeNotifications', 'auto') as NativeNotifMode,
     notificationSound: c.get('notificationSound', 'Glass'),
+    notificationSoundWaiting: c.get('notificationSoundWaiting', 'Sosumi'),
     notifyOnClaudeStop: c.get('notifyOnClaudeStop', true),
+    notifyOnClaudeWaiting: c.get('notifyOnClaudeWaiting', true),
+    waitingAlertStyle: ((): WaitingAlertStyle => {
+      const v = c.get<string>('waitingAlertStyle', 'banner');
+      return v === 'alert' ? 'alert' : 'banner';
+    })(),
     claudeStopMinDurationSeconds: c.get('claudeStopMinDurationSeconds', 15),
     autoResumeClaude: c.get('autoResumeClaude', false),
     sidebarSortMode: sortMode,
@@ -63,6 +74,11 @@ export const PROFILE_ID = 'terminalSessions.persistent';
 export const VIEW_ID = 'terminalSessions.sessions';
 
 export const COMMAND = {
+  toggleAllAlerts: 'terminalSessions.toggleAllAlerts',
+  alertsEnable: 'terminalSessions.alertsEnable',
+  alertsDisable: 'terminalSessions.alertsDisable',
+  muteSession: 'terminalSessions.muteSession',
+  unmuteSession: 'terminalSessions.unmuteSession',
   newPersistent: 'terminalSessions.newPersistent',
   newPersistentInFolder: 'terminalSessions.newPersistentInFolder',
   attachTo: 'terminalSessions.attachTo',

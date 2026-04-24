@@ -9,7 +9,7 @@ const execFileP = promisify(execFile);
 
 export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
 
-const CONF_VERSION = 'ts-tmux-conf-v2';
+const CONF_VERSION = 'ts-tmux-conf-v3';
 
 const DEFAULT_CONF = `# Terminal Sessions — tmux config (${CONF_VERSION})
 # Location: ~/.terminal-sessions/tmux.conf  (safe to edit; never overwritten on update)
@@ -37,6 +37,17 @@ set -g allow-passthrough on
 # Modern CSI-u extended-keys encoding (fixes Ctrl+Shift combos in Claude Code).
 set -g extended-keys on
 set -as terminal-features 'xterm*:extkeys'
+
+# ── Claude Code rendering (fullscreen + scroll-preserving mouse) ──────────
+# NO_FLICKER=1 puts Claude into alt-screen fullscreen mode so tmux scrollback
+# stays clean. DISABLE_MOUSE_CLICKS=1 (not DISABLE_MOUSE) routes clicks to tmux
+# while keeping scroll events inside Claude — trackpad can still scroll the
+# conversation view, but you can select panes normally. Without these, tmux
+# captures scroll and drops you into copy-mode (yellow [N/M] indicator) every
+# time you wheel up. set-environment -g applies to every new window/pane in
+# this tmux server; shells already running won't see the change until restart.
+set-environment -g CLAUDE_CODE_NO_FLICKER 1
+set-environment -g CLAUDE_CODE_DISABLE_MOUSE_CLICKS 1
 
 # ── Clipboard (OSC 52 — works in Cursor/VS Code/iTerm) ────────────────────
 set -g set-clipboard on

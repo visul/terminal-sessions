@@ -86,6 +86,18 @@ export class SessionIndex {
     this.save();
   }
 
+  setSessionMuted(hash: string, sessionName: string, muted: boolean): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (muted) ws.sessions[sessionName].muted = true;
+    else delete ws.sessions[sessionName].muted;
+    this.save();
+  }
+
+  isSessionMuted(hash: string, sessionName: string): boolean {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.muted === true;
+  }
+
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
@@ -164,6 +176,7 @@ export async function enrichSessions(
       lastActiveAt: meta?.lastActiveAt ? new Date(meta.lastActiveAt) : undefined,
       sortOrder: meta?.sortOrder,
       attached: row.attached,
+      muted: meta?.muted,
     });
   }
   out.sort((a, b) => {

@@ -1,9 +1,11 @@
+import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { COMMAND, getConfig, setSortMode, SidebarSortMode, SORT_MODES } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
-import { openTerminalForSession, metaIconAndColor } from './profile-provider';
+import { openTerminalForSession, findTerminalForSession, metaIconAndColor } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem } from './sidebar/items';
 import { refreshSidebar } from './sidebar/tree-provider';
@@ -12,6 +14,7 @@ import { maybeOfferRestore } from './restore';
 import { notify } from './notifications';
 import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInstalled } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
+import { transcriptPathFor } from './claude-transcript';
 
 async function requireTmux(): Promise<string | undefined> {
   const cfg = getConfig();
@@ -52,23 +55,67 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.testNotification, () => cmdTestNotification()),
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook()),
-    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, item)),
+    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
+    vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts()),
+    vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(true)),
+    vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
+    vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
+    vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
+  );
+
+  // Keep a VS Code context var in sync with the global alert setting so the
+  // view-title icon can toggle its appearance via "when" clauses.
+  const syncAlertsContext = () => {
+    const on = vscode.workspace.getConfiguration('terminalSessions').get<boolean>('notifyOnClaudeWaiting', true);
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.alertsEnabled', on);
+  };
+  syncAlertsContext();
+  ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
+    if (e.affectsConfiguration('terminalSessions.notifyOnClaudeWaiting')) syncAlertsContext();
+  }));
+}
+
+async function cmdSetAllAlerts(value?: boolean): Promise<void> {
+  const c = vscode.workspace.getConfiguration('terminalSessions');
+  const current = c.get<boolean>('notifyOnClaudeWaiting', true);
+  const next = value === undefined ? !current : value;
+  if (next === current) return;
+  await c.update('notifyOnClaudeWaiting', next, vscode.ConfigurationTarget.Global);
+  vscode.window.showInformationMessage(
+    `Claude waiting alerts ${next ? 'enabled' : 'disabled'} globally.`,
+  );
+}
+
+async function cmdSetSessionMuted(
+  index: SessionIndex,
+  item: SessionTreeItem | undefined,
+  muted: boolean,
+): Promise<void> {
+  if (!item) {
+    vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
+    return;
+  }
+  const name = item.session.name;
+  const parsed = parseSessionName(name, getConfig().sessionPrefix);
+  if (!parsed) return;
+  index.setSessionMuted(parsed.hash, name, muted);
+  refreshSidebar();
+  vscode.window.showInformationMessage(
+    `${item.session.label || name}: notifications ${muted ? 'muted' : 'unmuted'}.`,
   );
 }
 
 async function cmdFixClaudeRendering(): Promise<void> {
   const shell = process.env.SHELL || '';
-  const home = process.env.HOME || require('os').homedir();
-  const fs = require('fs');
-  const pathMod = require('path');
+  const home = process.env.HOME || os.homedir();
   const rcFile = shell.includes('zsh') ? '.zshrc'
     : shell.includes('bash') ? '.bashrc'
     : shell.includes('fish') ? '.config/fish/config.fish'
     : '.profile';
-  const rcPath = pathMod.join(home, rcFile);
+  const rcPath = path.join(home, rcFile);
   const isFish = rcFile.endsWith('config.fish');
 
   // DISABLE_MOUSE_CLICKS (not DISABLE_MOUSE): clicks go to tmux so you can
@@ -280,7 +327,11 @@ async function cmdPickSortMode(index: SessionIndex): Promise<void> {
   );
 }
 
-async function cmdRestart(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+async function cmdRestart(
+  index: SessionIndex,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem,
+): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
@@ -308,22 +359,69 @@ async function cmdRestart(index: SessionIndex, item?: SessionTreeItem): Promise<
   const meta = index.getSessionMeta(parsed.hash, name);
   const labelDisplay = meta?.label ? `"${meta.label}"` : `#${parsed.tabId}`;
 
+  // Detect Claude session so we can auto-resume the conversation after restart.
+  // Also verify the transcript file is still on disk — Claude prunes old
+  // transcripts and the tracker's map can hold stale entries.
+  let claudeSessionId = claudeTracker.getSessionId(name);
+  if (claudeSessionId) {
+    if (!fs.existsSync(transcriptPathFor(ws.path, claudeSessionId))) {
+      claudeSessionId = undefined; // stale — transcript was deleted
+    }
+  }
+  const claudeLine = claudeSessionId
+    ? `\n\nDetected Claude session ${claudeSessionId.slice(0, 8)}… — will auto-run "claude --resume" after restart.`
+    : '';
+
   const confirm = await vscode.window.showWarningMessage(
-    `Restart session ${labelDisplay}?\n\nKills the current tmux session (any running program in it, including Claude Code) and creates a fresh empty shell with the same name, workspace, icon, and color.`,
+    `Restart session ${labelDisplay}?\n\nKills the current tmux session (any running program in it, including Claude Code) and creates a fresh empty shell with the same name, workspace, icon, and color.${claudeLine}`,
     { modal: true }, 'Restart',
   );
   if (confirm !== 'Restart') return;
 
   try {
     await tmux.killSession(tmuxPath, name);
+    // Close the now-orphaned VS Code tab (the shell inside it sees its tmux
+    // session die and hangs on "process exited"). Without this, the next open
+    // finds the dead tab and any sendText goes nowhere. dispose() is sync on
+    // our side but the actual close fires onDidCloseTerminal async — wait for
+    // it (with a 500 ms ceiling) before creating the replacement.
+    const dead = findTerminalForSession(name);
+    if (dead) await disposeAndWait(dead, 500);
     // recordSession keeps existing label/icon/color; just ensures entry exists.
     index.recordSession(parsed.hash, name);
     await tmux.createDetachedSession(tmuxPath, name, ws.path);
-    await openTerminalForSession(name, ws.path, index);
+    const term = await openTerminalForSession(name, ws.path, index, true);
+    if (term && claudeSessionId) {
+      // Give the shell a moment to init (rc files, prompt) before sending
+      // the resume command. Heavy zshrc / oh-my-zsh setups need > 1 s.
+      await sleep(1500);
+      // Between openTerminalForSession() returning and now, the user may have
+      // closed the tab manually. Verify liveness before firing into the void.
+      if (vscode.window.terminals.includes(term)) {
+        try { term.sendText(`claude --resume ${claudeSessionId}`); }
+        catch (e) { console.error('[terminal-sessions] sendText failed:', e); }
+      }
+    }
     refreshSidebar();
   } catch (e) {
     vscode.window.showErrorMessage(`Restart failed: ${String(e).slice(0, 200)}`);
   }
+}
+
+/**
+ * Dispose a terminal and wait for its onDidCloseTerminal event (or timeout).
+ * VS Code's dispose() is synchronous on our side but the teardown + close
+ * event fire on a later tick; a subsequent createTerminal with the same name
+ * can race the tear-down if we don't wait.
+ */
+function disposeAndWait(term: vscode.Terminal, timeoutMs: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let done = false;
+    const finish = () => { if (done) return; done = true; sub.dispose(); clearTimeout(timer); resolve(); };
+    const sub = vscode.window.onDidCloseTerminal((t) => { if (t === term) finish(); });
+    const timer = setTimeout(finish, timeoutMs);
+    try { term.dispose(); } catch { finish(); }
+  });
 }
 
 async function cmdInstallClaudeHook(tracker: ClaudeTracker): Promise<void> {
@@ -450,6 +548,7 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
     name: termName,
     shellPath: tmuxPath,
     shellArgs: tmux.buildAttachOrCreateArgs(name, cwd),
+    cwd,
     iconPath: icon,
     color,
   });

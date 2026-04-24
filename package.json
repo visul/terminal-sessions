@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -118,6 +118,30 @@
           "type": "boolean",
           "default": true,
           "description": "Send a notification when Claude Code finishes a response. Requires Claude hook installed."
+        },
+        "terminalSessions.notifyOnClaudeWaiting": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send a notification when Claude Code blocks waiting for your permission (tool approval, risky command, etc.). Distinct sound from the `done` notification so you can tell them apart at a glance."
+        },
+        "terminalSessions.waitingAlertStyle": {
+          "type": "string",
+          "enum": ["banner", "alert"],
+          "enumDescriptions": [
+            "Banner notification that auto-dismisses after a few seconds (system default).",
+            "Persistent modal alert dialog in the macOS foreground with a `Show terminal` button. Blocks until you dismiss — use only if you miss the banners."
+          ],
+          "default": "banner",
+          "description": "How to surface Claude waiting-for-permission events."
+        },
+        "terminalSessions.notificationSoundWaiting": {
+          "type": "string",
+          "enum": [
+            "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero",
+            "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"
+          ],
+          "default": "Sosumi",
+          "description": "Sound for `Claude needs approval` waiting notifications. Defaults to Sosumi so it is distinct from the `done` sound."
         },
         "terminalSessions.claudeStopMinDurationSeconds": {
           "type": "number",
@@ -272,6 +296,30 @@
       {
         "command": "terminalSessions.fixClaudeRendering",
         "title": "Terminal Sessions: Fix Claude Code Rendering in Shell"
+      },
+      {
+        "command": "terminalSessions.toggleAllAlerts",
+        "title": "Terminal Sessions: Toggle Claude Waiting Alerts (Global)"
+      },
+      {
+        "command": "terminalSessions.alertsDisable",
+        "title": "Disable Claude Waiting Alerts",
+        "icon": "$(bell)"
+      },
+      {
+        "command": "terminalSessions.alertsEnable",
+        "title": "Enable Claude Waiting Alerts",
+        "icon": "$(bell-slash)"
+      },
+      {
+        "command": "terminalSessions.muteSession",
+        "title": "Mute Notifications",
+        "icon": "$(bell-slash)"
+      },
+      {
+        "command": "terminalSessions.unmuteSession",
+        "title": "Unmute Notifications",
+        "icon": "$(bell)"
       }
     ],
     "menus": {
@@ -301,63 +349,83 @@
           "command": "terminalSessions.refreshSidebar",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@3"
+        },
+        {
+          "command": "terminalSessions.alertsDisable",
+          "when": "view == terminalSessions.sessions && terminalSessions.alertsEnabled",
+          "group": "navigation@4"
+        },
+        {
+          "command": "terminalSessions.alertsEnable",
+          "when": "view == terminalSessions.sessions && !terminalSessions.alertsEnabled",
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
         {
           "command": "terminalSessions.preview",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "inline@1"
         },
         {
           "command": "terminalSessions.mirror",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "inline@2"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "inline@3"
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "inline@4"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "danger@0"
         },
         {
           "command": "terminalSessions.rename",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "edit@1"
         },
         {
           "command": "terminalSessions.setIcon",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "edit@2"
         },
         {
           "command": "terminalSessions.setColor",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "edit@3"
         },
         {
           "command": "terminalSessions.mirror",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@1"
         },
         {
           "command": "terminalSessions.preview",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@2"
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "danger@1"
+        },
+        {
+          "command": "terminalSessions.muteSession",
+          "when": "view == terminalSessions.sessions && viewItem == session",
+          "group": "edit@4"
+        },
+        {
+          "command": "terminalSessions.unmuteSession",
+          "when": "view == terminalSessions.sessions && viewItem == session.muted",
+          "group": "edit@4"
         }
       ]
     },

@@ -4,6 +4,153 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.11.0] — 2026-04-24
+
+Major productivity release. Highlights: Claude rendering fix is now automatic
+(no more manual shell setup), restart auto-resumes the Claude conversation,
+waiting-for-permission notifications land with their own sound and can be
+persistent, sidebar badge surfaces sessions that need attention, clicking a
+terminal tab reveals its row in the sidebar. Linux notification support added.
+
+### Added
+
+**Claude session management**
+- **Restart Session auto-resumes the Claude conversation.** When you restart a
+  session that had Claude running, the extension detects the Claude session ID
+  via the tracker and, after the fresh shell is ready, runs
+  `claude --resume <id>` automatically. The confirmation dialog tells you up
+  front: `Detected Claude session abc12345... will auto-run "claude --resume"
+  after restart.` Context survives, the Ink renderer starts clean. If the
+  transcript JSONL has been pruned from `~/.claude/projects/`, the extension
+  silently falls back to a plain shell instead of triggering Claude's
+  `No conversation found` error.
+- **Click terminal tab → reveal session in sidebar.** When you click any
+  `Terminal Sessions #N` tab in the VS Code terminal panel, the Terminal
+  Sessions sidebar now selects and highlights the matching row, auto-expanding
+  its workspace group. Bi-directional parity: click a row in the sidebar to
+  focus the terminal, click the terminal to locate the row.
+
+**Notifications**
+- **Claude Waiting notification.** Fires when Claude blocks for user permission
+  (tool approval, risky command, URL access). Separate sound from Stop (default
+  `Sosumi` vs `Glass`), `⚠ Claude needs approval` title, subtitle is the
+  session label. Configurable via `terminalSessions.notifyOnClaudeWaiting`,
+  `terminalSessions.notificationSoundWaiting`.
+- **Persistent waiting alerts** via `terminalSessions.waitingAlertStyle:
+  "alert"`. Instead of a 5-second banner, waiting events surface as a modal
+  dialog with a `Show terminal` button. Click → activates Cursor
+  (`open -a <appName>`) → focuses the matching terminal tab. macOS uses
+  `osascript display alert`; Linux uses `zenity --question` when installed,
+  falls back to a sticky `notify-send -u critical` banner otherwise.
+- **Global waiting-alerts on/off toggle.** Bell icon in the Terminal Sessions
+  sidebar title bar flips `notifyOnClaudeWaiting`. Icon animates between
+  `$(bell)` and `$(bell-slash)` based on state. Also available as
+  `Terminal Sessions: Toggle Claude Waiting Alerts (Global)` in the Command
+  Palette.
+- **Per-session mute.** Right-click a session → `Mute Notifications`. Both
+  Stop and Waiting events are silenced for that session until unmuted. Muted
+  sessions get a `🔕` suffix in the sidebar description.
+- **Activity bar badge.** Numeric badge on the Terminal Sessions activity
+  bar icon when Claude sessions need attention. `waiting` count takes priority
+  (user action pending) with tooltip
+  `N Claude sessions waiting for you`. Falls back to `working` count when no
+  waiting sessions; hidden when everything is idle.
+- **Linux native notifications.** `notify-send` from libnotify, with urgency
+  `critical` for warning-level events (sticky on most desktop environments).
+  `zenity` is used for modal alerts when available.
+- **Click-to-focus on macOS banners** via `terminal-notifier`. If
+  `brew install terminal-notifier` is present, notifications are posted through
+  it with `-activate <Cursor bundle id>`, so clicking a banner brings Cursor to
+  the foreground instead of Script Editor (the implicit owner of osascript
+  notifications). Without `terminal-notifier`, banners still work but click
+  bounces to Script Editor.
+
+### Changed
+
+**Zero-setup Claude rendering fix**
+- **Managed `~/.terminal-sessions/tmux.conf` bumped to v3.** The template now
+  emits `set-environment -g CLAUDE_CODE_NO_FLICKER 1` and
+  `set-environment -g CLAUDE_CODE_DISABLE_MOUSE_CLICKS 1`. Every new tmux
+  window inherits them, so Claude Code renders in alt-screen and trackpad
+  scroll stays inside the conversation view without any shell rc edit. Users
+  on v2 configs see a one-time upgrade toast; the previous config is backed
+  up with a timestamp suffix. Declining is remembered.
+- The `Terminal Sessions: Fix Claude Code Rendering in Shell` command from
+  v0.10 is still available for users who also run Claude outside tmux, but
+  most installs will never need it.
+
+**Minor polish**
+- **`Open in Integrated Terminal - Persistent` shows the real folder.** The
+  VS Code tab description now reflects the sub-folder you right-clicked
+  (e.g. `Store - Offers - From Sources & Networks`) instead of always showing
+  the workspace root (`Projects`). Parity with VS Code's native command.
+
+### Fixed
+
+- **Multiple sidebar rows mirroring the same Claude state.** When you ran
+  `claude --resume <id>` in several tmux tabs over time, the tracker map held
+  every old association. Triggering Claude in one tab lit up every tab that
+  had ever touched the conversation, with the same `working 3s, 33% ctx` state
+  on all of them. Now a new hook event transfers ownership: any other tmux
+  session that had the same Claude session ID is cleared from the map, and
+  only the most recent tab shows live state.
+- **Restart could send `claude --resume` into a dead tab.** After killing the
+  old tmux session, the VS Code tab sometimes outlived its shell (inner
+  process already exited). The follow-up `openTerminalForSession` returned the
+  dead tab instead of creating a new one, and `sendText` went nowhere. The
+  restart flow now disposes the stale tab through an `onDidCloseTerminal`
+  wait (with a 500 ms ceiling) before creating the replacement, checks
+  `vscode.window.terminals.includes(term)` right before firing the resume
+  command, and guards the call with try/catch.
+- **Stuck "working" state after Esc / cancel.** The previous heuristic
+  required a `[Request interrupted by user]` marker in the last user message.
+  When Claude was mid-stream and you hit Esc, the marker landed in the last
+  assistant message instead, leaving the state stuck. State transition is now
+  triggered by either marker location. For cases where Claude writes no
+  interrupt marker at all, a secondary heuristic based on transcript JSONL
+  file mtime drops to idle after 90 seconds of no writes — long-thinking
+  turns that legitimately produce chunks keep the file live and stay
+  `working` indefinitely.
+- **Context % inflated for fresh Opus 4.5+ sessions.** The limit used to be
+  assumed 200k until a single turn crossed it. Opus/Sonnet 4.5+ run under a
+  1M-context beta header by default, so short sessions that never crossed
+  200k were divided by the wrong denominator, reporting `~55% ctx` when
+  Claude's own status bar showed `11% ctx`. The context limit now defaults to
+  1M for Opus/Sonnet 4.5+ models regardless of observed max; falls back to
+  200k for older models unless a turn goes over.
+- **Stale tracker entries survived indefinitely.** When Claude Code pruned an
+  old transcript `.jsonl`, `~/.terminal-sessions/claude-map.json` still
+  referenced it. The sidebar and the restart dialog kept offering sessions
+  that Claude itself could no longer load, producing the
+  `No conversation found with session ID:` error. Entries whose transcripts
+  have disappeared are now treated as absent at read time.
+
+### Security
+- **Validation on hook-sourced input.** The `claude-hook.sh` log stream is
+  written by the extension's own hook but lives at
+  `~/.terminal-sessions/claude-events.log`; a crafted line could, in principle,
+  smuggle `../../` segments into downstream path joins. `sessionId` is now
+  matched against a UUID allowlist
+  (`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-…-[0-9a-fA-F]{12}`) before assignment, and
+  `cwd` is passed through `path.resolve` to collapse relative segments before
+  reaching `path.join`.
+
+### Internal
+- `cmdRestart` refactored to use a `disposeAndWait` helper that resolves on
+  the terminal's close event or a 500 ms timeout, replacing an opportunistic
+  `sleep(150)`.
+- `transcriptPathFor` from `claude-transcript.ts` is now the single source of
+  truth for JSONL path construction; the inline duplicate in `commands.ts`
+  was removed.
+- Top-level `import * as os/fs` replaces inline `require()` calls in
+  `commands.ts` for consistency with the rest of the source tree.
+- `void maybePromptInstallClaudeHook(ctx)` makes the fire-and-forget intent
+  explicit and satisfies floating-promise lint rules.
+- SessionTreeItem `contextValue` now encodes mute state (`session` vs
+  `session.muted`) so the view-item/context menu can show Mute vs Unmute
+  conditionally; all other existing menus use a regex `=~ /^session/` match
+  so they keep working regardless of mute state.
+
 ## [0.10.0] — 2026-04-24
 
 Claude Code rendering fixes in tmux. Background: Claude Code's Ink/React

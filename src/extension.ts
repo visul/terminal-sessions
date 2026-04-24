@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
 import { registerCommands } from './commands';
-import { registerSidebar, refreshSidebar } from './sidebar/tree-provider';
+import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
@@ -19,7 +19,7 @@ import { getConfig } from './config';
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const index = new SessionIndex();
-  const claudeTracker = new ClaudeTracker(ctx);
+  const claudeTracker = new ClaudeTracker(ctx, index);
   claudeTracker.start();
   ctx.subscriptions.push({ dispose: () => claudeTracker.dispose() });
 
@@ -31,7 +31,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerSidebar(ctx, index, claudeTracker);
 
   // Prompt once to install the Claude hook (remembers declination).
-  maybePromptInstallClaudeHook(ctx);
+  void maybePromptInstallClaudeHook(ctx);
 
   const statusBar = new StatusBar(index);
   statusBar.start();
@@ -54,6 +54,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       if (!parsed) return;
       index.setSessionLastActive(parsed.hash, name);
       if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
+      // Highlight the matching session in our sidebar so it's easy to locate
+      // when you have many terminal tabs open.
+      void revealSessionInSidebar(name);
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
@@ -110,7 +113,7 @@ async function maybePromptInstallClaudeHook(ctx: vscode.ExtensionContext): Promi
 async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void> {
   const { isConfOutOfDate, regenerateConf } = await import('./tmux');
   if (!isConfOutOfDate()) return;
-  const KEY = 'tmuxConfUpgradeDismissed-v2';
+  const KEY = 'tmuxConfUpgradeDismissed-v3';
   if (ctx.globalState.get(KEY)) return;
   setTimeout(async () => {
     const choice = await vscode.window.showInformationMessage(

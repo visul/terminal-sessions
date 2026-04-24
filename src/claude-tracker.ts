@@ -2,7 +2,13 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { notify } from './notifications';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { parseSessionName } from './workspace-id';
+import type { SessionIndex } from './session-manager';
+
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+import { notify, macosAlert, armToastAction } from './notifications';
 import { getConfig } from './config';
 import {
   TranscriptTailer,
@@ -62,6 +68,12 @@ const NOTIFY_COOLDOWN_MS = 5_000;
 // Sessions with no activity for this long are treated as 'idle' regardless of
 // their last observed tool-use state (handles crashes / missed Stop events).
 const STALE_TOOL_MS = 30 * 60 * 1000;
+// Working-state stale timeout. Shorter than tool because 'working' means
+// Claude is actively generating; if no tool call and no new assistant chunk
+// in this window, Claude is either done or the Stop hook was missed.
+// Common trigger: user hits Esc to cancel, and Claude exits without writing
+// an interrupt marker the tailer can pick up.
+const STALE_WORKING_MS = 2 * 60 * 1000;
 
 const HOOK_EVENTS = [
   'SessionStart',
@@ -77,14 +89,27 @@ export class ClaudeTracker {
   private map = new Map<string, ClaudeMapping>();        // tmuxSession → mapping
   private snapshots = new Map<string, ClaudeSnapshot>(); // tmuxSession → snapshot
   private lastNotifyPerWs = new Map<string, number>();
+  private lastWaitingNotifyPerSession = new Map<string, number>();
   private lastOffset = 0;
   private watcher: fs.FSWatcher | undefined;
   private transcript = new TranscriptTailer();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
 
-  constructor(private ctx: vscode.ExtensionContext) {
+  constructor(private ctx: vscode.ExtensionContext, private index?: SessionIndex) {
     this.transcript.onChange(() => this._onChange.fire());
+  }
+
+  /** Attach the session index post-construction (used when the index is built
+   *  after the tracker in the activation sequence). */
+  setIndex(index: SessionIndex): void { this.index = index; }
+
+  private isSessionMuted(tmuxSession: string): boolean {
+    if (!this.index) return false;
+    const cfg = getConfig();
+    const parsed = parseSessionName(tmuxSession, cfg.sessionPrefix);
+    if (!parsed) return false;
+    return this.index.isSessionMuted(parsed.hash, tmuxSession);
   }
 
   start(): void {
@@ -125,10 +150,29 @@ export class ClaudeTracker {
     if (!raw) return undefined;
     const snap: ClaudeSnapshot = { ...raw };
 
-    // Age-out stale 'tool' / 'working' states
-    if ((snap.state === 'tool' || snap.state === 'working') && snap.lastPromptAt) {
+    // Age-out stale 'tool' state with a long timeout — legitimate tools
+    // (builds, long tests) can run for many minutes.
+    if (snap.state === 'tool' && snap.lastPromptAt) {
       if (Date.now() - snap.lastPromptAt.getTime() > STALE_TOOL_MS) {
         snap.state = 'idle';
+      }
+    }
+    // 'working' stale detection uses the transcript file's mtime, not a
+    // fixed wall-clock timeout. Claude streams chunks into the jsonl on
+    // every reasoning/content step, so a live turn keeps bumping the file.
+    // If the file hasn't been written in 90 seconds, the Stop hook was
+    // probably missed (e.g. user hit Esc before Claude started responding)
+    // and we should not keep saying 'working' indefinitely. Long-thinking
+    // turns that actually ARE producing output still qualify as recent.
+    if (snap.state === 'working') {
+      const mapping = this.map.get(tmuxSession);
+      if (mapping?.transcriptPath) {
+        try {
+          const mtime = fs.statSync(mapping.transcriptPath).mtimeMs;
+          if (Date.now() - mtime > 90_000) {
+            snap.state = 'idle';
+          }
+        } catch { /* transcript gone — leave state as-is */ }
       }
     }
 
@@ -156,7 +200,13 @@ export class ClaudeTracker {
         // whether it's still running or finished).
         const tu = t.lastUserMessageAt?.getTime() || 0;
         const ta = t.lastAssistantMessageAt?.getTime() || 0;
-        const interruptMarker = t.lastUserMessage?.includes('[Request interrupted by user]');
+        // Claude Code writes `[Request interrupted by user]` to the transcript
+        // on Esc. Depending on timing, it can land as the last user message
+        // (Esc while Claude was still thinking) or buried in the partial
+        // assistant reply (Esc mid-stream). Check both.
+        const interruptMarker =
+          t.lastUserMessage?.includes('[Request interrupted by user]') ||
+          t.lastAssistantMessage?.includes('[Request interrupted by user]');
 
         if (snap.state !== 'tool' && snap.state !== 'waiting') {
           if (interruptMarker) {
@@ -274,11 +324,31 @@ export class ClaudeTracker {
     const tsMs = (e.ts || Math.floor(Date.now() / 1000)) * 1000;
     const snap = this.snapshots.get(e.tmuxSession) ?? ({ state: 'none' } as ClaudeSnapshot);
 
+    // Validate untrusted hook-sourced fields before feeding them to path joins
+    // or the snapshot. sessionId is a Claude UUID — reject anything else so
+    // a malformed log line can't smuggle `../../foo` into transcript paths.
+    if (e.sessionId && !UUID_RE.test(e.sessionId)) return false;
+    if (e.cwd) e.cwd = path.resolve(e.cwd); // collapses any `..` segments
+
     // Always update sessionId + transcript if we have one
     if (e.sessionId) {
       snap.sessionId = e.sessionId;
       if (e.transcriptPath || e.cwd) {
         const tp = e.transcriptPath || transcriptPathFor(e.cwd, e.sessionId);
+        // A Claude sessionId can only be "live" in one tmux session at a time.
+        // If the user ran `claude --resume <id>` in a different tmux tab later,
+        // transfer ownership: clear any OTHER tmux sessions that had this id
+        // so the sidebar doesn't show N tabs all mirroring the same state.
+        for (const [otherTmux, entry] of this.map.entries()) {
+          if (otherTmux !== e.tmuxSession && entry.sessionId === e.sessionId) {
+            this.map.delete(otherTmux);
+            const otherSnap = this.snapshots.get(otherTmux);
+            if (otherSnap && otherSnap.sessionId === e.sessionId) {
+              otherSnap.sessionId = undefined;
+              otherSnap.state = 'none';
+            }
+          }
+        }
         this.map.set(e.tmuxSession, {
           sessionId: e.sessionId,
           cwd: e.cwd,
@@ -315,6 +385,7 @@ export class ClaudeTracker {
         break;
       case 'Notification':
         snap.state = 'waiting';
+        this.triggerWaitingNotify(e, tsMs);
         break;
       case 'Stop':
         snap.state = 'idle';
@@ -339,6 +410,7 @@ export class ClaudeTracker {
   private triggerStopNotify(e: ClaudeEvent, tsMs: number): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
+    if (this.isSessionMuted(e.tmuxSession)) return;
 
     // Skip sub-second Stops (Claude often fires on very quick turns)
     const prev = this.snapshots.get(e.tmuxSession);
@@ -357,6 +429,71 @@ export class ClaudeTracker {
       subtitle: label,
       body: 'Ready for your next prompt',
     });
+  }
+
+  private triggerWaitingNotify(e: ClaudeEvent, _tsMs: number): void {
+    const cfg = getConfig();
+    if (!cfg.notifyOnClaudeWaiting) return;
+    if (this.isSessionMuted(e.tmuxSession)) return;
+
+    // Cooldown per-session so a rapid toggle doesn't spam multiple alerts.
+    const last = this.lastWaitingNotifyPerSession.get(e.tmuxSession) || 0;
+    if (Date.now() - last < NOTIFY_COOLDOWN_MS) return;
+    this.lastWaitingNotifyPerSession.set(e.tmuxSession, Date.now());
+
+    const label = path.basename(e.cwd || '') || 'Claude';
+    const tmuxSession = e.tmuxSession;
+
+    if (cfg.waitingAlertStyle === 'alert' && process.platform === 'darwin') {
+      // Modal dialog (persistent until user clicks a button).
+      void (async () => {
+        const clicked = await macosAlert({
+          title: 'Claude needs approval',
+          message: `Session: ${label}\n\nClick "Show terminal" to jump to it.`,
+          primaryButton: 'Show terminal',
+          secondaryButton: 'Dismiss',
+        });
+        if (clicked === 'Show terminal') {
+          // Focus the IDE window first — osascript's alert is parented to
+          // Script Editor, so after the button click macOS keeps focus there
+          // unless we explicitly activate our app. `open -a <appName>` raises
+          // Cursor/VS Code regardless of the previous frontmost app.
+          try {
+            await promisify(execFile)('/usr/bin/open', ['-a', vscode.env.appName]);
+          } catch { /* best effort */ }
+          // Then focus the matching terminal tab inside the IDE.
+          try {
+            for (const t of vscode.window.terminals) {
+              const opts = t.creationOptions;
+              const args = (opts as vscode.TerminalOptions)?.shellArgs;
+              const argList = Array.isArray(args) ? args : args ? [args] : [];
+              if (argList.includes(tmuxSession)) { t.show(); break; }
+            }
+          } catch { /* best effort */ }
+        }
+      })();
+    } else {
+      // Banner notification with the distinct sound.
+      // On remote extension hosts the banner is delivered as a VS Code
+      // warning toast (since osascript/notify-send on remote can't reach
+      // the user). Arm a one-shot "Show terminal" action so the click
+      // focuses the session — parity with the local modal-alert path.
+      armToastAction('Show terminal', () => {
+        for (const t of vscode.window.terminals) {
+          const opts2 = t.creationOptions;
+          const args = (opts2 as vscode.TerminalOptions)?.shellArgs;
+          const argList = Array.isArray(args) ? args : args ? [args] : [];
+          if (argList.includes(tmuxSession)) { t.show(); break; }
+        }
+      });
+      void notify({
+        title: '⚠ Claude needs approval',
+        subtitle: label,
+        body: 'Waiting for your input',
+        sound: cfg.notificationSoundWaiting,
+        level: 'warning',
+      });
+    }
   }
 }
 

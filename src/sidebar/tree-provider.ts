@@ -57,6 +57,12 @@ class SessionsTreeProvider
   readonly dragMimeTypes = [DRAG_MIME];
   readonly dropMimeTypes = [DRAG_MIME];
 
+  // Track the last rendered items so treeView.reveal() can be fed the exact
+  // element instance VS Code has in the tree (reveal requires identity
+  // equality, not just a fresh item with the same contents).
+  private lastWorkspaceItems = new Map<string, WorkspaceTreeItem>();
+  private lastSessionItems = new Map<string, SessionTreeItem>();
+
   constructor(
     private index: SessionIndex,
     private claude: ClaudeTracker,
@@ -65,6 +71,18 @@ class SessionsTreeProvider
   refresh(): void { this._onDidChange.fire(undefined); }
 
   getTreeItem(el: vscode.TreeItem): vscode.TreeItem { return el; }
+
+  /** Required for treeView.reveal() to work on nested items. */
+  getParent(el: vscode.TreeItem): vscode.TreeItem | undefined {
+    if (el instanceof SessionTreeItem) {
+      return this.lastWorkspaceItems.get(el.session.workspaceHash);
+    }
+    return undefined;
+  }
+
+  getLastSessionItem(name: string): SessionTreeItem | undefined {
+    return this.lastSessionItems.get(name);
+  }
 
   async getChildren(el?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     const cfg = getConfig();
@@ -78,6 +96,8 @@ class SessionsTreeProvider
     const sessions = await enrichSessions(tmuxPath, cfg.sessionPrefix, this.index);
     if (!el) {
       if (sessions.length === 0) {
+        this.lastWorkspaceItems.clear();
+        this.lastSessionItems.clear();
         const item = new vscode.TreeItem('No persistent sessions yet.',
           vscode.TreeItemCollapsibleState.None);
         item.description = 'Click + to create one';
@@ -85,20 +105,27 @@ class SessionsTreeProvider
       }
       const grouped = groupByWorkspace(sessions);
       const out: vscode.TreeItem[] = [];
+      this.lastWorkspaceItems.clear();
       for (const [hash, group] of grouped) {
         const ordered = sortSessions(group, cfg.sidebarSortMode);
         const wsPath = ordered[0].workspacePath;
-        out.push(new WorkspaceTreeItem(ordered[0].workspaceLabel, hash, ordered, wsPath));
+        const wsItem = new WorkspaceTreeItem(ordered[0].workspaceLabel, hash, ordered, wsPath);
+        this.lastWorkspaceItems.set(hash, wsItem);
+        out.push(wsItem);
       }
       return out;
     }
     if (el instanceof WorkspaceTreeItem) {
-      return el.sessions.map(s => new SessionTreeItem(
-        s,
-        this.claude.getSnapshot(s.name),
-        cfg.claudeSidebarDetails,
-        cfg.contextWarnPct,
-      ));
+      return el.sessions.map(s => {
+        const item = new SessionTreeItem(
+          s,
+          this.claude.getSnapshot(s.name),
+          cfg.claudeSidebarDetails,
+          cfg.contextWarnPct,
+        );
+        this.lastSessionItems.set(s.name, item);
+        return item;
+      });
     }
     if (el instanceof SessionTreeItem) {
       const snap = el.claude;
@@ -197,9 +224,73 @@ export function registerSidebar(
     dragAndDropController: provider,
   });
   ctx.subscriptions.push(treeView);
-  ctx.subscriptions.push(claude.onChange(() => provider?.refresh()));
-  const interval = setInterval(() => provider?.refresh(), 10_000);
+  treeViewRef = treeView;
+
+  // Activity-bar badge: surfaces Claude sessions that need user attention
+  // (waiting = Claude paused for approval; working = actively generating).
+  // Waiting is more urgent, so we show waiting count first; if none, show
+  // working count; if neither, remove the badge.
+  const updateBadge = (): void => {
+    let waiting = 0;
+    let working = 0;
+    for (const ws of Object.values(index.getAllWorkspaces())) {
+      for (const name of Object.keys(ws.sessions)) {
+        const snap = claude.getSnapshot(name);
+        if (!snap) continue;
+        if (snap.state === 'waiting') waiting++;
+        else if (snap.state === 'working' || snap.state === 'tool') working++;
+      }
+    }
+    if (waiting > 0) {
+      treeView.badge = {
+        value: waiting,
+        tooltip: `${waiting} Claude session${waiting === 1 ? '' : 's'} waiting for you`,
+      };
+    } else if (working > 0) {
+      treeView.badge = {
+        value: working,
+        tooltip: `${working} Claude session${working === 1 ? '' : 's'} working`,
+      };
+    } else {
+      treeView.badge = undefined;
+    }
+  };
+
+  ctx.subscriptions.push(claude.onChange(() => {
+    provider?.refresh();
+    updateBadge();
+  }));
+  const interval = setInterval(() => {
+    provider?.refresh();
+    updateBadge();
+  }, 10_000);
   ctx.subscriptions.push({ dispose: () => clearInterval(interval) });
+  updateBadge();
 }
 
 export function refreshSidebar(): void { provider?.refresh(); }
+
+let treeViewRef: vscode.TreeView<vscode.TreeItem> | undefined;
+
+/** Select and scroll to a session in the sidebar by tmux session name. */
+export async function revealSessionInSidebar(sessionName: string): Promise<void> {
+  if (!provider || !treeViewRef) return;
+  // Ensure the tree has been rendered at least once for this element.
+  let item = provider.getLastSessionItem(sessionName);
+  if (!item) {
+    // Force a render by asking for roots, then re-check.
+    await provider.getChildren();
+    const roots = await provider.getChildren();
+    for (const r of roots) {
+      // Expand each workspace child to populate session map.
+      // getChildren(workspaceItem) renders its sessions.
+      // eslint-disable-next-line no-await-in-loop
+      await provider.getChildren(r);
+    }
+    item = provider.getLastSessionItem(sessionName);
+  }
+  if (!item) return;
+  try {
+    await treeViewRef.reveal(item, { select: true, focus: false, expand: false });
+  } catch { /* reveal can throw if the item is stale — ignore */ }
+}
