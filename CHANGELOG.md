@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.7] — 2026-05-24
+
+### Added
+- **Post-reboot restore auto-resumes Claude per session.** Previously `maybeOfferRestore` recreated the tmux sessions and attached terminals but refused to inject `claude --resume <id>` ("never inject commands into the terminal automatically") — only a generic toast hint with a single workspace-wide most-recent session id. So a system reboot lost every per-tmux Claude link, even though the data was tracked. The restore now uses the same lookup chain as `cmdStart`: live tracker -> `meta.lastClaudeSessionId` -> transcript existence check against `meta.folderPath`. Per-session resume commands are batched after a single 1.5s shell-init wait, so a 16-session restore takes ~2s total instead of ~24s. Sessions without a tracked Claude id just attach to a fresh shell, same as before.
+
 ## [0.13.6] — 2026-05-24
 
 ### Fixed

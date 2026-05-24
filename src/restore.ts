@@ -11,6 +11,9 @@ import { openTerminalForSession } from './profile-provider';
 import { sleep } from './util';
 import { SessionLabel } from './types';
 import { ClaudeTracker } from './claude-tracker';
+import { transcriptPathFor } from './claude-transcript';
+
+const SHELL_INIT_DELAY_MS = 1500;
 
 interface Candidate {
   sessionName: string;
@@ -34,7 +37,7 @@ const EMPTY: RestoreResult = { ran: false, recreated: 0, attached: 0 };
  */
 export async function maybeOfferRestore(
   index: SessionIndex,
-  _claudeTracker?: ClaudeTracker,
+  claudeTracker?: ClaudeTracker,
 ): Promise<RestoreResult> {
   const cfg = getConfig();
   if (cfg.autoRestore === 'off') return EMPTY;
@@ -96,6 +99,10 @@ export async function maybeOfferRestore(
   let recreated = 0;
   let attached = 0;
   let failed = 0;
+  // Collect resume commands so we can fire them in a single batch after the
+  // 1.5s shell-init wait. Doing it per-session would be 16 * 1.5s = 24s on a
+  // big workspace; batching keeps it to ~1.5s total.
+  const resumes: Array<{ term: vscode.Terminal; sessionId: string; label: string }> = [];
 
   for (const c of toRecreate) {
     try {
@@ -106,6 +113,22 @@ export async function maybeOfferRestore(
       recreated++;
       const term = await openTerminalForSession(c.sessionName, cwd, index);
       if (term) attached++;
+      // Pre-pull the Claude resume id, mirroring cmdStart's logic so reboot
+      // recovery and Stop->Start behave the same. Prefer live tracker (rare
+      // post-reboot since the in-memory map is empty), then the persisted
+      // index. Transcript existence check uses the session's folder path —
+      // subfolder sessions write to a different Claude project directory.
+      let claudeSessionId: string | undefined;
+      if (term) {
+        claudeSessionId = claudeTracker?.getSessionId(c.sessionName)
+          || c.meta.lastClaudeSessionId;
+        if (claudeSessionId && !fs.existsSync(transcriptPathFor(cwd, claudeSessionId))) {
+          claudeSessionId = undefined;
+        }
+        if (claudeSessionId) {
+          resumes.push({ term, sessionId: claudeSessionId, label: c.label });
+        }
+      }
       await sleep(150);
     } catch (e) {
       console.error('[terminal-sessions] recreate failed:', c.sessionName, e);
@@ -113,12 +136,26 @@ export async function maybeOfferRestore(
     }
   }
 
-  // Never inject commands into the terminal automatically. Show a hint so the
-  // user can run `claude --resume <id>` themselves if they want.
-  const hint = claudeResumeHint(wsEntry.path);
+  // Auto-fire `claude --resume <id>` per recreated session. Batched after one
+  // shell-init wait so heavy zsh rc files have time to finish before sendText
+  // lands in a prompt that actually reads it.
+  let resumed = 0;
+  if (resumes.length > 0) {
+    await sleep(SHELL_INIT_DELAY_MS);
+    for (const r of resumes) {
+      if (!vscode.window.terminals.includes(r.term)) continue;
+      try {
+        r.term.sendText(`claude --resume ${r.sessionId}`);
+        resumed++;
+      } catch (e) {
+        console.error('[terminal-sessions] resume sendText failed:', r.label, e);
+      }
+    }
+  }
+
   const summary = `Restored ${attached}/${recreated} session${recreated === 1 ? '' : 's'}` +
     (failed > 0 ? ` (${failed} failed)` : '') +
-    (hint ? `\n\n${hint}` : '');
+    (resumed > 0 ? ` · auto-resumed Claude in ${resumed}` : '');
   vscode.window.showInformationMessage(summary);
   refreshSidebar();
   return { ran: true, recreated, attached };
