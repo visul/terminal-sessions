@@ -259,10 +259,27 @@ export class ClaudeTracker {
               snap.lastStopAt = t.lastUserMessageAt;
             }
           } else if (tu > 0 && tu > ta) {
-            // User is waiting for Claude — working
-            snap.state = 'working';
-            if (!snap.lastPromptAt || snap.lastPromptAt.getTime() < tu) {
-              snap.lastPromptAt = t.lastUserMessageAt;
+            // User message is the most recent activity. Two distinct shapes:
+            //  - Live prompt: user just typed, Claude is about to start →
+            //    keep `working` until Claude writes an assistant chunk
+            //    (transcript mtime stays fresh) or a Stop hook clears it.
+            //  - Slash command without an assistant reply: `/compact`,
+            //    `/clear`, custom skill macros that land as the final user
+            //    line in the JSONL with no new assistant block — `tu > ta`
+            //    holds forever and would otherwise stick the row on working.
+            // Disambiguate by the same mtime freshness used in the assistant
+            // branch — if the transcript hasn't been touched in 30s, the
+            // prompt is old and Claude is done (or never produced a reply).
+            if (transcriptIsFresh) {
+              snap.state = 'working';
+              if (!snap.lastPromptAt || snap.lastPromptAt.getTime() < tu) {
+                snap.lastPromptAt = t.lastUserMessageAt;
+              }
+            } else {
+              snap.state = 'idle';
+              if (!snap.lastStopAt || snap.lastStopAt.getTime() < tu) {
+                snap.lastStopAt = t.lastUserMessageAt;
+              }
             }
           } else if (ta > 0 && ta >= tu) {
             // Assistant activity newer than the user message. We can't tell

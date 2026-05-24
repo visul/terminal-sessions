@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.3] — 2026-05-24
+
+### Fixed
+- **`/clear` and `/compact` no longer leave the sidebar stuck on ⟳ working.** When the user runs a slash command that lands as the final user line in the JSONL without a follow-up assistant block (`/clear`, `/compact`, custom skill macros), `lastUserMessageAt > lastAssistantMessageAt` holds forever and the transcript-tailer was forcing `state = working` on every refresh. The same mtime freshness check used in the assistant branch now gates the user-newer branch too — if the transcript hasn't been touched in 30s, the slash-command prompt is old and the row falls back to `idle`.
+- **Reattaching a session created in a subfolder no longer creates a tab that looks like a duplicate.** `openTerminalForSession` was ignoring the session's persisted `folderPath` and passing `cwd: undefined` to `vscode.window.createTerminal`, so VS Code grouped the reattach under the workspace root instead of the original subfolder — making the tab look like a separate "Projects"-grouped duplicate of the original "__DPF_DB"-grouped one. The function now resolves `cwd` to `meta.folderPath` first, falling back to the workspace path, so reattached terminals stay grouped with their originals.
+
 ## [0.13.2] — 2026-05-24
 
 ### Fixed

@@ -136,14 +136,21 @@ export async function openTerminalForSession(
 
   let termName = name;
   let meta: SessionLabel | undefined;
-  let workspaceCwd: string | undefined = cwd;
+  // Resolve the cwd VS Code should label the terminal with. Tmux remembers
+  // its own working directory regardless of what we pass — but VS Code's
+  // terminal panel groups tabs by this `cwd`, so passing the session's
+  // original folder (the subfolder it was created in via right-click → New
+  // Persistent in Folder) keeps reattached terminals visually grouped with
+  // their originals instead of drifting to the workspace root and looking
+  // like a duplicate.
+  let resolvedCwd: string | undefined = cwd;
   if (index) {
     const parsed = parseSessionName(name, cfg.sessionPrefix);
     if (parsed) {
       meta = index.getSessionMeta(parsed.hash, name);
       const ws = index.getWorkspace(parsed.hash);
       termName = displayName(meta?.label, ws?.label || parsed.hash, parsed.tabId);
-      if (!workspaceCwd && ws?.path) workspaceCwd = ws.path;
+      if (!resolvedCwd) resolvedCwd = meta?.folderPath || ws?.path;
     }
   }
 
@@ -151,7 +158,7 @@ export async function openTerminalForSession(
     name: termName,
     shellPath: tmuxPath,
     shellArgs: tmux.buildAttachArgs(name),
-    cwd,
+    cwd: resolvedCwd,
     iconPath: iconFromMeta(meta),
     color: colorFromMeta(meta),
   });
