@@ -107,6 +107,39 @@ export class SessionTreeItem extends vscode.TreeItem {
         : vscode.TreeItemCollapsibleState.Collapsed;
     }
     super(label, collapsible);
+    // Stopped session: muted icon + greyed label via FileDecorationProvider,
+    // single-click row to start, no Claude details (process is dead).
+    if (session.stopped) {
+      this.contextValue = 'session.stopped';
+      this.iconPath = new vscode.ThemeIcon(
+        'debug-stop',
+        new vscode.ThemeColor('disabledForeground'),
+      );
+      const ageHint = humanAge(session.lastAttached);
+      this.description = `stopped · idle ${ageHint}`;
+      this.collapsibleState = vscode.TreeItemCollapsibleState.None;
+      this.resourceUri = vscode.Uri.parse(
+        `terminal-sessions-stopped:${encodeURIComponent(session.name)}`,
+      );
+      const displayHeader = session.label || `Session #${session.tabId}`;
+      const parts = [
+        `**${displayHeader}** _(stopped)_`,
+        `ID: \`${session.name}\``,
+        `Workspace: \`${session.workspacePath || session.workspaceLabel}\``,
+        `Created: ${session.createdAt.toLocaleString()}`,
+      ];
+      if (claude?.sessionId) {
+        parts.push(`Last Claude session: \`${claude.sessionId.slice(0, 8)}…\` (will auto-resume on Start)`);
+      }
+      parts.push(`Click to start.`);
+      this.tooltip = new vscode.MarkdownString(parts.join('\n\n'));
+      this.command = {
+        command: 'terminalSessions.start',
+        title: 'Start',
+        arguments: [this],
+      };
+      return;
+    }
     // contextValue drives view/item/context menus. Shapes like "session" and
     // "session.muted" are matched by existing menus via =~ /^session/.
     this.contextValue = session.muted ? 'session.muted' : 'session';

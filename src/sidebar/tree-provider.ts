@@ -8,6 +8,18 @@ import { ClaudeTracker } from '../claude-tracker';
 
 const DRAG_MIME = 'application/vnd.code.tree.terminalsessions';
 
+const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
+
+class StoppedSessionDecorationProvider implements vscode.FileDecorationProvider {
+  provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    if (uri.scheme !== STOPPED_URI_SCHEME) return undefined;
+    return {
+      color: new vscode.ThemeColor('disabledForeground'),
+      tooltip: 'Stopped',
+    };
+  }
+}
+
 function sortSessions(group: SessionInfo[], mode: SidebarSortMode): SessionInfo[] {
   const list = [...group];
   switch (mode) {
@@ -286,6 +298,9 @@ export function registerSidebar(
     dragAndDropController: provider,
   });
   ctx.subscriptions.push(treeView);
+  ctx.subscriptions.push(
+    vscode.window.registerFileDecorationProvider(new StoppedSessionDecorationProvider()),
+  );
   treeViewRef = treeView;
 
   // Activity-bar badge: surfaces Claude sessions that need user attention
