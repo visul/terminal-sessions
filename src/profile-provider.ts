@@ -83,11 +83,32 @@ export function sessionNameForTerminal(t: vscode.Terminal): string | undefined {
   return args[nameIdx];
 }
 
+/**
+ * Locate the VS Code terminal currently bound to a tmux session.
+ * Two-stage match:
+ *  1. shellArgs contain the tmux name after `-s` / `-t` (primary, exact)
+ *  2. terminal name ends with `#<tabId>` (fallback for terminals VS Code
+ *     restored across window reloads where creationOptions are trimmed)
+ * Within each stage, prefer a live terminal over an exited one so we
+ * never reattach to a "process exited" ghost when a working tab exists.
+ */
 export function findTerminalForSession(name: string): vscode.Terminal | undefined {
+  const byArgs: vscode.Terminal[] = [];
   for (const t of vscode.window.terminals) {
-    if (sessionNameForTerminal(t) === name) return t;
+    if (sessionNameForTerminal(t) === name) byArgs.push(t);
   }
-  return undefined;
+  const live = byArgs.find(t => !t.exitStatus);
+  if (live) return live;
+  if (byArgs.length > 0) return byArgs[0];
+
+  const m = /-(\d+)$/.exec(name);
+  if (!m) return undefined;
+  const suffix = '#' + m[1];
+  const byName: vscode.Terminal[] = [];
+  for (const t of vscode.window.terminals) {
+    if (t.name && t.name.endsWith(suffix)) byName.push(t);
+  }
+  return byName.find(t => !t.exitStatus) ?? byName[0];
 }
 
 export async function openTerminalForSession(
@@ -98,9 +119,14 @@ export async function openTerminalForSession(
 ): Promise<vscode.Terminal | undefined> {
   if (!forceNew) {
     const existing = findTerminalForSession(name);
-    if (existing) {
+    if (existing && !existing.exitStatus) {
       existing.show();
       return existing;
+    }
+    // A "process exited" ghost (yellow ⚠ in the picker) — dispose it so
+    // the user doesn't end up with both the dead pane and a live one.
+    if (existing) {
+      try { existing.dispose(); } catch { /* already gone */ }
     }
   }
 

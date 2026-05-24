@@ -35,6 +35,11 @@ export interface SessionLabel {
   lastActiveAt?: string;
   sortOrder?: number;
   muted?: boolean;   // when true, suppress Claude Stop/Waiting notifications for this session
+  // Original cwd the session was created in. Differs from the workspace root
+  // when the session was started from a subfolder (right-click → New Persistent
+  // in Folder). Persisted so Restart re-creates tmux in the SAME folder, not
+  // the VS Code workspace root.
+  folderPath?: string;
 }
 
 export interface TmuxSessionRow {

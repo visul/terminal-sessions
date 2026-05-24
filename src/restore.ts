@@ -98,9 +98,12 @@ export async function maybeOfferRestore(
 
   for (const c of toRecreate) {
     try {
-      await tmux.createDetachedSession(tmuxPath, c.sessionName, wsEntry.path);
+      // Honor per-session folderPath when set (subfolder sessions). Fall back
+      // to the workspace root for plain workspace-level sessions.
+      const cwd = c.meta.folderPath || wsEntry.path;
+      await tmux.createDetachedSession(tmuxPath, c.sessionName, cwd);
       recreated++;
-      const term = await openTerminalForSession(c.sessionName, wsEntry.path, index);
+      const term = await openTerminalForSession(c.sessionName, cwd, index);
       if (term) attached++;
       await sleep(150);
     } catch (e) {

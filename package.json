@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.12.3",
+  "version": "0.12.5",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -334,6 +334,14 @@
       {
         "command": "terminalSessions.toggleShowCompletedSubagents",
         "title": "Terminal Sessions: Toggle Show Completed Subagents"
+      },
+      {
+        "command": "terminalSessions.revealSelectionInFinder",
+        "title": "Reveal in Finder"
+      },
+      {
+        "command": "terminalSessions.revealSelectionInExplorer",
+        "title": "Reveal in Explorer"
       }
     ],
     "menus": {
@@ -341,6 +349,16 @@
         {
           "command": "terminalSessions.newPersistentInFolder",
           "group": "navigation"
+        }
+      ],
+      "terminal/context": [
+        {
+          "command": "terminalSessions.revealSelectionInFinder",
+          "group": "navigation@10"
+        },
+        {
+          "command": "terminalSessions.revealSelectionInExplorer",
+          "group": "navigation@11"
         }
       ],
       "view/title": [

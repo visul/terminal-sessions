@@ -400,6 +400,20 @@ async function cmdRestart(
   const meta = index.getSessionMeta(parsed.hash, name);
   const labelDisplay = meta?.label ? `"${meta.label}"` : `#${parsed.tabId}`;
 
+  // Resolve the cwd to re-create the tmux session in.
+  // Priority: stored folderPath → live tmux session_path → workspace root.
+  // The live read backfills folderPath for sessions created before this
+  // field existed, so a single restart "self-heals" old index entries.
+  let restartCwd = meta?.folderPath || '';
+  if (!restartCwd) {
+    const live = await tmux.getSessionPath(tmuxPath, name);
+    if (live) {
+      restartCwd = live;
+      index.setSessionFolderPath(parsed.hash, name, live);
+    }
+  }
+  if (!restartCwd) restartCwd = ws.path;
+
   // Detect Claude session so we can auto-resume the conversation after restart.
   // Also verify the transcript file is still on disk — Claude prunes old
   // transcripts and the tracker's map can hold stale entries.
@@ -430,8 +444,8 @@ async function cmdRestart(
     if (dead) await disposeAndWait(dead, 500);
     // recordSession keeps existing label/icon/color; just ensures entry exists.
     index.recordSession(parsed.hash, name);
-    await tmux.createDetachedSession(tmuxPath, name, ws.path);
-    const term = await openTerminalForSession(name, ws.path, index, true);
+    await tmux.createDetachedSession(tmuxPath, name, restartCwd);
+    const term = await openTerminalForSession(name, restartCwd, index, true);
     if (term && claudeSessionId) {
       // Give the shell a moment to init (rc files, prompt) before sending
       // the resume command. Heavy zshrc / oh-my-zsh setups need > 1 s.
@@ -581,7 +595,10 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
   index.recordWorkspace(wsHash, wsPath, wsLabel);
   const tabId = index.getNextTabId(wsHash, cfg.sessionPrefix);
   const name = buildSessionName(cfg.sessionPrefix, wsHash, tabId);
-  index.recordSession(wsHash, name, folderLabel);
+  // Persist folderPath only when it differs from the workspace root so a
+  // simple "new session in workspace" still inherits future workspace renames.
+  const folderPathToStore = cwd !== wsPath ? cwd : undefined;
+  index.recordSession(wsHash, name, folderLabel, folderPathToStore);
   const meta = index.getSessionMeta(wsHash, name);
   const { icon, color } = metaIconAndColor(meta);
   const termName = defaultTermName(wsLabel, tabId, meta?.label);

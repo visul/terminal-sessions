@@ -44,15 +44,24 @@ export class SessionIndex {
     this.save();
   }
 
-  recordSession(hash: string, sessionName: string, label?: string): void {
+  recordSession(hash: string, sessionName: string, label?: string, folderPath?: string): void {
     const ws = this.data.workspaces[hash];
     if (!ws) return;
     const existing = ws.sessions[sessionName];
     ws.sessions[sessionName] = {
       ...(existing || {}),
       label: label ?? existing?.label,
+      folderPath: folderPath ?? existing?.folderPath,
       createdAt: existing?.createdAt || new Date().toISOString(),
     };
+    this.save();
+  }
+
+  setSessionFolderPath(hash: string, sessionName: string, folderPath: string | undefined): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (folderPath) ws.sessions[sessionName].folderPath = folderPath;
+    else delete ws.sessions[sessionName].folderPath;
     this.save();
   }
 

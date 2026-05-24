@@ -4,6 +4,33 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.12.5] — 2026-05-01
+
+### Fixed
+- **No more duplicate terminals when reattaching to a session that has a
+  "process exited" ghost.** Clicking a session in the sidebar used to
+  spawn a brand-new terminal whenever the previous tab had gone yellow
+  (tmux client died, or VS Code restored the terminal across a window
+  reload with trimmed creationOptions). The session lookup now (a) falls
+  back to matching the terminal name suffix `#<tabId>` when shellArgs
+  no longer carry the tmux session id, and (b) disposes any exited
+  ghost it finds before opening the new live attach so you don't end up
+  with two tabs for the same session.
+
+## [0.12.4] — 2026-05-01
+
+### Fixed
+- **Restart now keeps the original folder.** Sessions created from a
+  subfolder via right-click → *New Persistent in Folder* no longer drop
+  back to the VS Code workspace root after a restart. The cwd is
+  persisted in the session index (`folderPath`) at creation; for older
+  sessions that pre-date this field, the live tmux `session_path` is
+  read once before the kill and back-filled into the index, so a single
+  restart self-heals the entry.
+- **Post-reboot restore honors subfolder cwd.** The same `folderPath` is
+  used when `maybeOfferRestore` recreates sessions after a tmux server
+  death, instead of always pinning everything to the workspace root.
+
 ## [0.12.3] — 2026-04-25
 
 Live visibility into Claude Code subagents. v0.12 introduced the subagent

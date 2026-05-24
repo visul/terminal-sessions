@@ -9,11 +9,18 @@ const execFileP = promisify(execFile);
 
 export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
 
-const CONF_VERSION = 'ts-tmux-conf-v3';
+const CONF_VERSION = 'ts-tmux-conf-v4';
 
 const DEFAULT_CONF = `# Terminal Sessions — tmux config (${CONF_VERSION})
 # Location: ~/.terminal-sessions/tmux.conf  (safe to edit; never overwritten on update)
 # Edit and run "Terminal Sessions: Reload tmux Config" to apply.
+
+# ── Inherit user's personal tmux.conf FIRST ───────────────────────────────
+# Sourced at the top so the Claude-Code-critical settings below (default-terminal,
+# terminal-features, allow-passthrough, env vars) always win. Without this order,
+# a personal ~/.tmux.conf with "set -g default-terminal screen-256color" would
+# break Claude Code's alt-screen rendering and TUI sync.
+if-shell '[ -f ~/.tmux.conf ]' 'source-file ~/.tmux.conf'
 
 # ── Essentials ────────────────────────────────────────────────────────────
 set -g mouse on
@@ -97,9 +104,6 @@ bind-key -T copy-mode-vi Enter send-keys -X cancel
 
 # ── Appearance: hide tmux status bar (Cursor has its own UI) ──────────────
 set -g status off
-
-# ── Optional: inherit your personal tmux.conf if present ──────────────────
-if-shell '[ -f ~/.tmux.conf ]' 'source-file ~/.tmux.conf'
 `;
 
 export function ensureConf(): void {
@@ -146,6 +150,20 @@ export async function createDetachedSession(
 ): Promise<void> {
   ensureConf();
   await execFileP(tmuxPath, ['-f', CONF_PATH, 'new-session', '-d', '-s', name, '-c', cwd]);
+}
+
+/** Returns the original cwd the session was created in (tmux preserves this
+ *  in #{session_path} for the lifetime of the server). Empty string if the
+ *  session is gone. */
+export async function getSessionPath(tmuxPath: string, sessionName: string): Promise<string> {
+  try {
+    const { stdout } = await execFileP(tmuxPath, [
+      'display-message', '-p', '-t', sessionName, '#{session_path}',
+    ]);
+    return stdout.trim();
+  } catch {
+    return '';
+  }
 }
 
 /** Returns the current foreground command in the pane (e.g. "zsh", "bash", "node"). */

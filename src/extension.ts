@@ -13,6 +13,7 @@ import { ClaudeSearchIndex } from './claude-search';
 import { sessionNameForTerminal } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import { getConfig } from './config';
+import { registerRevealPath } from './reveal-path';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -28,6 +29,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   ctx.subscriptions.push(registerPersistentProfile(index));
   registerCommands(ctx, index, claudeTracker, searchIndex);
+  registerRevealPath(ctx);
   registerSidebar(ctx, index, claudeTracker);
 
   // Prompt once to install the Claude hook (remembers declination).
@@ -113,7 +115,7 @@ async function maybePromptInstallClaudeHook(ctx: vscode.ExtensionContext): Promi
 async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void> {
   const { isConfOutOfDate, regenerateConf } = await import('./tmux');
   if (!isConfOutOfDate()) return;
-  const KEY = 'tmuxConfUpgradeDismissed-v3';
+  const KEY = 'tmuxConfUpgradeDismissed-v4';
   if (ctx.globalState.get(KEY)) return;
   setTimeout(async () => {
     const choice = await vscode.window.showInformationMessage(
