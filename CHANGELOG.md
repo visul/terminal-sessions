@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.11] — 2026-05-24
+
+### Fixed
+- **Post-reboot restore (and Stop->Start) now finds Claude transcripts for sessions whose `folderPath` was never recorded.** The transcript existence check builds the Claude project slug from `meta.folderPath || ws.path`, so a session that was launched in a subfolder via the integrated terminal — but never went through right-click → "New Persistent in Folder" — falls back to the workspace root and the check fails (file lives under the subfolder's slug, not the root's). Two-part fix: (a) the activation-time backfill now also scans the event log for each session's most recent non-empty `cwd` and sets it as `folderPath` when missing; (b) the live hook handler does the same opportunistically the first time it sees a `cwd` for a session whose `folderPath` is still empty. Sticky once set, so a later `cd` inside the session doesn't overwrite the creation directory.
+
 ## [0.13.10] — 2026-05-24
 
 ### Fixed

@@ -358,79 +358,98 @@ export class ClaudeTracker {
 
   /**
    * Walk the event log once at activation and populate `claudeSessionHistory`
-   * on any session-index entries that are missing one. Recovers historical
-   * Claude session ids that were wiped from the live `claude-map.json` by the
-   * cleanup at line ~445 (when a sessionId moved to another tmux). Builds a
-   * full ordered history per tmux (most recent first, deduplicated, capped at
-   * 10) so the user can manually resume an older conversation if needed. Only
-   * touches index entries that currently have no history — sticky once set,
-   * so further hook events take over via `recordClaudeSession`.
+   * and `folderPath` on any session-index entries that are missing them.
+   * Recovers historical Claude session ids that were wiped from the live
+   * `claude-map.json` by the cleanup at line ~445 (when a sessionId moved to
+   * another tmux). Also backfills the per-session `folderPath` from the most
+   * recent cwd recorded in the hook log — without it, post-reboot restore
+   * and Stop->Start build a transcript path against the workspace root for
+   * sessions that were actually launched in a subfolder, and the existence
+   * check fails -> auto-resume silently skipped. Only touches index entries
+   * missing the respective field, so user-set values are never overwritten.
    */
   private backfillIndexFromLog(): void {
     if (!this.index) return;
     const cfgPrefix = getConfig().sessionPrefix;
-    // Build a "missing entries" set up front so we can short-circuit reading
+    // Build "missing entries" sets up front so we can short-circuit reading
     // most of the log (90k+ lines) when nothing needs backfill.
-    const missing = new Set<string>();
+    const missingHistory = new Set<string>();
+    const missingFolderPath = new Set<string>();
     for (const ws of Object.values(this.index.getAllWorkspaces())) {
       for (const [name, label] of Object.entries(ws.sessions)) {
         if (!label.claudeSessionHistory || label.claudeSessionHistory.length === 0) {
-          missing.add(name);
+          missingHistory.add(name);
         }
+        if (!label.folderPath) missingFolderPath.add(name);
       }
     }
-    if (missing.size === 0) return;
-    // Scan the log once. For each missing tmux name, collect every (sessionId,
-    // ts) pair so we can build the ordered history afterwards.
-    type Sighting = { ts: number; sessionId: string };
+    const touched = new Set<string>([...missingHistory, ...missingFolderPath]);
+    if (touched.size === 0) return;
+    // Scan the log once. For each touched tmux name, collect every (sessionId,
+    // cwd, ts) pair so we can build the ordered history and resolve the most
+    // recent cwd afterwards.
+    type Sighting = { ts: number; sessionId: string; cwd: string };
     const sightings = new Map<string, Sighting[]>();
     try {
       const raw = fs.readFileSync(LOG_PATH, 'utf8');
       for (const line of raw.split('\n')) {
         if (!line) continue;
-        // Cheap pre-filter — skip lines that don't mention any missing tmux.
-        let touchesMissing = false;
-        for (const m of missing) {
-          if (line.includes(`"${m}"`)) { touchesMissing = true; break; }
+        // Cheap pre-filter — skip lines that don't mention any touched tmux.
+        let relevant = false;
+        for (const m of touched) {
+          if (line.includes(`"${m}"`)) { relevant = true; break; }
         }
-        if (!touchesMissing) continue;
+        if (!relevant) continue;
         let e: ClaudeEvent;
         try { e = JSON.parse(line); }
         catch { continue; }
-        if (!e.tmuxSession || !e.sessionId) continue;
-        if (!missing.has(e.tmuxSession)) continue;
+        if (!e.tmuxSession || !touched.has(e.tmuxSession)) continue;
         const list = sightings.get(e.tmuxSession) ?? [];
-        list.push({ ts: e.ts, sessionId: e.sessionId });
+        list.push({ ts: e.ts, sessionId: e.sessionId || '', cwd: e.cwd || '' });
         sightings.set(e.tmuxSession, list);
       }
     } catch (err) {
       console.error('[terminal-sessions] backfillIndexFromLog:', err);
       return;
     }
-    // For each tmux, collapse to an ordered history (most recent unique sid
-    // first). We sort by ts desc, then dedupe preserving first occurrence.
-    let filled = 0;
+    let filledHistory = 0;
+    let filledFolder = 0;
     for (const [tmux, list] of sightings) {
       const parsed = parseSessionName(tmux, cfgPrefix);
       if (!parsed) continue;
       list.sort((a, b) => b.ts - a.ts);
-      const seen = new Set<string>();
-      const history: string[] = [];
-      for (const s of list) {
-        if (seen.has(s.sessionId)) continue;
-        seen.add(s.sessionId);
-        history.push(s.sessionId);
-        if (history.length >= 10) break;
+
+      // History: most recent unique sessionId first, capped at 10.
+      if (missingHistory.has(tmux)) {
+        const seen = new Set<string>();
+        const history: string[] = [];
+        for (const s of list) {
+          if (!s.sessionId || seen.has(s.sessionId)) continue;
+          seen.add(s.sessionId);
+          history.push(s.sessionId);
+          if (history.length >= 10) break;
+        }
+        // Replay oldest -> newest so recordClaudeSession ends up with the
+        // newest at the front (it prepends each call).
+        for (let i = history.length - 1; i >= 0; i--) {
+          this.index.recordClaudeSession(parsed.hash, tmux, history[i]);
+        }
+        if (history.length > 0) filledHistory++;
       }
-      // Replay oldest -> newest so recordClaudeSession ends up with the
-      // newest at the front (it prepends each call).
-      for (let i = history.length - 1; i >= 0; i--) {
-        this.index.recordClaudeSession(parsed.hash, tmux, history[i]);
+
+      // folderPath: the most recent non-empty cwd observed for this tmux.
+      // Captures the subfolder a session was created in even when the
+      // session predates the per-session folderPath field.
+      if (missingFolderPath.has(tmux)) {
+        const cwd = list.find(s => s.cwd)?.cwd;
+        if (cwd) {
+          this.index.setSessionFolderPath(parsed.hash, tmux, cwd);
+          filledFolder++;
+        }
       }
-      filled++;
     }
-    if (filled > 0) {
-      console.log(`[terminal-sessions] backfilled claudeSessionHistory for ${filled} sessions`);
+    if (filledHistory > 0 || filledFolder > 0) {
+      console.log(`[terminal-sessions] backfill: history=${filledHistory} folderPath=${filledFolder}`);
     }
   }
 
@@ -541,6 +560,17 @@ export class ClaudeTracker {
           const parsed = parseSessionName(e.tmuxSession, cfgPrefix);
           if (parsed) {
             this.index.recordClaudeSession(parsed.hash, e.tmuxSession, e.sessionId);
+            // Backfill folderPath the first time we see a cwd for this tmux —
+            // sticky once set, so a later `cd` inside the session doesn't
+            // overwrite the original creation directory. Resolves the slug
+            // used for the transcript existence check in cmdStart and the
+            // reboot restore path.
+            if (e.cwd) {
+              const meta = this.index.getSessionMeta(parsed.hash, e.tmuxSession);
+              if (!meta?.folderPath) {
+                this.index.setSessionFolderPath(parsed.hash, e.tmuxSession, e.cwd);
+              }
+            }
           }
         }
       }
