@@ -483,7 +483,7 @@ async function cmdStop(
       sessionName: s.name,
     }));
     if (picks.length === 0) {
-      vscode.window.showInformationMessage('No running sessions to stop.');
+      vscode.window.showInformationMessage('No live sessions to stop.');
       return;
     }
     const pick = await vscode.window.showQuickPick<Pick>(picks, {
