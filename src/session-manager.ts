@@ -107,6 +107,18 @@ export class SessionIndex {
     return this.data.workspaces[hash]?.sessions[sessionName]?.muted === true;
   }
 
+  setSessionStopped(hash: string, sessionName: string, stopped: boolean): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (stopped) ws.sessions[sessionName].stopped = true;
+    else delete ws.sessions[sessionName].stopped;
+    this.save();
+  }
+
+  isSessionStopped(hash: string, sessionName: string): boolean {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.stopped === true;
+  }
+
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
@@ -166,9 +178,13 @@ export async function enrichSessions(
 ): Promise<SessionInfo[]> {
   const rows = await tmux.listSessions(tmuxPath, prefix);
   const out: SessionInfo[] = [];
+  const liveNames = new Set<string>();
+
+  // 1. Live tmux rows
   for (const row of rows) {
     const parsed = parseSessionName(row.name, prefix);
     if (!parsed) continue;
+    liveNames.add(row.name);
     const ws = index.getWorkspace(parsed.hash);
     const meta = index.getSessionMeta(parsed.hash, row.name);
     out.push({
@@ -186,8 +202,39 @@ export async function enrichSessions(
       sortOrder: meta?.sortOrder,
       attached: row.attached,
       muted: meta?.muted,
+      stopped: false,
     });
   }
+
+  // 2. Stopped index entries that have no live tmux row
+  for (const [hash, ws] of Object.entries(index.getAllWorkspaces())) {
+    for (const [sessionName, meta] of Object.entries(ws.sessions)) {
+      if (!meta.stopped) continue;
+      if (liveNames.has(sessionName)) continue;
+      const parsed = parseSessionName(sessionName, prefix);
+      if (!parsed) continue;
+      const created = meta.createdAt ? new Date(meta.createdAt) : new Date(0);
+      const lastActive = meta.lastActiveAt ? new Date(meta.lastActiveAt) : created;
+      out.push({
+        name: sessionName,
+        workspaceHash: hash,
+        workspacePath: ws.path,
+        workspaceLabel: ws.label,
+        tabId: parsed.tabId,
+        label: meta.label,
+        icon: meta.icon,
+        color: meta.color,
+        createdAt: created,
+        lastAttached: lastActive,
+        lastActiveAt: meta.lastActiveAt ? new Date(meta.lastActiveAt) : undefined,
+        sortOrder: meta.sortOrder,
+        attached: false,
+        muted: meta.muted,
+        stopped: true,
+      });
+    }
+  }
+
   out.sort((a, b) => {
     if (a.workspaceLabel !== b.workspaceLabel) return a.workspaceLabel.localeCompare(b.workspaceLabel);
     return a.tabId - b.tabId;

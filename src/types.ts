@@ -13,6 +13,7 @@ export interface SessionInfo {
   sortOrder?: number;
   attached: boolean;
   muted?: boolean;  // when true, notifications are suppressed for this session
+  stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
 }
 
 export interface WorkspaceIndex {
@@ -40,6 +41,7 @@ export interface SessionLabel {
   // in Folder). Persisted so Restart re-creates tmux in the SAME folder, not
   // the VS Code workspace root.
   folderPath?: string;
+  stopped?: boolean;  // persisted: tmux session is intentionally killed but entry kept
 }
 
 export interface TmuxSessionRow {
