@@ -357,12 +357,14 @@ export class ClaudeTracker {
   }
 
   /**
-   * Walk the event log once at activation and populate `lastClaudeSessionId`
-   * on any session-index entries that are missing it. Recovers historical
+   * Walk the event log once at activation and populate `claudeSessionHistory`
+   * on any session-index entries that are missing one. Recovers historical
    * Claude session ids that were wiped from the live `claude-map.json` by the
-   * cleanup at line ~445 (when a sessionId moved to another tmux). Only
-   * touches index entries that currently have no `lastClaudeSessionId`, so
-   * the field is sticky once set — it stays the user's source of truth.
+   * cleanup at line ~445 (when a sessionId moved to another tmux). Builds a
+   * full ordered history per tmux (most recent first, deduplicated, capped at
+   * 10) so the user can manually resume an older conversation if needed. Only
+   * touches index entries that currently have no history — sticky once set,
+   * so further hook events take over via `recordClaudeSession`.
    */
   private backfillIndexFromLog(): void {
     if (!this.index) return;
@@ -372,14 +374,16 @@ export class ClaudeTracker {
     const missing = new Set<string>();
     for (const ws of Object.values(this.index.getAllWorkspaces())) {
       for (const [name, label] of Object.entries(ws.sessions)) {
-        if (!label.lastClaudeSessionId) missing.add(name);
+        if (!label.claudeSessionHistory || label.claudeSessionHistory.length === 0) {
+          missing.add(name);
+        }
       }
     }
     if (missing.size === 0) return;
-    // Scan the log once. For each missing tmux name, remember the highest-ts
-    // event with a non-empty sessionId.
-    const latest = new Map<string, { ts: number; sessionId: string }>();
-    let lineBuf = '';
+    // Scan the log once. For each missing tmux name, collect every (sessionId,
+    // ts) pair so we can build the ordered history afterwards.
+    type Sighting = { ts: number; sessionId: string };
+    const sightings = new Map<string, Sighting[]>();
     try {
       const raw = fs.readFileSync(LOG_PATH, 'utf8');
       for (const line of raw.split('\n')) {
@@ -395,25 +399,38 @@ export class ClaudeTracker {
         catch { continue; }
         if (!e.tmuxSession || !e.sessionId) continue;
         if (!missing.has(e.tmuxSession)) continue;
-        const prev = latest.get(e.tmuxSession);
-        if (!prev || e.ts > prev.ts) {
-          latest.set(e.tmuxSession, { ts: e.ts, sessionId: e.sessionId });
-        }
+        const list = sightings.get(e.tmuxSession) ?? [];
+        list.push({ ts: e.ts, sessionId: e.sessionId });
+        sightings.set(e.tmuxSession, list);
       }
     } catch (err) {
       console.error('[terminal-sessions] backfillIndexFromLog:', err);
       return;
     }
-    void lineBuf;
+    // For each tmux, collapse to an ordered history (most recent unique sid
+    // first). We sort by ts desc, then dedupe preserving first occurrence.
     let filled = 0;
-    for (const [tmux, { sessionId }] of latest) {
+    for (const [tmux, list] of sightings) {
       const parsed = parseSessionName(tmux, cfgPrefix);
       if (!parsed) continue;
-      this.index.setLastClaudeSessionId(parsed.hash, tmux, sessionId);
+      list.sort((a, b) => b.ts - a.ts);
+      const seen = new Set<string>();
+      const history: string[] = [];
+      for (const s of list) {
+        if (seen.has(s.sessionId)) continue;
+        seen.add(s.sessionId);
+        history.push(s.sessionId);
+        if (history.length >= 10) break;
+      }
+      // Replay oldest -> newest so recordClaudeSession ends up with the
+      // newest at the front (it prepends each call).
+      for (let i = history.length - 1; i >= 0; i--) {
+        this.index.recordClaudeSession(parsed.hash, tmux, history[i]);
+      }
       filled++;
     }
     if (filled > 0) {
-      console.log(`[terminal-sessions] backfilled lastClaudeSessionId for ${filled} sessions`);
+      console.log(`[terminal-sessions] backfilled claudeSessionHistory for ${filled} sessions`);
     }
   }
 
@@ -516,12 +533,14 @@ export class ClaudeTracker {
         // live `map` above gets wiped when this sessionId moves to another
         // tmux (claude --resume in a different tab), but Stop -> Start needs
         // to find the original conversation here. The index entry survives
-        // because nothing else writes to it.
+        // because nothing else writes to it. `recordClaudeSession` keeps an
+        // ordered history (most recent first, capped at 10) so older
+        // conversations remain accessible via manual resume too.
         if (this.index) {
           const cfgPrefix = getConfig().sessionPrefix;
           const parsed = parseSessionName(e.tmuxSession, cfgPrefix);
           if (parsed) {
-            this.index.setLastClaudeSessionId(parsed.hash, e.tmuxSession, e.sessionId);
+            this.index.recordClaudeSession(parsed.hash, e.tmuxSession, e.sessionId);
           }
         }
       }

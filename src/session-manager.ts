@@ -123,6 +123,25 @@ export class SessionIndex {
     this.save();
   }
 
+  /**
+   * Push a Claude session id onto the front of this tmux session's history.
+   * Dedupes (a re-seen id moves to the front), caps the list at 10, and also
+   * mirrors the head into `lastClaudeSessionId` for backwards compatibility
+   * with code that reads only that field.
+   */
+  recordClaudeSession(hash: string, sessionName: string, sessionId: string): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    const s = ws.sessions[sessionName];
+    const existing = s.claudeSessionHistory ?? [];
+    if (existing[0] === sessionId) return; // already at the front, nothing to do
+    const deduped = existing.filter(id => id !== sessionId);
+    const next = [sessionId, ...deduped].slice(0, 10);
+    s.claudeSessionHistory = next;
+    s.lastClaudeSessionId = sessionId;
+    this.save();
+  }
+
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;

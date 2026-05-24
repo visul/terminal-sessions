@@ -45,8 +45,14 @@ export interface SessionLabel {
   // Last Claude session id that ran in this tmux session. Survives the live
   // claude-map cleanup that fires when a Claude conversation moves to another
   // tmux (claude --resume in a different tab), so Stop -> Start can still
-  // auto-resume the original conversation here.
+  // auto-resume the original conversation here. Mirrors `claudeSessionHistory[0]`
+  // and kept for backwards compatibility with older index files.
   lastClaudeSessionId?: string;
+  // Ordered history of Claude session ids that ran in this tmux session, most
+  // recent first, capped at 10. The first element drives auto-resume on
+  // Stop -> Start and post-reboot restore; older entries are kept so the user
+  // can manually `claude --resume <id>` an older conversation if needed.
+  claudeSessionHistory?: string[];
 }
 
 export interface TmuxSessionRow {

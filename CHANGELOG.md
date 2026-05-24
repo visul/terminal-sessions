@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.8] — 2026-05-24
+
+### Added
+- **Per-session Claude history (`claudeSessionHistory`).** Each tmux entry in the session index now keeps an ordered list of every Claude session id that ever ran in it (most recent first, capped at 10). The head feeds auto-resume on Stop→Start and post-reboot restore (same behavior as `lastClaudeSessionId` before), while older ids stick around so the user can manually `claude --resume <id>` an earlier conversation in the same terminal. `recordClaudeSession` on every hook event with a `session_id` dedupes-then-prepends; the activation-time backfill scans the event log and replays sightings oldest→newest so the resulting order matches what `recordClaudeSession` would have produced live. `lastClaudeSessionId` is kept in sync with `claudeSessionHistory[0]` for backwards compatibility.
+
 ## [0.13.7] — 2026-05-24
 
 ### Added
