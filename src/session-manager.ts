@@ -115,10 +115,6 @@ export class SessionIndex {
     this.save();
   }
 
-  isSessionStopped(hash: string, sessionName: string): boolean {
-    return this.data.workspaces[hash]?.sessions[sessionName]?.stopped === true;
-  }
-
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;

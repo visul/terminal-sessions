@@ -16,6 +16,12 @@ import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInst
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor } from './claude-transcript';
 
+/** Delay between opening the attached terminal and sending `claude --resume`,
+ *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
+ *  starship, nvm autoload) need > 1 s before sendText lands in a prompt that
+ *  actually reads it. */
+const SHELL_INIT_DELAY_MS = 1500;
+
 async function requireTmux(): Promise<string | undefined> {
   const cfg = getConfig();
   const p = await tmux.detectTmuxPath(cfg.tmuxPath);
@@ -468,7 +474,7 @@ async function cmdRestart(
     if (term && claudeSessionId) {
       // Give the shell a moment to init (rc files, prompt) before sending
       // the resume command. Heavy zshrc / oh-my-zsh setups need > 1 s.
-      await sleep(1500);
+      await sleep(SHELL_INIT_DELAY_MS);
       // Between openTerminalForSession() returning and now, the user may have
       // closed the tab manually. Verify liveness before firing into the void.
       if (vscode.window.terminals.includes(term)) {
@@ -589,7 +595,7 @@ async function cmdStart(
     index.setSessionStopped(parsed.hash, name, false);
     const term = await openTerminalForSession(name, startCwd, index, true);
     if (term && claudeSessionId) {
-      await sleep(1500);
+      await sleep(SHELL_INIT_DELAY_MS);
       if (vscode.window.terminals.includes(term)) {
         try { term.sendText(`claude --resume ${claudeSessionId}`); }
         catch (e) { console.error('[terminal-sessions] sendText failed:', e); }
