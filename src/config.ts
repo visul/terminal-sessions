@@ -119,6 +119,7 @@ export const COMMAND = {
   stop: 'terminalSessions.stop',
   start: 'terminalSessions.start',
   pickSortMode: 'terminalSessions.pickSortMode',
+  pickFilterMode: 'terminalSessions.pickFilterMode',
   findSession: 'terminalSessions.findSession',
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
   openSubagentTranscript: 'terminalSessions.openSubagentTranscript',

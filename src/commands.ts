@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { COMMAND, getConfig, setSortMode, SidebarSortMode, SORT_MODES } from './config';
+import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor } from './profile-provider';
@@ -59,6 +59,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem) => cmdStop(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.start, (item?: SessionTreeItem) => cmdStart(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
+    vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts()),
@@ -368,6 +369,22 @@ async function cmdPickSortMode(index: SessionIndex): Promise<void> {
     `Terminal Sessions: sort → ${SORT_MODE_LABELS[pick.mode].label}`,
     2500,
   );
+}
+
+async function cmdPickFilterMode(): Promise<void> {
+  interface Pick extends vscode.QuickPickItem { mode: SidebarFilterMode }
+  const current = getConfig().sidebarFilterMode;
+  const items: Pick[] = [
+    { mode: 'all',      label: '$(list-flat) Show All Sessions',     description: current === 'all'      ? '(current)' : '' },
+    { mode: 'running',  label: '$(pass-filled) Show Running Only',   description: current === 'running'  ? '(current)' : '' },
+    { mode: 'stopped',  label: '$(debug-stop) Show Stopped Only',    description: current === 'stopped'  ? '(current)' : '' },
+  ];
+  const pick = await vscode.window.showQuickPick<Pick>(items, {
+    placeHolder: 'Filter sidebar by session state',
+  });
+  if (!pick) return;
+  await setFilterMode(pick.mode);
+  refreshSidebar();
 }
 
 async function cmdRestart(

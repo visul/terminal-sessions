@@ -315,6 +315,11 @@
         "icon": "$(list-ordered)"
       },
       {
+        "command": "terminalSessions.pickFilterMode",
+        "title": "Terminal Sessions: Change Sidebar Filter",
+        "icon": "$(filter)"
+      },
+      {
         "command": "terminalSessions.findSession",
         "title": "Terminal Sessions: Find Session by Prompt...",
         "icon": "$(search)"
@@ -392,6 +397,11 @@
           "command": "terminalSessions.pickSortMode",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@1"
+        },
+        {
+          "command": "terminalSessions.pickFilterMode",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@1.5"
         },
         {
           "command": "terminalSessions.newPersistent",
