@@ -1,9 +1,14 @@
 #!/bin/bash
-# Terminal Sessions — Claude Code hook forwarder (v2)
+# Terminal Sessions — Claude Code hook forwarder (v3)
 # Installed at: ~/.terminal-sessions/claude-hook.sh
 # Reads the Claude Code hook JSON payload from stdin (session_id,
-# transcript_path, tool_name, tool_input, cwd), merges it with tmux context,
-# and appends one JSON line to ~/.terminal-sessions/claude-events.log.
+# transcript_path, tool_name, tool_input, message, cwd), merges it with tmux
+# context, and appends one JSON line to ~/.terminal-sessions/claude-events.log.
+#
+# v3 adds `message` capture so the extension can distinguish a "permission
+# needed" Notification (urgent, blocks Claude) from a "waiting for your input"
+# idle nudge (Claude Code fires this ~60s after each Stop while sitting at the
+# prompt — not urgent, must not flip the sidebar to ⚠ waiting).
 
 set -u
 
@@ -46,13 +51,14 @@ out = {
     "transcriptPath": data.get("transcript_path", ""),
     "toolName": data.get("tool_name", ""),
     "toolInput": tool_input_preview,
+    "message": str(data.get("message", ""))[:300],
 }
 sys.stdout.write(json.dumps(out) + "\n")
 ' <<<"$STDIN_JSON" >> "$LOG" 2>/dev/null
 else
-  # Fallback when python3 is missing — minimal payload, no tool info.
+  # Fallback when python3 is missing — minimal payload, no tool/message info.
   {
-    printf '{"event":"%s","ts":%d,"sessionId":"","tmuxSession":"%s","cwd":"%s","transcriptPath":"","toolName":"","toolInput":""}\n' \
+    printf '{"event":"%s","ts":%d,"sessionId":"","tmuxSession":"%s","cwd":"%s","transcriptPath":"","toolName":"","toolInput":"","message":""}\n' \
       "$EVENT" "$(date +%s)" "$TMUX_SESSION" "${PWD:-}"
   } >> "$LOG" 2>/dev/null
 fi

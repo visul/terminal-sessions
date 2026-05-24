@@ -50,6 +50,11 @@ export interface ClaudeSnapshot {
   transcriptPath?: string;
   /** Flat list of subagents (tree is built at render time from parentId). */
   subagents?: SubagentSnapshot[];
+  /** Timestamp at which `state` was set to 'waiting' by a permission-blocking
+   *  Notification. Used by the transcript tailer to detect when Claude has
+   *  resumed after the wait (new assistant/user activity newer than this) and
+   *  clear the stuck waiting state. Cleared on Stop/UserPromptSubmit. */
+  waitingSince?: Date;
 }
 
 interface ClaudeEvent {
@@ -61,6 +66,22 @@ interface ClaudeEvent {
   transcriptPath?: string;
   toolName?: string;
   toolInput?: string;
+  /** Claude Code attaches a `message` field to Notification events. Two known
+   *  shapes: "Claude needs your permission to use {ToolName}" (real block) and
+   *  "Claude is waiting for your input" (idle nudge fired ~60s after every
+   *  Stop while sitting at the prompt). Captured by hook-script v3+; older
+   *  installs leave this empty and are treated as permission for safety. */
+  message?: string;
+}
+
+/** Returns true when a Notification event is the harmless "Claude is waiting
+ *  for your input" idle nudge that Claude Code fires ~60s after each Stop
+ *  while the user is just sitting at the prompt. False for real permission
+ *  blocks (Claude needs approval before continuing) and for any unknown shape
+ *  (treated as permission so we don't accidentally hide a real block). */
+function isIdleNudgeNotification(message: string | undefined): boolean {
+  if (!message) return false; // legacy hook or empty payload — assume permission
+  return /waiting for your input/i.test(message);
 }
 
 const ROOT = path.join(os.homedir(), '.terminal-sessions');
@@ -202,9 +223,12 @@ export class ClaudeTracker {
         // Transcript is authoritative for working/idle — hooks may not fire
         // for sessions that started before our hook was installed (Claude Code
         // reads settings.json at startup, not mid-session). We preserve hook-
-        // derived 'tool' and 'waiting' states because the transcript can't
-        // tell us those (tool_use blocks mean "Claude called a tool", but not
-        // whether it's still running or finished).
+        // derived 'tool' state unconditionally because the transcript can't
+        // tell us whether a tool_use block is still running or finished.
+        // 'waiting' is preserved ONLY while there is no transcript activity
+        // newer than the wait was set — Claude resuming (assistant chunk) or
+        // the user re-prompting (newer user message) means the wait is over
+        // and the state should fall back to idle/working.
         const tu = t.lastUserMessageAt?.getTime() || 0;
         const ta = t.lastAssistantMessageAt?.getTime() || 0;
         // Claude Code writes `[Request interrupted by user]` to the transcript
@@ -215,7 +239,16 @@ export class ClaudeTracker {
           t.lastUserMessage?.includes('[Request interrupted by user]') ||
           t.lastAssistantMessage?.includes('[Request interrupted by user]');
 
-        if (snap.state !== 'tool' && snap.state !== 'waiting') {
+        // Allow stuck 'waiting' to clear when the transcript shows newer
+        // activity than the Notification timestamp, or when the snapshot was
+        // built from a legacy hook (pre-v3) that didn't record waitingSince —
+        // those entries would otherwise be stuck forever.
+        const waitingSinceMs = snap.waitingSince?.getTime() ?? 0;
+        const waitingIsStale = snap.state === 'waiting'
+          && (waitingSinceMs === 0 || ta > waitingSinceMs || tu > waitingSinceMs);
+        if (waitingIsStale) snap.waitingSince = undefined;
+
+        if (snap.state !== 'tool' && (snap.state !== 'waiting' || waitingIsStale)) {
           if (interruptMarker) {
             snap.state = 'idle';
             if (!snap.lastStopAt || (t.lastUserMessageAt && t.lastUserMessageAt > snap.lastStopAt)) {
@@ -390,21 +423,35 @@ export class ClaudeTracker {
         snap.toolName = undefined;
         snap.toolInput = undefined;
         snap.toolSince = undefined;
+        snap.waitingSince = undefined;
         break;
       case 'PreToolUse':
         snap.state = 'tool';
         snap.toolName = e.toolName || snap.toolName;
         snap.toolInput = e.toolInput || snap.toolInput;
         snap.toolSince = new Date(tsMs);
+        snap.waitingSince = undefined;
         break;
       case 'PostToolUse':
         snap.state = 'working';
         snap.toolName = undefined;
         snap.toolInput = undefined;
         snap.toolSince = undefined;
+        snap.waitingSince = undefined;
         break;
       case 'Notification':
+        // Claude Code fires Notification for TWO unrelated reasons:
+        //   1. Permission needed — "Claude needs your permission to use {Tool}"
+        //   2. Idle nudge — "Claude is waiting for your input" (~60s after each
+        //      Stop while sitting at the prompt). NOT urgent, must not flip
+        //      the sidebar to ⚠ waiting or fire the permission alert.
+        if (isIdleNudgeNotification(e.message)) {
+          // Idle nudge: no state change, no alert. Claude already entered
+          // 'idle' via the preceding Stop event.
+          break;
+        }
         snap.state = 'waiting';
+        snap.waitingSince = new Date(tsMs);
         this.triggerWaitingNotify(e, tsMs);
         break;
       case 'Stop':
@@ -413,6 +460,7 @@ export class ClaudeTracker {
         snap.toolName = undefined;
         snap.toolInput = undefined;
         snap.toolSince = undefined;
+        snap.waitingSince = undefined;
         this.triggerStopNotify(e, tsMs);
         break;
       case 'SessionEnd':

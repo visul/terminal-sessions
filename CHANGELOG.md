@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.1] — 2026-05-24
+
+### Fixed
+- **No more spurious ⚠ waiting state after idle turns.** Claude Code fires a `Notification` hook event ~60s after every Stop while sitting at the prompt ("Claude is waiting for your input"). The previous version treated that identically to a real permission block, flipping the sidebar to ⚠ waiting and ringing the alert sound — even though Claude had finished and was just idle. The forwarder hook (`media/claude-hook.sh` v3) now captures the `message` field; idle-nudge notifications are no-ops for state, while real permission blocks ("Claude needs your permission to use {Tool}") still flip to waiting and ring the alert. **Re-install the Claude hook** (`Terminal Sessions: Install Claude Code Hook`) or reload the extension to pick up the v3 forwarder.
+- **Stuck `waiting` state self-heals via the transcript tailer.** The tailer used to refuse to leave `waiting` no matter what — so any missed Stop event after a real permission approval (Claude Code reads `settings.json` once at startup, so sessions begun before hook install never fire Stop reliably) left the sidebar showing ⚠ forever. The tailer now compares transcript activity against the `waitingSince` timestamp recorded when the wait began; newer assistant or user activity transitions the state to `idle` or `working` as appropriate. Legacy snapshots without `waitingSince` (pre-v0.13.1) are treated as stale and cleared on the next tailer pass.
+
 ## [0.13.0] — 2026-05-24
 
 ### Added
