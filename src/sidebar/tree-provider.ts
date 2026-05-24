@@ -128,12 +128,19 @@ class SessionsTreeProvider
         return [item];
       }
       const grouped = groupByWorkspace(filtered);
+      const allByWorkspace = groupByWorkspace(sessions);
       const out: vscode.TreeItem[] = [];
       this.lastWorkspaceItems.clear();
       for (const [hash, group] of grouped) {
         const ordered = sortSessions(group, cfg.sidebarSortMode);
         const wsPath = ordered[0].workspacePath;
-        const wsItem = new WorkspaceTreeItem(ordered[0].workspaceLabel, hash, ordered, wsPath);
+        const wsItem = new WorkspaceTreeItem(
+          ordered[0].workspaceLabel,
+          hash,
+          ordered,
+          wsPath,
+          allByWorkspace.get(hash) ?? ordered,
+        );
         this.lastWorkspaceItems.set(hash, wsItem);
         out.push(wsItem);
       }

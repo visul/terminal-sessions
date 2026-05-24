@@ -11,12 +11,16 @@ export class WorkspaceTreeItem extends vscode.TreeItem {
     public readonly workspaceHash: string,
     public readonly sessions: SessionInfo[],
     public readonly workspacePath: string,
+    allSessions?: SessionInfo[],
   ) {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
     this.contextValue = 'workspace';
-    const stopped = sessions.filter(s => s.stopped).length;
-    const active = sessions.filter(s => !s.stopped && s.attached).length;
-    const detached = sessions.filter(s => !s.stopped && !s.attached).length;
+    // Counts always reflect the whole workspace (pre-filter), so the stopped
+    // tally is visible even when sidebarFilterMode is hiding stopped rows.
+    const countSrc = allSessions ?? sessions;
+    const stopped = countSrc.filter(s => s.stopped).length;
+    const active = countSrc.filter(s => !s.stopped && s.attached).length;
+    const detached = countSrc.filter(s => !s.stopped && !s.attached).length;
     const stoppedSuffix = stopped > 0 ? ` · ${stopped}⏸` : '';
     this.description = `${active}▶ ${detached}⇄${stoppedSuffix}`;
     this.iconPath = new vscode.ThemeIcon('folder');
