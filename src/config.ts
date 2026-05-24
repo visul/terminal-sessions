@@ -74,6 +74,7 @@ export async function setSortMode(mode: SidebarSortMode): Promise<void> {
 
 export const PROFILE_ID = 'terminalSessions.persistent';
 export const VIEW_ID = 'terminalSessions.sessions';
+export const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
 
 export const COMMAND = {
   toggleAllAlerts: 'terminalSessions.toggleAllAlerts',

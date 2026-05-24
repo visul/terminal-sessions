@@ -3,6 +3,7 @@ import { SessionInfo } from '../types';
 import { humanAge } from '../util';
 import { ClaudeSnapshot } from '../claude-tracker';
 import { SubagentSnapshot } from '../claude-transcript';
+import { STOPPED_URI_SCHEME } from '../config';
 
 export class WorkspaceTreeItem extends vscode.TreeItem {
   constructor(
@@ -119,7 +120,7 @@ export class SessionTreeItem extends vscode.TreeItem {
       this.description = `stopped · idle ${ageHint}`;
       this.collapsibleState = vscode.TreeItemCollapsibleState.None;
       this.resourceUri = vscode.Uri.parse(
-        `terminal-sessions-stopped:${encodeURIComponent(session.name)}`,
+        `${STOPPED_URI_SCHEME}:${encodeURIComponent(session.name)}`,
       );
       const displayHeader = session.label || `Session #${session.tabId}`;
       const parts = [

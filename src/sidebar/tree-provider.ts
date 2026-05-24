@@ -1,14 +1,12 @@
 import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
-import { getConfig, setSortMode, VIEW_ID, SidebarSortMode } from '../config';
+import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME } from '../config';
 import { WorkspaceTreeItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, buildClaudeDetails } from './items';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
 
 const DRAG_MIME = 'application/vnd.code.tree.terminalsessions';
-
-const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
 
 class StoppedSessionDecorationProvider implements vscode.FileDecorationProvider {
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
