@@ -115,6 +115,14 @@ export class SessionIndex {
     this.save();
   }
 
+  setLastClaudeSessionId(hash: string, sessionName: string, sessionId: string): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (ws.sessions[sessionName].lastClaudeSessionId === sessionId) return;
+    ws.sessions[sessionName].lastClaudeSessionId = sessionId;
+    this.save();
+  }
+
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;

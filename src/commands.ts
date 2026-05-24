@@ -441,11 +441,17 @@ async function cmdRestart(
   if (!restartCwd) restartCwd = ws.path;
 
   // Detect Claude session so we can auto-resume the conversation after restart.
-  // Also verify the transcript file is still on disk — Claude prunes old
-  // transcripts and the tracker's map can hold stale entries.
-  let claudeSessionId = claudeTracker.getSessionId(name);
+  // Live map first (current ownership), then the historical record in the
+  // index (set on every hook event, survives the cleanup that fires when a
+  // sessionId moves to another tmux). Verify the transcript is still on disk
+  // — Claude prunes old transcripts and the index can hold stale entries.
+  // Use the session's own folderPath (where the transcript actually lives),
+  // not the workspace root — subfolder sessions write to a different Claude
+  // project directory.
+  let claudeSessionId = claudeTracker.getSessionId(name)
+    || meta?.lastClaudeSessionId;
   if (claudeSessionId) {
-    if (!fs.existsSync(transcriptPathFor(ws.path, claudeSessionId))) {
+    if (!fs.existsSync(transcriptPathFor(restartCwd, claudeSessionId))) {
       claudeSessionId = undefined; // stale — transcript was deleted
     }
   }
@@ -581,10 +587,17 @@ async function cmdStart(
   let startCwd = meta?.folderPath || '';
   if (!startCwd) startCwd = ws.path;
 
-  // Claude session id — same staleness check as cmdRestart.
-  let claudeSessionId = claudeTracker.getSessionId(name);
+  // Claude session id: prefer the live map (current ownership). If empty,
+  // fall back to the historical mapping in the index — set on every hook
+  // event and preserved across the cleanup that fires when a sessionId
+  // moves to another tmux. Use the session's own folder path (where the
+  // transcript actually lives) for the existence check, not the workspace
+  // root — sessions created in a subfolder write to a different Claude
+  // project directory.
+  let claudeSessionId = claudeTracker.getSessionId(name)
+    || meta?.lastClaudeSessionId;
   if (claudeSessionId) {
-    if (!fs.existsSync(transcriptPathFor(ws.path, claudeSessionId))) {
+    if (!fs.existsSync(transcriptPathFor(startCwd, claudeSessionId))) {
       claudeSessionId = undefined;
     }
   }

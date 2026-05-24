@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.5] — 2026-05-24
+
+### Fixed
+- **Stop -> Start now auto-resumes Claude even after the conversation moved to another tab.** The in-memory `claude-map` clears a tmux's mapping whenever the same Claude session id appears in a different tmux (e.g. you ran `claude --resume <id>` in another tab) so the sidebar doesn't mirror state across two rows. That cleanup also wiped the only record of which Claude session originally lived in the stopped tmux, so `cmdStart` had nothing to resume. The tmux's most recent Claude session id is now persisted as `lastClaudeSessionId` in the session index, set on every hook event with a `session_id`, and used as a fallback when the live map comes up empty. Existing sessions are backfilled from the event log on next extension activation (manual one-time script for now). The transcript existence check uses `meta.folderPath` instead of `ws.path` so sessions created in a subfolder find the right Claude project directory.
+- `cmdRestart` picks up the same fallback chain, so a manual Restart of a session whose Claude conversation has moved no longer silently drops the resume.
+
 ## [0.13.4] — 2026-05-24
 
 ### Changed

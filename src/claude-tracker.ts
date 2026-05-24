@@ -450,6 +450,18 @@ export class ClaudeTracker {
         });
         this.saveMap();
         this.transcript.start(e.sessionId, tp);
+        // Persist the historical mapping in the session index too — the
+        // live `map` above gets wiped when this sessionId moves to another
+        // tmux (claude --resume in a different tab), but Stop -> Start needs
+        // to find the original conversation here. The index entry survives
+        // because nothing else writes to it.
+        if (this.index) {
+          const cfgPrefix = getConfig().sessionPrefix;
+          const parsed = parseSessionName(e.tmuxSession, cfgPrefix);
+          if (parsed) {
+            this.index.setLastClaudeSessionId(parsed.hash, e.tmuxSession, e.sessionId);
+          }
+        }
       }
     }
 

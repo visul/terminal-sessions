@@ -42,6 +42,11 @@ export interface SessionLabel {
   // the VS Code workspace root.
   folderPath?: string;
   stopped?: boolean;  // persisted: tmux session is intentionally killed but entry kept
+  // Last Claude session id that ran in this tmux session. Survives the live
+  // claude-map cleanup that fires when a Claude conversation moves to another
+  // tmux (claude --resume in a different tab), so Stop -> Start can still
+  // auto-resume the original conversation here.
+  lastClaudeSessionId?: string;
 }
 
 export interface TmuxSessionRow {
