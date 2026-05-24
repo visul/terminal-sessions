@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.10] — 2026-05-24
+
+### Fixed
+- Cumulative release confirming the Stop→Start auto-resume chain end-to-end after the v0.13.5→v0.13.9 fixes: persisted `claudeSessionHistory`, activation-time backfill from the event log, corrected `slugFromCwd` encoding for cwd paths containing underscores/dots/spaces, and the `meta.folderPath`-based transcript existence check. No new code in this release; bumping for the verified-working snapshot.
+
 ## [0.13.9] — 2026-05-24
 
 ### Fixed
