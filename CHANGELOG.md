@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.6] — 2026-05-24
+
+### Fixed
+- **Auto-backfill `lastClaudeSessionId` on extension activation.** v0.13.5 added the persisted historical mapping but only populated it on fresh hook events — sessions whose Claude conversations stopped firing events before the upgrade stayed empty and `Stop → Start` still skipped the resume. The tracker now walks `claude-events.log` once at startup, finds the most recent `sessionId` ever associated with each tmux name that lacks `lastClaudeSessionId`, and writes it into the session index. Subsequent fresh hooks continue to keep the field current; the backfill only fills the gaps.
+
 ## [0.13.5] — 2026-05-24
 
 ### Fixed

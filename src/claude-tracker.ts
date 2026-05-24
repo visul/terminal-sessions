@@ -142,6 +142,7 @@ export class ClaudeTracker {
     this.ensureFiles();
     this.loadMap();
     this.loadOffset();
+    this.backfillIndexFromLog();
     this.processNewEvents();
     this.watch();
     // Best-effort: seed transcript tailers for sessions we already know about
@@ -353,6 +354,67 @@ export class ClaudeTracker {
       const data = JSON.parse(raw) as Record<string, ClaudeMapping>;
       for (const [k, v] of Object.entries(data)) this.map.set(k, v);
     } catch { /* no map yet */ }
+  }
+
+  /**
+   * Walk the event log once at activation and populate `lastClaudeSessionId`
+   * on any session-index entries that are missing it. Recovers historical
+   * Claude session ids that were wiped from the live `claude-map.json` by the
+   * cleanup at line ~445 (when a sessionId moved to another tmux). Only
+   * touches index entries that currently have no `lastClaudeSessionId`, so
+   * the field is sticky once set — it stays the user's source of truth.
+   */
+  private backfillIndexFromLog(): void {
+    if (!this.index) return;
+    const cfgPrefix = getConfig().sessionPrefix;
+    // Build a "missing entries" set up front so we can short-circuit reading
+    // most of the log (90k+ lines) when nothing needs backfill.
+    const missing = new Set<string>();
+    for (const ws of Object.values(this.index.getAllWorkspaces())) {
+      for (const [name, label] of Object.entries(ws.sessions)) {
+        if (!label.lastClaudeSessionId) missing.add(name);
+      }
+    }
+    if (missing.size === 0) return;
+    // Scan the log once. For each missing tmux name, remember the highest-ts
+    // event with a non-empty sessionId.
+    const latest = new Map<string, { ts: number; sessionId: string }>();
+    let lineBuf = '';
+    try {
+      const raw = fs.readFileSync(LOG_PATH, 'utf8');
+      for (const line of raw.split('\n')) {
+        if (!line) continue;
+        // Cheap pre-filter — skip lines that don't mention any missing tmux.
+        let touchesMissing = false;
+        for (const m of missing) {
+          if (line.includes(`"${m}"`)) { touchesMissing = true; break; }
+        }
+        if (!touchesMissing) continue;
+        let e: ClaudeEvent;
+        try { e = JSON.parse(line); }
+        catch { continue; }
+        if (!e.tmuxSession || !e.sessionId) continue;
+        if (!missing.has(e.tmuxSession)) continue;
+        const prev = latest.get(e.tmuxSession);
+        if (!prev || e.ts > prev.ts) {
+          latest.set(e.tmuxSession, { ts: e.ts, sessionId: e.sessionId });
+        }
+      }
+    } catch (err) {
+      console.error('[terminal-sessions] backfillIndexFromLog:', err);
+      return;
+    }
+    void lineBuf;
+    let filled = 0;
+    for (const [tmux, { sessionId }] of latest) {
+      const parsed = parseSessionName(tmux, cfgPrefix);
+      if (!parsed) continue;
+      this.index.setLastClaudeSessionId(parsed.hash, tmux, sessionId);
+      filled++;
+    }
+    if (filled > 0) {
+      console.log(`[terminal-sessions] backfilled lastClaudeSessionId for ${filled} sessions`);
+    }
   }
 
   private saveMap(): void {
