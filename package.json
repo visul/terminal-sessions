@@ -289,6 +289,11 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "terminalSessions.stop",
+        "title": "Stop Session (keep in sidebar)",
+        "icon": "$(debug-pause)"
+      },
+      {
         "command": "terminalSessions.pickSortMode",
         "title": "Terminal Sessions: Change Sidebar Sort",
         "icon": "$(list-ordered)"
@@ -396,27 +401,37 @@
       "view/item/context": [
         {
           "command": "terminalSessions.preview",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "inline@1"
         },
         {
           "command": "terminalSessions.mirror",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "inline@2"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "inline@3"
         },
         {
-          "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "command": "terminalSessions.stop",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "inline@4"
         },
         {
+          "command": "terminalSessions.kill",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "group": "inline@5"
+        },
+        {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "group": "danger@0"
+        },
+        {
+          "command": "terminalSessions.stop",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "danger@0"
         },
         {
@@ -436,12 +451,12 @@
         },
         {
           "command": "terminalSessions.mirror",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "open@1"
         },
         {
           "command": "terminalSessions.preview",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
           "group": "open@2"
         },
         {

@@ -56,6 +56,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook()),
     vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem) => cmdStop(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
@@ -460,6 +461,60 @@ async function cmdRestart(
     refreshSidebar();
   } catch (e) {
     vscode.window.showErrorMessage(`Restart failed: ${String(e).slice(0, 200)}`);
+  }
+}
+
+async function cmdStop(
+  index: SessionIndex,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  let name = item?.session.name;
+  if (!name) {
+    const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
+    interface Pick extends vscode.QuickPickItem { sessionName: string }
+    const live = all.filter(s => !s.stopped);
+    const picks: Pick[] = live.map(s => ({
+      label: s.label || s.name,
+      description: `${s.workspaceLabel} · ${humanAge(s.lastAttached)}`,
+      sessionName: s.name,
+    }));
+    if (picks.length === 0) {
+      vscode.window.showInformationMessage('No running sessions to stop.');
+      return;
+    }
+    const pick = await vscode.window.showQuickPick<Pick>(picks, {
+      placeHolder: 'Stop which session? (entry stays in sidebar, can be started again)',
+    });
+    if (!pick) return;
+    name = pick.sessionName;
+  }
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
+  if (!parsed) return;
+  const label = index.getSessionLabel(parsed.hash, name);
+  const labelDisplay = label ? `"${label}"` : name;
+
+  // Confirm only if Claude is actively working/tool — silent otherwise.
+  const snap = claudeTracker.getSnapshot(name);
+  if (snap && (snap.state === 'working' || snap.state === 'tool')) {
+    const confirm = await vscode.window.showWarningMessage(
+      `Stop session ${labelDisplay}? Claude is currently working — its turn will be interrupted.`,
+      { modal: true }, 'Stop',
+    );
+    if (confirm !== 'Stop') return;
+  }
+
+  try {
+    await tmux.killSession(tmuxPath, name);
+    const dead = findTerminalForSession(name);
+    if (dead) await disposeAndWait(dead, 500);
+    index.setSessionStopped(parsed.hash, name, true);
+    refreshSidebar();
+  } catch (e) {
+    vscode.window.showErrorMessage(`Stop failed: ${String(e).slice(0, 200)}`);
   }
 }
 
