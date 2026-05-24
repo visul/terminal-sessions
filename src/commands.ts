@@ -57,6 +57,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook()),
     vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem) => cmdStop(index, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.start, (item?: SessionTreeItem) => cmdStart(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
@@ -515,6 +516,71 @@ async function cmdStop(
     refreshSidebar();
   } catch (e) {
     vscode.window.showErrorMessage(`Stop failed: ${String(e).slice(0, 200)}`);
+  }
+}
+
+async function cmdStart(
+  index: SessionIndex,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  let name = item?.session.name;
+  if (!name) {
+    const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
+    interface Pick extends vscode.QuickPickItem { sessionName: string }
+    const stopped = all.filter(s => s.stopped);
+    const picks: Pick[] = stopped.map(s => ({
+      label: s.label || s.name,
+      description: `${s.workspaceLabel} · stopped`,
+      sessionName: s.name,
+    }));
+    if (picks.length === 0) {
+      vscode.window.showInformationMessage('No stopped sessions to start.');
+      return;
+    }
+    const pick = await vscode.window.showQuickPick<Pick>(picks, {
+      placeHolder: 'Start which session?',
+    });
+    if (!pick) return;
+    name = pick.sessionName;
+  }
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
+  if (!parsed) return;
+  const ws = index.getWorkspace(parsed.hash);
+  if (!ws) return;
+  const meta = index.getSessionMeta(parsed.hash, name);
+
+  // Resolve cwd the same way cmdRestart does.
+  let startCwd = meta?.folderPath || '';
+  if (!startCwd) startCwd = ws.path;
+
+  // Claude session id — same staleness check as cmdRestart.
+  let claudeSessionId = claudeTracker.getSessionId(name);
+  if (claudeSessionId) {
+    if (!fs.existsSync(transcriptPathFor(ws.path, claudeSessionId))) {
+      claudeSessionId = undefined;
+    }
+  }
+
+  try {
+    // If the tmux session somehow already exists (rare race), skip create and just attach.
+    const exists = await tmux.hasSession(tmuxPath, name);
+    if (!exists) await tmux.createDetachedSession(tmuxPath, name, startCwd);
+    index.setSessionStopped(parsed.hash, name, false);
+    const term = await openTerminalForSession(name, startCwd, index, true);
+    if (term && claudeSessionId) {
+      await sleep(1500);
+      if (vscode.window.terminals.includes(term)) {
+        try { term.sendText(`claude --resume ${claudeSessionId}`); }
+        catch (e) { console.error('[terminal-sessions] sendText failed:', e); }
+      }
+    }
+    refreshSidebar();
+  } catch (e) {
+    vscode.window.showErrorMessage(`Start failed: ${String(e).slice(0, 200)}`);
   }
 }
 

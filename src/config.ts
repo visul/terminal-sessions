@@ -105,6 +105,7 @@ export const COMMAND = {
   uninstallClaudeHook: 'terminalSessions.uninstallClaudeHook',
   restart: 'terminalSessions.restart',
   stop: 'terminalSessions.stop',
+  start: 'terminalSessions.start',
   pickSortMode: 'terminalSessions.pickSortMode',
   findSession: 'terminalSessions.findSession',
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
