@@ -183,23 +183,27 @@ export class ClaudeTracker {
         snap.state = 'idle';
       }
     }
-    // 'working' stale detection uses the transcript file's mtime, not a
-    // fixed wall-clock timeout. Claude streams chunks into the jsonl on
-    // every reasoning/content step, so a live turn keeps bumping the file.
-    // If the file hasn't been written in 90 seconds, the Stop hook was
-    // probably missed (e.g. user hit Esc before Claude started responding)
-    // and we should not keep saying 'working' indefinitely. Long-thinking
-    // turns that actually ARE producing output still qualify as recent.
-    if (snap.state === 'working') {
-      const mapping = this.map.get(tmuxSession);
-      if (mapping?.transcriptPath) {
-        try {
-          const mtime = fs.statSync(mapping.transcriptPath).mtimeMs;
-          if (Date.now() - mtime > 90_000) {
-            snap.state = 'idle';
-          }
-        } catch { /* transcript gone — leave state as-is */ }
-      }
+    // Transcript file freshness — Claude streams chunks into the JSONL on
+    // every reasoning/content step, so a live turn keeps bumping the mtime
+    // even when the parsed assistant timestamp (`ta`) is locked at the
+    // message-start time and doesn't advance during a long compose. We
+    // compute it once and reuse below for both stale-out and the live-or-
+    // idle classification in the transcript-tailer block.
+    const mapping = this.map.get(tmuxSession);
+    let transcriptMtimeMs = 0;
+    if (mapping?.transcriptPath) {
+      try { transcriptMtimeMs = fs.statSync(mapping.transcriptPath).mtimeMs; }
+      catch { /* transcript gone */ }
+    }
+    const sinceWriteMs = transcriptMtimeMs > 0 ? Date.now() - transcriptMtimeMs : Infinity;
+    const transcriptIsFresh = sinceWriteMs < 30_000;
+
+    // 'working' stale-out: if Claude is supposedly working but the transcript
+    // hasn't been touched in 90 seconds, the Stop hook was probably missed
+    // (Esc cancellation, network drop, etc.) and we shouldn't keep claiming
+    // it's working. Long-thinking turns producing output keep mtime fresh.
+    if (snap.state === 'working' && sinceWriteMs > 90_000) {
+      snap.state = 'idle';
     }
 
     if (snap.sessionId) {
@@ -261,10 +265,29 @@ export class ClaudeTracker {
               snap.lastPromptAt = t.lastUserMessageAt;
             }
           } else if (ta > 0 && ta >= tu) {
-            // Claude's last reply is newer — idle
-            snap.state = 'idle';
-            if (!snap.lastStopAt || snap.lastStopAt.getTime() < ta) {
-              snap.lastStopAt = t.lastAssistantMessageAt;
+            // Assistant activity newer than the user message. We can't tell
+            // from the parsed timestamps alone whether Claude is mid-compose
+            // or already finished — `ta` is the START of the latest assistant
+            // message and doesn't advance with subsequent streaming chunks.
+            //
+            // Three signals disambiguate:
+            //   1. A Stop hook at-or-after `ta` → Claude genuinely finished.
+            //   2. Transcript file mtime fresh (< 30s) → Claude is still
+            //      writing chunks (thinking, tool calls, text deltas) → live.
+            //   3. Neither → Stop hook missed; treat as idle to avoid a
+            //      session that looks "working" forever.
+            const stoppedAfterLastAssistant = snap.lastStopAt
+              && snap.lastStopAt.getTime() >= ta;
+            if (!stoppedAfterLastAssistant && transcriptIsFresh) {
+              snap.state = 'working';
+              if (!snap.lastPromptAt && t.lastUserMessageAt) {
+                snap.lastPromptAt = t.lastUserMessageAt;
+              }
+            } else {
+              snap.state = 'idle';
+              if (!snap.lastStopAt || snap.lastStopAt.getTime() < ta) {
+                snap.lastStopAt = t.lastAssistantMessageAt;
+              }
             }
           }
         }

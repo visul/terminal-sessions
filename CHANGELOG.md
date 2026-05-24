@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.2] — 2026-05-24
+
+### Fixed
+- **Sidebar no longer flips to ✓ idle while Claude is actively composing.** The transcript tailer's rule `assistant_ts ≥ user_ts → idle` was demoting `working` sessions to `idle` as soon as Claude's first assistant chunk landed in the JSONL — even though the message had only just started. `lastAssistantMessageAt` is the START of an assistant message and doesn't advance with subsequent streaming, so the rule misclassified every in-progress turn. The classifier now consults three signals: a Stop hook timestamp at-or-after the assistant message (genuinely done), the transcript file mtime (fresh within 30s = still streaming chunks = working), and the legacy `ta ≥ tu` fallback (idle when no other signal applies). The `working` 90-second mtime stale-out is preserved for the missed-Stop case.
+
 ## [0.13.1] — 2026-05-24
 
 ### Fixed
