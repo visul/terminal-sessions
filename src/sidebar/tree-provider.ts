@@ -311,9 +311,13 @@ export function registerSidebar(
   claude: ClaudeTracker,
 ): void {
   provider = new SessionsTreeProvider(index, claude);
+  // Disable the built-in Collapse All — it folds the workspace folders too,
+  // which hides every session. We expose a custom "Collapse Sessions" that
+  // folds session detail rows (Claude inline detail + Agents folder) and
+  // re-expands the workspace folder so the session list stays visible.
   const treeView = vscode.window.createTreeView(VIEW_ID, {
     treeDataProvider: provider,
-    showCollapseAll: true,
+    showCollapseAll: false,
     dragAndDropController: provider,
   });
   ctx.subscriptions.push(treeView);
@@ -406,4 +410,30 @@ function updateTreeViewDescription(): void {
   if (cfg.sidebarFilterMode === 'running') treeViewRef.description = 'Running only';
   else if (cfg.sidebarFilterMode === 'stopped') treeViewRef.description = 'Stopped only';
   else treeViewRef.description = undefined;
+}
+
+/**
+ * Collapse session detail rows (Claude detail children, Agents folder) while
+ * keeping the workspace folders expanded. Strategy: trigger VS Code's built-in
+ * collapse-all command (which folds everything), then programmatically reveal
+ * each workspace item with expand:1 so only the top level re-opens. The
+ * sessions and their detail rows stay collapsed because they're children of
+ * the workspace and `expand:1` only opens the workspace itself.
+ */
+export async function collapseAllSessions(): Promise<void> {
+  if (!treeViewRef || !provider) return;
+  try {
+    await vscode.commands.executeCommand(
+      `workbench.actions.treeView.${VIEW_ID}.collapseAll`,
+    );
+  } catch { /* fallback below still works if the built-in id changes */ }
+  const roots = await provider.getChildren();
+  for (const root of roots) {
+    if (root instanceof WorkspaceTreeItem) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await treeViewRef.reveal(root, { expand: 1, focus: false, select: false });
+      } catch { /* reveal can throw if the item is stale — ignore */ }
+    }
+  }
 }

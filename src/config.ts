@@ -124,4 +124,5 @@ export const COMMAND = {
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
   openSubagentTranscript: 'terminalSessions.openSubagentTranscript',
   toggleShowCompletedSubagents: 'terminalSessions.toggleShowCompletedSubagents',
+  collapseSessions: 'terminalSessions.collapseSessions',
 } as const;

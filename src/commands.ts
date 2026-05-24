@@ -8,7 +8,7 @@ import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem, SubagentTreeItem } from './sidebar/items';
-import { refreshSidebar } from './sidebar/tree-provider';
+import { refreshSidebar, collapseAllSessions } from './sidebar/tree-provider';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
 import { notify } from './notifications';
@@ -75,6 +75,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
+    vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
   );
 
   // Keep a VS Code context var in sync with the global alert setting so the

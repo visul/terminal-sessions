@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.4] — 2026-05-24
+
+### Changed
+- **Collapse-all keeps workspace folders open.** VS Code's built-in `Collapse All` button folded every level — including the workspace folder rows that hold all your sessions — so one click hid the entire tree. The new `$(collapse-all)` icon at the right of the sidebar title bar runs a custom command that collapses session detail rows (Claude inline detail children, Agents folder) and then re-expands the workspace folders so the session list stays visible. The built-in collapse-all is suppressed (`showCollapseAll: false`).
+
 ## [0.13.3] — 2026-05-24
 
 ### Fixed
