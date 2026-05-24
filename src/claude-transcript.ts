@@ -84,10 +84,21 @@ interface TailState {
   currentLineStart: number;
 }
 
-/** Convert `/a/b/c` to `-a-b-c` (Claude Code's project-slug convention). */
+/**
+ * Convert an absolute filesystem path to Claude Code's project-slug
+ * convention used for `~/.claude/projects/<slug>/`. Claude replaces every
+ * non-alphanumeric character (except an already-present `-`) with `-`, so
+ * `/Users/adi/MyWork/Projects/__DPF_DB` becomes
+ * `-Users-adi-MyWork-Projects---DPF-DB` (three dashes: one from the slash
+ * before `__DPF_DB`, two from the two underscores). The previous version
+ * only handled `/`, which silently mis-computed paths for any cwd that
+ * contained underscores, dots, spaces, `@`, etc., so the transcript
+ * existence check in cmdStart/cmdRestart/restore failed and auto-resume
+ * was skipped even when the conversation was on disk.
+ */
 export function slugFromCwd(cwd: string): string {
   if (!cwd) return '';
-  return '-' + cwd.replace(/^\//, '').replace(/\//g, '-');
+  return '-' + cwd.replace(/^\//, '').replace(/[^A-Za-z0-9-]/g, '-');
 }
 
 export function transcriptPathFor(cwd: string, sessionId: string): string {

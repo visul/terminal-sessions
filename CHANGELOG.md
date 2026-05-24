@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.9] — 2026-05-24
+
+### Fixed
+- **`slugFromCwd` now matches Claude Code's actual project-slug encoding.** Claude stores every transcript under `~/.claude/projects/<slug>/<sessionId>.jsonl` where `<slug>` is the cwd with every non-alphanumeric character (except `-`) replaced by `-` — so `/Users/adi/MyWork/Projects/__DPF_DB` becomes `-Users-adi-MyWork-Projects---DPF-DB`. The previous implementation only replaced `/`, silently producing a wrong slug for any cwd that contained underscores, dots, spaces, `@`, etc. The transcript existence check in `cmdStart` / `cmdRestart` / `maybeOfferRestore` then returned false and the auto-resume was skipped — so Stop→Start (and reboot recovery) looked like nothing happened even when the conversation was sitting right on disk. The regex now strips the leading `/`, then replaces every char outside `[A-Za-z0-9-]` with `-`.
+
 ## [0.13.8] — 2026-05-24
 
 ### Added
