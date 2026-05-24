@@ -55,6 +55,7 @@ export async function maybeOfferRestore(
   const wsEntry = index.getWorkspace(ws.hash);
   if (!wsEntry) return EMPTY;
   const candidates: Candidate[] = Object.entries(wsEntry.sessions)
+    .filter(([, meta]) => !meta.stopped)
     .map(([sessionName, meta]) => ({
       sessionName,
       label: meta.label || sessionName,

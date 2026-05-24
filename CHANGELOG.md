@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.13.0] — 2026-05-24
+
+### Added
+- **Stop / Start sessions.** New "Stop" command kills the tmux session but keeps the entry in the sidebar (marked with a muted ■ icon and greyed label). New "Start" command recreates the tmux session and — if a Claude conversation was tracked — auto-runs `claude --resume <id>` to restore the exact conversation. Reachable via the inline action row, right-click menu, or clicking a stopped row directly.
+- **Filter dropdown in the title bar.** A new $(filter) icon lets you switch the sidebar between **All / Running only / Stopped only**. Active filter shown next to the "SESSIONS" header. Workspace counts always show running ▶ / detached ⇄ / stopped ⏸ totals regardless of the active filter.
+- Confirmation modal when stopping a session whose Claude is actively `working` or `tool` (silent otherwise).
+
+### Changed
+- `WorkspaceTreeItem` description now includes a `· N⏸` suffix when any session in that workspace is stopped.
+- `maybeOfferRestore` (workspace-open recovery) now skips sessions explicitly marked `stopped: true` — they stay stopped across VS Code restarts and surface in the sidebar via the merged tree.
+- Tightened existing `viewItem =~ /^session/` `when` clauses to `=~ /^session($|\.muted$)/` so live-only actions (preview, mirror, restart, stop) don't appear on stopped rows.
+
 ## [0.12.5] — 2026-05-01
 
 ### Fixed
