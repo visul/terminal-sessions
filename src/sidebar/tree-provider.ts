@@ -104,16 +104,30 @@ class SessionsTreeProvider
       return [item];
     }
     const sessions = await enrichSessions(tmuxPath, cfg.sessionPrefix, this.index);
+    let filtered = sessions;
+    if (cfg.sidebarFilterMode === 'running') filtered = sessions.filter(s => !s.stopped);
+    else if (cfg.sidebarFilterMode === 'stopped') filtered = sessions.filter(s => s.stopped);
+
     if (!el) {
-      if (sessions.length === 0) {
+      if (filtered.length === 0) {
         this.lastWorkspaceItems.clear();
         this.lastSessionItems.clear();
+        if (sessions.length > 0) {
+          // Filter-induced empty state — distinguish from truly-empty
+          const label = cfg.sidebarFilterMode === 'stopped'
+            ? 'No stopped sessions.'
+            : 'No running sessions.';
+          const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
+          item.description = `${sessions.length} hidden by filter`;
+          item.iconPath = new vscode.ThemeIcon('filter');
+          return [item];
+        }
         const item = new vscode.TreeItem('No persistent sessions yet.',
           vscode.TreeItemCollapsibleState.None);
         item.description = 'Click + to create one';
         return [item];
       }
-      const grouped = groupByWorkspace(sessions);
+      const grouped = groupByWorkspace(filtered);
       const out: vscode.TreeItem[] = [];
       this.lastWorkspaceItems.clear();
       for (const [hash, group] of grouped) {
@@ -300,6 +314,15 @@ export function registerSidebar(
     vscode.window.registerFileDecorationProvider(new StoppedSessionDecorationProvider()),
   );
   treeViewRef = treeView;
+  updateTreeViewDescription();
+  ctx.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(e => {
+      if (e.affectsConfiguration('terminalSessions.sidebarFilterMode')) {
+        updateTreeViewDescription();
+        provider?.refresh();
+      }
+    }),
+  );
 
   // Activity-bar badge: surfaces Claude sessions that need user attention
   // (waiting = Claude paused for approval; working = actively generating).
@@ -368,4 +391,12 @@ export async function revealSessionInSidebar(sessionName: string): Promise<void>
   try {
     await treeViewRef.reveal(item, { select: true, focus: false, expand: false });
   } catch { /* reveal can throw if the item is stale — ignore */ }
+}
+
+function updateTreeViewDescription(): void {
+  if (!treeViewRef) return;
+  const cfg = getConfig();
+  if (cfg.sidebarFilterMode === 'running') treeViewRef.description = 'Running only';
+  else if (cfg.sidebarFilterMode === 'stopped') treeViewRef.description = 'Stopped only';
+  else treeViewRef.description = undefined;
 }

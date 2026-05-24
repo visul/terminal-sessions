@@ -3,6 +3,8 @@ import * as vscode from 'vscode';
 export type AutoRestoreMode = 'auto' | 'ask' | 'off';
 export type NativeNotifMode = 'auto' | 'always' | 'never';
 export type SidebarSortMode = 'custom' | 'mru' | 'created' | 'alphabetical';
+export type SidebarFilterMode = 'all' | 'running' | 'stopped';
+export const FILTER_MODES: SidebarFilterMode[] = ['all', 'running', 'stopped'];
 export type ClaudeDetailsMode = 'auto' | 'always' | 'off';
 
 export const SORT_MODES: SidebarSortMode[] = ['custom', 'mru', 'created', 'alphabetical'];
@@ -27,6 +29,7 @@ export interface Config {
   claudeStopMinDurationSeconds: number;
   autoResumeClaude: boolean;
   sidebarSortMode: SidebarSortMode;
+  sidebarFilterMode: SidebarFilterMode;
   claudeSidebarDetails: ClaudeDetailsMode;
   contextWarnPct: number;
   showCompletedSubagents: boolean;
@@ -37,6 +40,9 @@ export function getConfig(): Config {
   const rawMode = c.get<string>('sidebarSortMode', 'created');
   const sortMode = (SORT_MODES as string[]).includes(rawMode)
     ? (rawMode as SidebarSortMode) : 'created';
+  const rawFilter = c.get<string>('sidebarFilterMode', 'all');
+  const filterMode = (FILTER_MODES as string[]).includes(rawFilter)
+    ? (rawFilter as SidebarFilterMode) : 'all';
   return {
     tmuxPath: c.get('tmuxPath', ''),
     sessionPrefix: c.get('sessionPrefix', 'ts'),
@@ -58,6 +64,7 @@ export function getConfig(): Config {
     claudeStopMinDurationSeconds: c.get('claudeStopMinDurationSeconds', 15),
     autoResumeClaude: c.get('autoResumeClaude', false),
     sidebarSortMode: sortMode,
+    sidebarFilterMode: filterMode,
     claudeSidebarDetails: ((): ClaudeDetailsMode => {
       const v = c.get<string>('claudeSidebarDetails', 'auto');
       return v === 'always' || v === 'off' || v === 'auto' ? v : 'auto';
@@ -70,6 +77,11 @@ export function getConfig(): Config {
 export async function setSortMode(mode: SidebarSortMode): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
   await c.update('sidebarSortMode', mode, vscode.ConfigurationTarget.Global);
+}
+
+export async function setFilterMode(mode: SidebarFilterMode): Promise<void> {
+  const c = vscode.workspace.getConfiguration('terminalSessions');
+  await c.update('sidebarFilterMode', mode, vscode.ConfigurationTarget.Global);
 }
 
 export const PROFILE_ID = 'terminalSessions.persistent';

@@ -14,16 +14,18 @@ export class WorkspaceTreeItem extends vscode.TreeItem {
   ) {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
     this.contextValue = 'workspace';
-    const active = sessions.filter(s => s.attached).length;
-    const detached = sessions.length - active;
-    this.description = `${active}▶ ${detached}⇄`;
+    const stopped = sessions.filter(s => s.stopped).length;
+    const active = sessions.filter(s => !s.stopped && s.attached).length;
+    const detached = sessions.filter(s => !s.stopped && !s.attached).length;
+    const stoppedSuffix = stopped > 0 ? ` · ${stopped}⏸` : '';
+    this.description = `${active}▶ ${detached}⇄${stoppedSuffix}`;
     this.iconPath = new vscode.ThemeIcon('folder');
     this.tooltip = new vscode.MarkdownString(
       [
         `**${label}**`,
         `\`${workspacePath || label}\``,
         '',
-        `Active: ${active}  ·  Detached: ${detached}`,
+        `Active: ${active}  ·  Detached: ${detached}${stopped > 0 ? `  ·  Stopped: ${stopped}` : ''}`,
       ].join('\n\n'),
     );
   }
