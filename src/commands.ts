@@ -4,11 +4,11 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES } from './config';
 import * as tmux from './tmux';
-import { SessionIndex, enrichSessions, groupByWorkspace } from './session-manager';
-import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal } from './profile-provider';
+import { SessionIndex, enrichSessions } from './session-manager';
+import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem } from './sidebar/items';
-import { refreshSidebar, collapseAllSessions, sortSessions } from './sidebar/tree-provider';
+import { refreshSidebar, collapseAllSessions, revealSessionInSidebar } from './sidebar/tree-provider';
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
@@ -243,6 +243,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
+    vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
   );
 
   // Keep a VS Code context var in sync with the global alert setting so the
@@ -982,33 +983,46 @@ async function cmdReattachAll(
   const cfg = getConfig();
   const sessions = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
 
-  // Mirror the sidebar grouping + sort exactly so ordering matches what the
-  // user sees. groupByWorkspace preserves no order, so sort workspace hashes
-  // alphabetically — matches the sidebar's deterministic group order.
-  const groups = groupByWorkspace(sessions);
-  const orderedHashes = Array.from(groups.keys()).sort();
-  const ordered: SessionInfo[] = [];
-  for (const h of orderedHashes) {
-    const g = sortSessions(groups.get(h)!, cfg.sidebarSortMode);
-    for (const s of g) ordered.push(s);
-  }
+  // Index live sessions by tmux name for quick lookup once a terminal resolves.
+  const byName = new Map<string, SessionInfo>();
+  for (const s of sessions) byName.set(s.name, s);
 
+  // Scan the OPEN terminals in panel order (window.terminals is creation/restore
+  // order) instead of iterating sessions. This: (a) catches tabs the user
+  // renamed so they no longer carry the `#<tabId>` we'd match on — we recover
+  // the tmux name from the live process via PID; and (b) re-creates the tabs
+  // exactly where they sat, since we dispose+create left-to-right.
   let skippedStopped = 0;
-  let skippedNoTab = 0;
   let skippedLive = 0;
-  const toReattach: Array<{ session: SessionInfo; ghost: vscode.Terminal }> = [];
-  for (const s of ordered) {
+  let unresolved = 0;
+  const queued = new Set<string>();
+  const toReattach: Array<{ session: SessionInfo; ghost: vscode.Terminal; softReconnect: boolean }> = [];
+  for (const term of vscode.window.terminals) {
+    const exited = !!term.exitStatus;
+    // A reload-restored tab keeps showing the ⚠ "disconnected" badge but carries
+    // NO exitStatus, and VS Code trims its creationOptions so shellArgs are gone.
+    // That absence (no shellArgs, not exited) is our signal it's stale. A tab we
+    // created this session still has its shellArgs and is genuinely live.
+    const restoredDisconnected = !exited && sessionNameForTerminal(term) === undefined;
+    if (!exited && !restoredDisconnected) { skippedLive++; continue; }
+    // eslint-disable-next-line no-await-in-loop
+    const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
+    const s = name ? byName.get(name) : undefined;
+    if (!name || !s) { unresolved++; continue; }
     if (s.stopped) { skippedStopped++; continue; }
-    const term = findTerminalForSession(s.name);
-    if (!term) { skippedNoTab++; continue; }
-    if (!term.exitStatus) { skippedLive++; continue; }
-    toReattach.push({ session: s, ghost: term });
+    if (queued.has(name)) continue;
+    queued.add(name);
+    // Soft reconnect: the tmux session is still alive with its program inside,
+    // so `tmux attach` fully restores it. Skip the agent resume that would
+    // otherwise type into a live TUI — resume stays reserved for exited ghosts
+    // whose pane may have fallen back to a bare shell.
+    toReattach.push({ session: s, ghost: term, softReconnect: restoredDisconnected });
   }
 
   if (toReattach.length === 0) {
     const parts: string[] = ['No ghost terminals to re-attach.'];
     if (skippedLive > 0) parts.push(`${skippedLive} already live`);
-    if (skippedNoTab > 0) parts.push(`${skippedNoTab} have no tab in panel`);
+    if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
     if (skippedStopped > 0) parts.push(`${skippedStopped} stopped`);
     vscode.window.showInformationMessage(parts.join(' · '));
     return;
@@ -1025,7 +1039,7 @@ async function cmdReattachAll(
     cwd: string;
   }> = [];
 
-  for (const { session: s, ghost } of toReattach) {
+  for (const { session: s, ghost, softReconnect } of toReattach) {
     try {
       // Dispose the ghost first so its slot is freed before we createTerminal
       // again — otherwise tmux sees a stale client briefly and the new tab
@@ -1039,23 +1053,27 @@ async function cmdReattachAll(
 
       // Walk full history to skip dead head sessions (agents prune 0-turn
       // sessions, leaving the head ghost-pointing at a deleted transcript).
-      const { provider: rProvider, history: rHistory } =
-        resumeContextFor(index, registry, claudeTracker, s.workspaceHash, s.name);
-      const reattachResume = resolveResumeFromHistory(
-        rProvider,
-        rHistory,
-        cwd,
-        s.workspacePath,
-      );
-      if (reattachResume) {
-        resumes.push({
-          term,
-          provider: rProvider,
-          sessionId: reattachResume.sessionId,
-          label: s.label || s.name,
-          transcriptPath: reattachResume.transcriptPath,
+      // Only for true exited ghosts — a soft reconnect re-attaches the live
+      // tmux session as-is, so there is nothing to resume.
+      if (!softReconnect) {
+        const { provider: rProvider, history: rHistory } =
+          resumeContextFor(index, registry, claudeTracker, s.workspaceHash, s.name);
+        const reattachResume = resolveResumeFromHistory(
+          rProvider,
+          rHistory,
           cwd,
-        });
+          s.workspacePath,
+        );
+        if (reattachResume) {
+          resumes.push({
+            term,
+            provider: rProvider,
+            sessionId: reattachResume.sessionId,
+            label: s.label || s.name,
+            transcriptPath: reattachResume.transcriptPath,
+            cwd,
+          });
+        }
       }
       // Tiny pause between createTerminal calls so the tmux server isn't
       // hammered with N attach requests at once on big workspaces.
@@ -1087,7 +1105,7 @@ async function cmdReattachAll(
   ];
   if (resumed > 0) parts.push(`auto-resumed Claude in ${resumed}`);
   if (skippedLive > 0) parts.push(`${skippedLive} already live`);
-  if (skippedNoTab > 0) parts.push(`${skippedNoTab} no tab`);
+  if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
   if (failed > 0) parts.push(`${failed} failed`);
   vscode.window.showInformationMessage(parts.join(' · '));
   refreshSidebar();
@@ -1383,7 +1401,9 @@ async function cmdRevealSessionFolder(
     const term = (maybeTerm && typeof maybeTerm.sendText === 'function')
       ? maybeTerm
       : vscode.window.activeTerminal;
-    const name = term ? sessionNameForTerminal(term) : undefined;
+    // Robust to reload-restored (⚠) terminals whose shellArgs were trimmed, and
+    // to renamed tabs (resolves from the live process via PID as a last resort).
+    const name = term ? await resolveTmuxNameForTerminalLive(term, index, getConfig().sessionPrefix) : undefined;
     const parsed = name ? parseSessionName(name, getConfig().sessionPrefix) : undefined;
     if (parsed && name) {
       const meta = index.getSessionMeta(parsed.hash, name);
@@ -1408,6 +1428,32 @@ async function cmdRevealSessionFolder(
   } else {
     await vscode.commands.executeCommand('revealInExplorer', uri);
   }
+}
+
+/**
+ * From a terminal tab / body, locate and select that session in the Terminal
+ * Sessions sidebar — expanding any parent group/master so it scrolls into view.
+ * VS Code exposes no double-click or inline-hover action for terminal tabs, so
+ * this rides the right-click context menu (and tab focus already auto-reveals
+ * via the onDidChangeActiveTerminal handler in extension.ts).
+ */
+async function cmdRevealSessionInSidebar(index: SessionIndex, arg?: unknown): Promise<void> {
+  const maybeTerm = arg as vscode.Terminal | undefined;
+  const term = (maybeTerm && typeof maybeTerm.sendText === 'function')
+    ? maybeTerm
+    : vscode.window.activeTerminal;
+  const name = term
+    ? await resolveTmuxNameForTerminalLive(term, index, getConfig().sessionPrefix)
+    : undefined;
+  if (!name) {
+    vscode.window.showWarningMessage(
+      'Could not determine the session for this terminal. Click inside a session terminal first.',
+    );
+    return;
+  }
+  // Make sure the view container is visible, then select + focus the session.
+  await vscode.commands.executeCommand(COMMAND.revealSidebar);
+  await revealSessionInSidebar(name, true);
 }
 
 async function cmdAttachTo(index: SessionIndex, item?: SessionTreeItem): Promise<void> {

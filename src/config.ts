@@ -136,4 +136,5 @@ export const COMMAND = {
   moveGroupToMaster: 'terminalSessions.moveGroupToMaster',
   revealSessionFolder: 'terminalSessions.revealSessionFolder',
   revealSessionFolderFinder: 'terminalSessions.revealSessionFolderFinder',
+  revealSessionInSidebar: 'terminalSessions.revealSessionInSidebar',
 } as const;

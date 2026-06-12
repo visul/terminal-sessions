@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { execFileSync } from 'child_process';
 import { PROFILE_ID, getConfig } from './config';
 import * as tmux from './tmux';
 import { currentWorkspace, sessionName, parseSessionName } from './workspace-id';
@@ -109,6 +110,82 @@ export function findTerminalForSession(name: string): vscode.Terminal | undefine
     if (t.name && t.name.endsWith(suffix)) byName.push(t);
   }
   return byName.find(t => !t.exitStatus) ?? byName[0];
+}
+
+/**
+ * Resolve the tmux session name for a terminal, robust to window reloads.
+ * VS Code trims `creationOptions` on restored terminals, so the primary
+ * shellArgs-based lookup (`sessionNameForTerminal`) returns undefined for the
+ * ⚠ "disconnected" tabs left after a reload. Fall back to the tab label, which
+ * still ends with `#<tabId>`, and find the matching session in the index.
+ */
+export function resolveSessionNameForTerminal(
+  t: vscode.Terminal,
+  index: SessionIndex,
+  prefix: string,
+): string | undefined {
+  const direct = sessionNameForTerminal(t);
+  if (direct) return direct;
+
+  const m = /#(\d+)\s*$/.exec(t.name || '');
+  if (!m) return undefined;
+  const tabId = parseInt(m[1], 10);
+  const labelPart = (t.name || '').replace(/#\d+\s*$/, '').trim();
+
+  const matches: string[] = [];
+  for (const ws of Object.values(index.getAllWorkspaces())) {
+    for (const sName of Object.keys(ws.sessions || {})) {
+      const parsed = parseSessionName(sName, prefix);
+      if (parsed && parsed.tabId === tabId) matches.push(sName);
+    }
+  }
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1 && labelPart) {
+    // tabId is unique per workspace but not globally — disambiguate by label.
+    for (const sName of matches) {
+      const parsed = parseSessionName(sName, prefix)!;
+      if (index.getSessionMeta(parsed.hash, sName)?.label === labelPart) return sName;
+    }
+  }
+  return matches[0];
+}
+
+/**
+ * Last-resort identity: read the terminal's live process. The tmux name we need
+ * is right there in `tmux … attach-session -t <name>` even when (a) a reload
+ * trimmed the shellArgs and (b) the user renamed the tab so it no longer carries
+ * the `#<tabId>` we'd otherwise match on. Rename-proof and reload-proof.
+ */
+async function tmuxNameFromTerminalProcess(t: vscode.Terminal): Promise<string | undefined> {
+  let pid: number | undefined;
+  try { pid = await t.processId; } catch { pid = undefined; }
+  if (!pid) return undefined;
+  try {
+    const out = execFileSync('ps', ['-ww', '-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    const m = /attach-session\s+-t\s+(\S+)/.exec(out) || /\s-t\s+(\S+)/.exec(out);
+    return m ? m[1] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Resolve a terminal's tmux session name, robust to BOTH window reloads (trimmed
+ * shellArgs) AND user-renamed tabs (no `#<tabId>` in the label). Tries the cheap
+ * synchronous paths first (shellArgs, then tab label), then falls back to the
+ * live process args via PID.
+ */
+export async function resolveTmuxNameForTerminalLive(
+  t: vscode.Terminal,
+  index: SessionIndex,
+  prefix: string,
+): Promise<string | undefined> {
+  const byName = resolveSessionNameForTerminal(t, index, prefix);
+  if (byName) return byName;
+  return tmuxNameFromTerminalProcess(t);
 }
 
 export async function openTerminalForSession(

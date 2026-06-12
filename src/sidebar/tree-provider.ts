@@ -647,26 +647,33 @@ export function refreshSidebar(): void { provider?.refresh(); }
 
 let treeViewRef: vscode.TreeView<vscode.TreeItem> | undefined;
 
-/** Select and scroll to a session in the sidebar by tmux session name. */
-export async function revealSessionInSidebar(sessionName: string): Promise<void> {
+/** Select and scroll to a session in the sidebar by tmux session name.
+ *  `focus` true also moves keyboard focus to the tree (for the explicit
+ *  "Reveal Session in Sidebar" command); the auto-highlight on tab focus
+ *  leaves it false so it never steals focus from the terminal. */
+export async function revealSessionInSidebar(sessionName: string, focus = false): Promise<void> {
   if (!provider || !treeViewRef) return;
-  // Ensure the tree has been rendered at least once for this element.
   let item = provider.getLastSessionItem(sessionName);
   if (!item) {
-    // Force a render by asking for roots, then re-check.
-    await provider.getChildren();
-    const roots = await provider.getChildren();
-    for (const r of roots) {
-      // Expand each workspace child to populate session map.
-      // getChildren(workspaceItem) renders its sessions.
-      // eslint-disable-next-line no-await-in-loop
-      await provider.getChildren(r);
+    // Not yet rendered — happens when the session lives in a collapsed group or
+    // master. Walk the whole tree (workspaces → masters → groups) so its
+    // TreeItem is built and cached before reveal. reveal() then expands the
+    // ancestor chain itself via getParent().
+    const stack: vscode.TreeItem[] = await provider.getChildren();
+    let guard = 0;
+    while (stack.length && guard++ < 5000) {
+      const node = stack.pop()!;
+      if (node instanceof WorkspaceTreeItem || node instanceof GroupTreeItem) {
+        // eslint-disable-next-line no-await-in-loop
+        const kids = await provider.getChildren(node);
+        for (const k of kids) stack.push(k);
+      }
     }
     item = provider.getLastSessionItem(sessionName);
   }
   if (!item) return;
   try {
-    await treeViewRef.reveal(item, { select: true, focus: false, expand: false });
+    await treeViewRef.reveal(item, { select: true, focus, expand: false });
   } catch { /* reveal can throw if the item is stale — ignore */ }
 }
 

@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.14.3] — 2026-06-12
+
+### Added
+- **"Reveal Session in Sidebar" from a terminal.** Right-click a terminal tab (or inside the terminal body) → "Reveal Session in Sidebar" to select and scroll to that session in the Terminal Sessions tree, expanding any parent group/master so it comes into view. Focusing a terminal tab already auto-highlights its session; this is the explicit, deliberate trigger. (VS Code exposes no double-click or inline hover-button action for terminal tabs, so the context menu is the available surface.)
+
+### Fixed
+- **Re-attach, reveal, and tab-focus highlight now work on tabs you renamed (no `#<tabId>` in the label).** Identity previously relied on either the terminal's `shellArgs` (trimmed on reload) or the tab label's `#<tabId>` (gone once you rename the tab), so a renamed-and-reloaded tab couldn't be matched to its tmux session — re-attach reported it as "unrecognized" and did nothing. As a last resort it now reads the live `tmux … attach-session -t <name>` process via the terminal's PID, which survives both reload and rename. Re-attach also now scans the open terminals directly (in panel order) instead of iterating sessions, so renamed tabs are no longer missed.
+- **Tab-focus auto-highlight now works on reload-restored terminals.** Clicking a terminal tab is meant to highlight its session in the sidebar, but it silently did nothing for ⚠ disconnected tabs after a reload (their trimmed `shellArgs` hid the tmux name). It now resolves the session robustly via the tab label, and also reveals sessions nested inside collapsed groups/masters.
+- **"Re-attach All Ghost Terminals" now also revives the ⚠ disconnected tabs left after a window reload, not just process-exited ones.** After a Reload Window (as opposed to a full quit), VS Code keeps the terminal's pty but marks the tab with a warning triangle; these tabs carry no `exitStatus`, so the old check counted them as "live" and the button reported "N already live" while doing nothing. They are now detected (VS Code trims their `creationOptions`, so the absence of the tmux name in `shellArgs` is the signal) and reconnected. Because the underlying tmux session is still alive with its program inside, these are reconnected with a plain `tmux attach` and **no** agent-resume injection (resume stays reserved for true exited ghosts whose pane may have dropped to a bare shell), so it never types `claude --resume` into a live agent.
+- **"Reveal Session Folder" works on reload-restored terminals.** The terminal-side reveal previously failed with "Could not determine the session folder" on ⚠ disconnected tabs, because their trimmed `shellArgs` hid the tmux name. It now falls back to the tab label's `#<tabId>` to find the session in the index.
+- **Re-attach preserves the existing tab order.** Re-attached terminals are now recreated in the order they currently sit in the panel (left to right), so they come back exactly where you had them instead of jumping to sidebar-sort order.
+
 ## [0.14.2] — 2026-06-10
 
 ### Added

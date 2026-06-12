@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.14.2",
+  "version": "0.14.3",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -434,6 +434,11 @@
       {
         "command": "terminalSessions.revealSessionFolderFinder",
         "title": "Reveal Session Folder in Finder"
+      },
+      {
+        "command": "terminalSessions.revealSessionInSidebar",
+        "title": "Reveal Session in Sidebar",
+        "icon": "$(list-tree)"
       }
     ],
     "menus": {
@@ -444,6 +449,10 @@
         }
       ],
       "terminal/context": [
+        {
+          "command": "terminalSessions.revealSessionInSidebar",
+          "group": "navigation@9"
+        },
         {
           "command": "terminalSessions.revealSelectionInFinder",
           "group": "navigation@10"
@@ -462,6 +471,10 @@
         }
       ],
       "terminal/title/context": [
+        {
+          "command": "terminalSessions.revealSessionInSidebar",
+          "group": "navigation@9"
+        },
         {
           "command": "terminalSessions.revealSessionFolder",
           "group": "navigation@10"

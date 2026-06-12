@@ -11,7 +11,7 @@ import { maybeOfferRestore } from './restore';
 import { ClaudeTracker, isClaudeHookInstalled, needsHookUpgrade } from './claude-tracker';
 import { AgentRegistry } from './agents/registry';
 import { ClaudeSearchIndex } from './claude-search';
-import { sessionNameForTerminal } from './profile-provider';
+import { resolveTmuxNameForTerminalLive } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import { getConfig } from './config';
 import { registerRevealPath } from './reveal-path';
@@ -52,15 +52,19 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.window.onDidOpenTerminal(() => refreshSidebar()),
     vscode.window.onDidChangeActiveTerminal(t => {
       if (!t) return;
-      const name = sessionNameForTerminal(t);
-      if (!name) return;
-      const parsed = parseSessionName(name, getConfig().sessionPrefix);
-      if (!parsed) return;
-      index.setSessionLastActive(parsed.hash, name);
-      if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
-      // Highlight the matching session in our sidebar so it's easy to locate
-      // when you have many terminal tabs open.
-      void revealSessionInSidebar(name);
+      void (async () => {
+        // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed
+        // tabs (no #tabId in the label) — falls back to the live process via PID.
+        const name = await resolveTmuxNameForTerminalLive(t, index, getConfig().sessionPrefix);
+        if (!name) return;
+        const parsed = parseSessionName(name, getConfig().sessionPrefix);
+        if (!parsed) return;
+        index.setSessionLastActive(parsed.hash, name);
+        if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
+        // Highlight the matching session in our sidebar so it's easy to locate
+        // when you have many terminal tabs open.
+        void revealSessionInSidebar(name);
+      })();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
