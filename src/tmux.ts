@@ -1,4 +1,4 @@
-import { execFile } from 'child_process';
+import { execFile, execFileSync } from 'child_process';
 import { promisify } from 'util';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -9,7 +9,62 @@ const execFileP = promisify(execFile);
 
 export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
 
-const CONF_VERSION = 'ts-tmux-conf-v4';
+const CONF_VERSION = 'ts-tmux-conf-v5';
+
+/** True if a command is resolvable on PATH (login shell, for GUI-launched apps). */
+function hasCmd(cmd: string): boolean {
+  try {
+    execFileSync('/bin/sh', ['-lc', `command -v ${cmd}`], { stdio: 'ignore' });
+    return true;
+  } catch { return false; }
+}
+
+/** Pick a real clipboard program for this platform. Returns undefined when none
+ *  is available (e.g. a headless Linux box) so we can fall back to OSC 52. */
+function clipboardCopyCmd(): string | undefined {
+  if (process.platform === 'darwin') return '/usr/bin/pbcopy';
+  if (hasCmd('wl-copy')) return 'wl-copy';
+  if (hasCmd('xclip')) return 'xclip -selection clipboard -in';
+  if (hasCmd('xsel')) return 'xsel --clipboard --input';
+  return undefined;
+}
+
+/** Clipboard + mouse-drag copy bindings.
+ *
+ *  Cursor/VS Code mis-decode OSC 52 clipboard payloads as Latin-1, which mangles
+ *  non-ASCII text (e.g. Romanian ș → È™, CJK, Cyrillic) when you paste into other
+ *  apps — the terminal shows it correctly, but the clipboard bytes are corrupted.
+ *  (Cursor forum + anthropics/claude-code#66098/#66269, microsoft/terminal#7819.)
+ *
+ *  Fix: pipe the selection to a real clipboard program (pbcopy / wl-copy / xclip),
+ *  which writes correct UTF-8 straight to the system clipboard, bypassing the
+ *  broken OSC 52 path. set-clipboard = external still lets apps INSIDE tmux use
+ *  OSC 52 themselves; only tmux's own copy stops using it. Where no clipboard
+ *  program exists, we keep the OSC 52 behaviour as a fallback. */
+function clipboardConf(): string {
+  const cmd = clipboardCopyCmd();
+  if (cmd) {
+    const tool = cmd.split(' ')[0].split('/').pop();
+    return `# ── Clipboard: copy via ${tool} (correct UTF-8), not OSC 52 ──────────
+# Cursor/VS Code mis-decode OSC 52 as Latin-1 and mangle non-ASCII on paste into
+# other apps; piping to ${tool} writes correct UTF-8 straight to the clipboard.
+set -g set-clipboard external
+
+# ── Mouse-drag selection copies (via ${tool}) and exits copy-mode ─────────
+unbind -T copy-mode    MouseDragEnd1Pane
+unbind -T copy-mode-vi MouseDragEnd1Pane
+bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "${cmd}"`;
+  }
+  return `# ── Clipboard (OSC 52 fallback — no native clipboard tool found) ──────────
+set -g set-clipboard on
+
+# ── Mouse-drag selection stays in copy-mode (don't jump to prompt) ────────
+unbind -T copy-mode    MouseDragEnd1Pane
+unbind -T copy-mode-vi MouseDragEnd1Pane
+bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-selection-no-clear
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-no-clear`;
+}
 
 const DEFAULT_CONF = `# Terminal Sessions — tmux config (${CONF_VERSION})
 # Location: ~/.terminal-sessions/tmux.conf  (safe to edit; never overwritten on update)
@@ -56,14 +111,7 @@ set -as terminal-features 'xterm*:extkeys'
 set-environment -g CLAUDE_CODE_NO_FLICKER 1
 set-environment -g CLAUDE_CODE_DISABLE_MOUSE_CLICKS 1
 
-# ── Clipboard (OSC 52 — works in Cursor/VS Code/iTerm) ────────────────────
-set -g set-clipboard on
-
-# ── Mouse-drag selection stays in copy-mode (don't jump to prompt) ────────
-unbind -T copy-mode    MouseDragEnd1Pane
-unbind -T copy-mode-vi MouseDragEnd1Pane
-bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-selection-no-clear
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-selection-no-clear
+${clipboardConf()}
 
 # ── Right-click: let Cursor show its context menu (no double-menu) ────────
 unbind -T root MouseDown3Pane

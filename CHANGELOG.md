@@ -4,6 +4,13 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.14.4] — 2026-06-12
+
+### Fixed
+- **Copying non-ASCII text from the terminal no longer mangles it on paste (ș → È™).** Cursor/VS Code mis-decode OSC 52 clipboard payloads as Latin-1, so Romanian diacritics (and CJK, Cyrillic, etc.) came out double-encoded when you pasted a terminal selection into another app — even though the terminal showed them correctly. This is an editor-side bug (works in VS Code, broken in Cursor; see Cursor forum + anthropics/claude-code#66098/#66269, microsoft/terminal#7819). The managed `~/.terminal-sessions/tmux.conf` now copies the selection through a real clipboard program — `pbcopy` on macOS, `wl-copy`/`xclip`/`xsel` on Linux — which writes correct UTF-8 straight to the system clipboard and bypasses the broken OSC 52 path. `set-clipboard` is set to `external` so apps inside tmux can still use OSC 52 themselves; only tmux's own copy stops using it. Where no clipboard program is found (e.g. a headless box), it falls back to the previous OSC 52 behaviour.
+  - **Mouse-drag selection** now copies via the clipboard program and exits copy-mode. Tip: select with a **plain drag** (no Option/Shift) so the selection goes through tmux → the footer shows "copied N chars to clipboard" and the paste is clean. Holding Option routes the copy through Cursor's own (buggy) clipboard path instead.
+  - The tmux.conf version bumped (`v4` → `v5`); the extension offers to regenerate it (a backup of your current file is saved alongside).
+
 ## [0.14.3] — 2026-06-12
 
 ### Added
