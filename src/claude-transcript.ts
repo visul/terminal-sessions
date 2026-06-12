@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { costForUsage } from './claude-pricing';
+import type { AgentProvider, TranscriptTailState } from './agents/types';
 
 export type SubagentState = 'working' | 'tool' | 'done';
 
@@ -61,28 +62,17 @@ export interface TranscriptSnapshot {
   subagents: SubagentSnapshot[];
 }
 
-interface MsgInfo {
+export interface MsgInfo {
   /** Subagent id this message belongs to (undefined = main thread). */
   belongsTo?: string;
   /** Task tool_use ids spawned by this message (usually 0 or 1). */
   spawnedTasks: string[];
 }
 
-interface TailState {
-  snapshot: TranscriptSnapshot;
-  offset: number;
-  watcher?: fs.FSWatcher;
-  pendingToolUseIds: Set<string>;
-  /** message.id values we've already billed for, to de-duplicate retried turns. */
-  seenMessageIds: Set<string>;
-  /** Per-subagent mutable state (same items as snapshot.subagents, indexed). */
-  subagentMap: Map<string, SubagentSnapshot>;
-  /** msg.uuid → parent lookup so we can attribute sidechain activity. */
-  msgInfo: Map<string, MsgInfo>;
-  /** Byte offset at the start of the current line being parsed (for
-   *  firstOffset bookmarking). */
-  currentLineStart: number;
-}
+// The mutable tail state moved to agents/types.ts as TranscriptTailState so the
+// AgentProvider interface can reference it. Local alias keeps the rest of this
+// file (and the Claude reducer) reading the same.
+type TailState = TranscriptTailState;
 
 /**
  * Convert an absolute filesystem path to Claude Code's project-slug
@@ -103,6 +93,129 @@ export function slugFromCwd(cwd: string): string {
 
 export function transcriptPathFor(cwd: string, sessionId: string): string {
   return path.join(os.homedir(), '.claude', 'projects', slugFromCwd(cwd), `${sessionId}.jsonl`);
+}
+
+/**
+ * Locate a transcript by sessionId regardless of which project-slug directory
+ * Claude actually wrote it to. The slug Claude chose at session-start time
+ * depends on the cwd in effect when `claude` was launched — that often diverges
+ * from the tmux session's recorded `folderPath` (user `cd`-ed into a subdir,
+ * resumed from the workspace root, etc.). We first try the expected slug as a
+ * fast path; if absent, fall back to a single-level scan of
+ * `~/.claude/projects/<slug>/<sessionId>.jsonl` across all sibling project
+ * dirs (~20-50 entries on a typical machine, cheap and cached by the OS).
+ * Returns the absolute path if found, undefined otherwise — undefined means
+ * `claude --resume <id>` would fail and the auto-resume should be skipped.
+ */
+export function findTranscriptBySessionId(cwd: string, sessionId: string): string | undefined {
+  const fastPath = transcriptPathFor(cwd, sessionId);
+  if (fs.existsSync(fastPath)) return fastPath;
+  const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
+  let entries: string[];
+  try { entries = fs.readdirSync(projectsRoot); }
+  catch { return undefined; } // ~/.claude/projects doesn't exist yet
+  for (const slug of entries) {
+    const candidate = path.join(projectsRoot, slug, `${sessionId}.jsonl`);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Read the absolute cwd Claude was launched from for a given transcript.
+ * Claude embeds it in every user-message event under the `cwd` field; we scan
+ * for the first line that has it (typically within the first few entries).
+ *
+ * `claude --resume <id>` is cwd-sensitive — it only looks in the project that
+ * matches the current cwd's slug, so resuming from the wrong directory fails
+ * with "No conversation found with session ID". We use this helper to `cd`
+ * back to the original cwd before sending the resume command.
+ *
+ * Returns undefined if the file is unreadable or has no `cwd` field in the
+ * first 100 lines; callers fall back to running `claude --resume` from
+ * whatever cwd the terminal landed in.
+ */
+/**
+ * Read multiple summary fields from a transcript in one pass: cwd of the
+ * Claude session, total line count (proxy for conversation length), file
+ * mtime, and the first user prompt (preview for the manual-resume picker).
+ * Reads up to `maxScanLines` for cwd/first-user; counts full lines via
+ * size-based newline tally for the total. Returns undefined if unreadable.
+ */
+export interface TranscriptSummary {
+  cwd?: string;
+  firstUserMessage?: string;
+  lineCount: number;
+  byteSize: number;
+  mtimeMs: number;
+}
+export function readTranscriptSummary(transcriptPath: string): TranscriptSummary | undefined {
+  try {
+    const stat = fs.statSync(transcriptPath);
+    const buf = fs.readFileSync(transcriptPath, 'utf8');
+    let cwd: string | undefined;
+    let firstUser: string | undefined;
+    let lineCount = 0;
+    // Walk lines, but only parse the first ~200 for cwd/first-user — the rest
+    // is just counted. Saves a lot of JSON.parse work on 22k-line transcripts.
+    let cursor = 0;
+    while (cursor < buf.length) {
+      const next = buf.indexOf('\n', cursor);
+      const end = next < 0 ? buf.length : next;
+      const line = buf.slice(cursor, end);
+      if (line.length > 0) {
+        lineCount++;
+        if (lineCount <= 200 && line[0] === '{' && (!cwd || !firstUser)) {
+          try {
+            const obj = JSON.parse(line);
+            if (!cwd && typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) {
+              cwd = obj.cwd;
+            }
+            if (!firstUser && obj.type === 'user') {
+              const c = obj.message?.content;
+              if (typeof c === 'string') firstUser = c;
+              else if (Array.isArray(c)) {
+                for (const p of c) {
+                  if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
+                    firstUser = p.text; break;
+                  }
+                }
+              }
+            }
+          } catch { /* malformed line */ }
+        }
+      }
+      if (next < 0) break;
+      cursor = next + 1;
+    }
+    return {
+      cwd,
+      firstUserMessage: firstUser?.slice(0, 200),
+      lineCount,
+      byteSize: stat.size,
+      mtimeMs: stat.mtimeMs,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function readTranscriptCwd(transcriptPath: string): string | undefined {
+  try {
+    const buf = fs.readFileSync(transcriptPath, 'utf8');
+    const lines = buf.split('\n');
+    for (let i = 0; i < Math.min(lines.length, 100); i++) {
+      const line = lines[i];
+      if (!line || line[0] !== '{') continue;
+      try {
+        const obj = JSON.parse(line);
+        if (typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) {
+          return obj.cwd;
+        }
+      } catch { /* malformed line, keep scanning */ }
+    }
+  } catch { /* transcript gone or unreadable */ }
+  return undefined;
 }
 
 /**
@@ -131,8 +244,10 @@ export class TranscriptTailer {
     return this.tails.get(sessionId)?.snapshot;
   }
 
-  /** Start tailing the transcript for a session. Idempotent. */
-  start(sessionId: string, filePath: string): void {
+  /** Start tailing the transcript for a session. Idempotent. The provider owns
+   *  the per-line parsing (`reduceTranscriptLine`) and optional post-delta scan
+   *  (`afterTranscriptDelta`). */
+  start(sessionId: string, filePath: string, provider: AgentProvider): void {
     if (!sessionId || !filePath) return;
     const existing = this.tails.get(sessionId);
     if (existing && existing.snapshot.path === filePath) return;
@@ -157,6 +272,7 @@ export class TranscriptTailer {
       subagentMap: new Map(),
       msgInfo: new Map(),
       currentLineStart: 0,
+      provider,
     };
     this.tails.set(sessionId, state);
     this.readDelta(sessionId);
@@ -198,7 +314,7 @@ export class TranscriptTailer {
     // have been updated — re-scan the subagents dir as a cheap periodic tick.
     if (stat.size === state.offset) {
       const before = state.subagentMap.size;
-      const mapChanged = scanBackgroundAgents(state);
+      const mapChanged = state.provider.afterTranscriptDelta?.(state) ?? false;
       if (mapChanged || state.subagentMap.size !== before) {
         state.snapshot.subagents = Array.from(state.subagentMap.values());
         for (const cb of this.listeners) cb(sessionId, state.snapshot);
@@ -224,7 +340,7 @@ export class TranscriptTailer {
     for (const line of text.split('\n')) {
       if (line.length === 0) { cursor += 1; continue; } // eaten newline
       state.currentLineStart = cursor;
-      if (this.applyLine(state, line)) changed = true;
+      if (state.provider.reduceTranscriptLine(state, line)) changed = true;
       cursor += Buffer.byteLength(line, 'utf8') + 1; // +1 for the \n
     }
 
@@ -234,7 +350,7 @@ export class TranscriptTailer {
     // a `.meta.json`. These are NOT sidechain messages in the main jsonl,
     // so the per-line parser above misses them. Merge them in now.
     const beforeBg = state.subagentMap.size;
-    if (scanBackgroundAgents(state)) changed = true;
+    if (state.provider.afterTranscriptDelta?.(state) ?? false) changed = true;
     if (state.subagentMap.size !== beforeBg) changed = true;
 
     if (changed) {
@@ -246,7 +362,15 @@ export class TranscriptTailer {
     }
   }
 
-  private applyLine(state: TailState, line: string): boolean {
+}
+
+/**
+ * Reduce one Claude transcript line into the tail state. This is the
+ * ClaudeProvider's `reduceTranscriptLine`. It uses only `state` + module-level
+ * helpers (never `this`), so it lives at module scope and is shared by the
+ * generic TranscriptTailer via the provider.
+ */
+export function reduceClaudeTranscriptLine(state: TailState, line: string): boolean {
     let evt: Record<string, unknown>;
     try { evt = JSON.parse(line); }
     catch { return false; }
@@ -402,7 +526,6 @@ export class TranscriptTailer {
 
     if (uuid) state.msgInfo.set(uuid, { belongsTo, spawnedTasks });
     return true;
-  }
 }
 
 /**
@@ -418,7 +541,7 @@ export class TranscriptTailer {
  *
  * Returns true if any subagent entry was added or updated.
  */
-function scanBackgroundAgents(state: TailState): boolean {
+export function scanBackgroundAgents(state: TailState): boolean {
   const dir = `${state.snapshot.path}`.replace(/\.jsonl$/, '') + '/subagents';
   let entries: string[];
   try { entries = fs.readdirSync(dir); } catch { return false; }

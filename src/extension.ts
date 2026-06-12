@@ -9,6 +9,7 @@ import { TerminalTracker } from './terminal-tracker';
 import { registerLongRunNotifier } from './long-run-notifier';
 import { maybeOfferRestore } from './restore';
 import { ClaudeTracker, isClaudeHookInstalled, needsHookUpgrade } from './claude-tracker';
+import { AgentRegistry } from './agents/registry';
 import { ClaudeSearchIndex } from './claude-search';
 import { sessionNameForTerminal } from './profile-provider';
 import { parseSessionName } from './workspace-id';
@@ -20,7 +21,8 @@ import { registerRevealPath } from './reveal-path';
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const index = new SessionIndex();
-  const claudeTracker = new ClaudeTracker(ctx, index);
+  const registry = new AgentRegistry();
+  const claudeTracker = new ClaudeTracker(ctx, registry, index);
   claudeTracker.start();
   ctx.subscriptions.push({ dispose: () => claudeTracker.dispose() });
 
@@ -28,12 +30,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   void searchIndex.load().then(() => searchIndex.refresh());
 
   ctx.subscriptions.push(registerPersistentProfile(index));
-  registerCommands(ctx, index, claudeTracker, searchIndex);
+  registerCommands(ctx, index, claudeTracker, searchIndex, registry);
   registerRevealPath(ctx);
   registerSidebar(ctx, index, claudeTracker);
 
-  // Prompt once to install the Claude hook (remembers declination).
-  void maybePromptInstallClaudeHook(ctx);
+  // Prompt once to install hooks for the enabled agents (remembers declination).
+  void maybePromptInstallClaudeHook(ctx, registry);
 
   const statusBar = new StatusBar(index);
   statusBar.start();
@@ -68,10 +70,12 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     }),
   );
 
-  // One-shot: if hook is installed but missing new events, silently upgrade so
-  // users on old v0.5 hook start capturing PreToolUse/UserPromptSubmit/etc.
-  if (isClaudeHookInstalled() && needsHookUpgrade()) {
-    try { await vscode.commands.executeCommand('terminalSessions.installClaudeHook'); }
+  // One-shot: silently upgrade any enabled agent whose hook is installed but
+  // stale — missing newer events, or (for Claude) still on the legacy
+  // claude-hook.sh that predates the shared agent-hook.sh forwarder.
+  const needsUpgrade = registry.enabled().some(p => p.isHookInstalled() && p.needsHookUpgrade());
+  if (needsUpgrade) {
+    try { await claudeTracker.upgradeInstalledAgentHooks(); }
     catch { /* silent — user can manually reinstall from command palette */ }
   }
 
@@ -81,7 +85,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   const resumeTimer = setTimeout(async () => {
     try {
-      const result = await maybeOfferRestore(index, claudeTracker);
+      const result = await maybeOfferRestore(index, registry, claudeTracker);
       if (!result.ran || (result.recreated === 0 && result.attached === 0)) {
         await maybePromptResume(index);
       }
@@ -92,16 +96,22 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push({ dispose: () => clearTimeout(resumeTimer) });
 }
 
-async function maybePromptInstallClaudeHook(ctx: vscode.ExtensionContext): Promise<void> {
-  if (isClaudeHookInstalled()) return;
+async function maybePromptInstallClaudeHook(
+  ctx: vscode.ExtensionContext,
+  registry: AgentRegistry,
+): Promise<void> {
+  const enabled = registry.enabled();
+  const missing = enabled.filter(p => !p.isHookInstalled());
+  if (missing.length === 0) return;
   const KEY = 'claudeHookPromptDismissed';
   if (ctx.globalState.get(KEY)) return;
+  const names = missing.map(p => p.displayName).join(', ');
   // Delay so we don't fight the restore toast for focus.
   setTimeout(async () => {
     const choice = await vscode.window.showInformationMessage(
-      'Install Claude Code hook for session tracking and macOS notifications?\n' +
-      'Adds SessionStart + Stop hooks in ~/.claude/settings.json.\n' +
-      'Enables: auto-resume correct conversation after reboot, notification when Claude finishes.',
+      `Install AI agent hooks for ${names}? ` +
+      'Enables sidebar status (working/waiting/idle), context %, auto-resume after reboot, ' +
+      'and a notification when the agent finishes.',
       'Install', 'Not now', "Don't ask again",
     );
     if (choice === 'Install') {

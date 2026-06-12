@@ -6,6 +6,8 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { parseSessionName } from './workspace-id';
 import type { SessionIndex } from './session-manager';
+import type { AgentId, AgentProvider } from './agents/types';
+import type { AgentRegistry } from './agents/registry';
 
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 import { notify, macosAlert, armToastAction } from './notifications';
@@ -21,6 +23,8 @@ export type ClaudeState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';
 
 export interface ClaudeMapping {
   sessionId: string;
+  /** Which AI CLI this session belongs to (claude/codex/agy). */
+  agent: AgentId;
   cwd: string;
   transcriptPath?: string;
   timestamp: number;
@@ -28,6 +32,8 @@ export interface ClaudeMapping {
 
 export interface ClaudeSnapshot {
   state: ClaudeState;
+  /** Which AI CLI produced this snapshot (drives the sidebar agent badge). */
+  agent?: AgentId;
   sessionId?: string;
   lastPromptAt?: Date;
   lastStopAt?: Date;
@@ -59,6 +65,9 @@ export interface ClaudeSnapshot {
 
 interface ClaudeEvent {
   event: string;
+  /** Source agent id, written by the unified forwarder. Absent on legacy
+   *  claude-events.log lines → treated as 'claude'. */
+  agent?: string;
   ts: number;
   sessionId: string;
   tmuxSession: string;
@@ -89,6 +98,15 @@ const LOG_PATH = path.join(ROOT, 'claude-events.log');
 const MAP_PATH = path.join(ROOT, 'claude-map.json');
 const OFFSET_PATH = path.join(ROOT, '.log-offset');
 const HOOK_DEST = path.join(ROOT, 'claude-hook.sh');
+// New unified, agent-tagged log written by media/agent-hook.sh (serves
+// codex/agy and any migrated claude installs). The legacy claude-events.log is
+// still read so already-running Claude sessions (which read settings.json at
+// startup and keep using the old hook until restarted) aren't dropped.
+const AGENT_LOG_PATH = path.join(ROOT, 'agent-events.log');
+const AGENT_OFFSET_PATH = path.join(ROOT, '.agent-log-offset');
+const AGENT_HOOK_DEST = path.join(ROOT, 'agent-hook.sh');
+// Order: unified log first, legacy second. Both are tailed independently.
+const LOG_PATHS = [AGENT_LOG_PATH, LOG_PATH];
 
 const NOTIFY_COOLDOWN_MS = 5_000;
 // Sessions with no activity for this long are treated as 'idle' regardless of
@@ -116,13 +134,17 @@ export class ClaudeTracker {
   private snapshots = new Map<string, ClaudeSnapshot>(); // tmuxSession → snapshot
   private lastNotifyPerWs = new Map<string, number>();
   private lastWaitingNotifyPerSession = new Map<string, number>();
-  private lastOffset = 0;
-  private watcher: fs.FSWatcher | undefined;
+  private logOffsets = new Map<string, number>();   // logPath → byte offset
+  private watchers: fs.FSWatcher[] = [];
   private transcript = new TranscriptTailer();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
 
-  constructor(private ctx: vscode.ExtensionContext, private index?: SessionIndex) {
+  constructor(
+    private ctx: vscode.ExtensionContext,
+    private registry: AgentRegistry,
+    private index?: SessionIndex,
+  ) {
     this.transcript.onChange(() => this._onChange.fire());
   }
 
@@ -141,30 +163,52 @@ export class ClaudeTracker {
   start(): void {
     this.ensureFiles();
     this.loadMap();
-    this.loadOffset();
+    this.loadOffsets();
     this.backfillIndexFromLog();
     this.processNewEvents();
     this.watch();
     // Best-effort: seed transcript tailers for sessions we already know about
     for (const [tmux, map] of this.map) {
       if (map.sessionId && map.transcriptPath) {
-        this.transcript.start(map.sessionId, map.transcriptPath);
+        this.transcript.start(map.sessionId, map.transcriptPath, this.registry.providerForAgent(map.agent));
       }
       if (!this.snapshots.has(tmux)) {
-        this.snapshots.set(tmux, { state: 'none', sessionId: map.sessionId });
+        this.snapshots.set(tmux, { state: 'none', sessionId: map.sessionId, agent: map.agent });
       }
     }
   }
 
   dispose(): void {
-    try { this.watcher?.close(); } catch { /* noop */ }
+    for (const w of this.watchers) { try { w.close(); } catch { /* noop */ } }
+    this.watchers = [];
     this.transcript.dispose();
     this._onChange.dispose();
   }
 
-  /** Look up the Claude session-id most recently seen in a tmux session. */
+  /** Look up the session-id most recently seen in a tmux session. */
   getSessionId(tmuxSession: string): string | undefined {
     return this.map.get(tmuxSession)?.sessionId;
+  }
+
+  /** Which AI CLI is live in a tmux session right now (undefined if none). */
+  getAgent(tmuxSession: string): AgentId | undefined {
+    return this.map.get(tmuxSession)?.agent;
+  }
+
+  /**
+   * Forget all live tracker state for a tmux session: drops the map entry,
+   * the snapshot, and any pending waiting-notify cooldown. Called from cmdStop
+   * after we kill the tmux session — without this, the snap.sessionId keeps
+   * pointing at a transcript that another tab may still be writing to, and
+   * the row in the sidebar mirrors that foreign activity as if this session
+   * were "working".
+   */
+  forgetSession(tmuxSession: string): void {
+    this.map.delete(tmuxSession);
+    this.snapshots.delete(tmuxSession);
+    this.lastWaitingNotifyPerSession.delete(tmuxSession);
+    this.saveMap();
+    this._onChange.fire();
   }
 
   /**
@@ -176,6 +220,22 @@ export class ClaudeTracker {
     const raw = this.snapshots.get(tmuxSession);
     if (!raw) return undefined;
     const snap: ClaudeSnapshot = { ...raw };
+
+    // Ownership check: if our snap.sessionId no longer matches the active
+    // claude-map entry for this tmux, the sessionId was transferred to another
+    // tmux (via `claude --resume <id>` in a different tab) or never registered
+    // at all. The transcript file is alive and being written to by the new
+    // owner, so the per-mtime "working" stale-out below won't fire and we'd
+    // keep spinning on someone else's writes. Clear sessionId + state so this
+    // row stops mirroring foreign activity.
+    if (snap.sessionId) {
+      const owner = this.map.get(tmuxSession);
+      if (!owner || owner.sessionId !== snap.sessionId) {
+        snap.sessionId = undefined;
+        snap.state = 'none';
+        return snap;
+      }
+    }
 
     // Age-out stale 'tool' state with a long timeout — legitimate tools
     // (builds, long tests) can run for many minutes.
@@ -333,15 +393,56 @@ export class ClaudeTracker {
   }
 
   get hookScriptPath(): string { return HOOK_DEST; }
+  get agentHookScriptPath(): string { return AGENT_HOOK_DEST; }
+
+  /** Install our unified forwarder as hooks for every enabled provider. Returns
+   *  the display names of the providers that succeeded. Used by the explicit
+   *  install command + prompt (adding new agents is intentional there). */
+  async installHooksForEnabledAgents(): Promise<string[]> {
+    const ok: string[] = [];
+    for (const p of this.registry.enabled()) {
+      try {
+        if (await p.installHook(AGENT_HOOK_DEST)) ok.push(p.displayName);
+      } catch (err) {
+        console.error('[terminal-sessions] installHook failed for', p.id, err);
+      }
+    }
+    return ok;
+  }
+
+  /** Silently re-install hooks ONLY for agents that already have our hook —
+   *  migrates Claude from the legacy claude-hook.sh to the shared forwarder and
+   *  refreshes stale event sets, without writing into the config of an agent the
+   *  user never opted into. Used by the activation one-shot upgrade. */
+  async upgradeInstalledAgentHooks(): Promise<string[]> {
+    const ok: string[] = [];
+    for (const p of this.registry.enabled()) {
+      if (!p.isHookInstalled()) continue;
+      try {
+        if (await p.installHook(AGENT_HOOK_DEST)) ok.push(p.displayName);
+      } catch (err) {
+        console.error('[terminal-sessions] hook upgrade failed for', p.id, err);
+      }
+    }
+    return ok;
+  }
 
   private ensureFiles(): void {
     try {
       fs.mkdirSync(ROOT, { recursive: true });
       if (!fs.existsSync(LOG_PATH)) fs.writeFileSync(LOG_PATH, '');
-      const src = path.join(this.ctx.extensionPath, 'media', 'claude-hook.sh');
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, HOOK_DEST);
+      if (!fs.existsSync(AGENT_LOG_PATH)) fs.writeFileSync(AGENT_LOG_PATH, '');
+      // Legacy single-agent forwarder (kept for already-installed Claude hooks).
+      const legacySrc = path.join(this.ctx.extensionPath, 'media', 'claude-hook.sh');
+      if (fs.existsSync(legacySrc)) {
+        fs.copyFileSync(legacySrc, HOOK_DEST);
         fs.chmodSync(HOOK_DEST, 0o755);
+      }
+      // Unified forwarder used by every agent's hook install going forward.
+      const agentSrc = path.join(this.ctx.extensionPath, 'media', 'agent-hook.sh');
+      if (fs.existsSync(agentSrc)) {
+        fs.copyFileSync(agentSrc, AGENT_HOOK_DEST);
+        fs.chmodSync(AGENT_HOOK_DEST, 0o755);
       }
     } catch (e) {
       console.error('[terminal-sessions] claude-tracker ensureFiles:', e);
@@ -352,7 +453,10 @@ export class ClaudeTracker {
     try {
       const raw = fs.readFileSync(MAP_PATH, 'utf8');
       const data = JSON.parse(raw) as Record<string, ClaudeMapping>;
-      for (const [k, v] of Object.entries(data)) this.map.set(k, v);
+      for (const [k, v] of Object.entries(data)) {
+        if (!v.agent) v.agent = 'claude'; // legacy map entries predate the agent field
+        this.map.set(k, v);
+      }
     } catch { /* no map yet */ }
   }
 
@@ -461,35 +565,49 @@ export class ClaudeTracker {
     }
   }
 
-  private loadOffset(): void {
-    try { this.lastOffset = parseInt(fs.readFileSync(OFFSET_PATH, 'utf8'), 10) || 0; }
-    catch { this.lastOffset = 0; }
+  private offsetFileFor(logPath: string): string {
+    return logPath === AGENT_LOG_PATH ? AGENT_OFFSET_PATH : OFFSET_PATH;
   }
 
-  private saveOffset(): void {
-    try { fs.writeFileSync(OFFSET_PATH, String(this.lastOffset)); }
+  private loadOffsets(): void {
+    for (const lp of LOG_PATHS) {
+      let off = 0;
+      try { off = parseInt(fs.readFileSync(this.offsetFileFor(lp), 'utf8'), 10) || 0; }
+      catch { off = 0; }
+      this.logOffsets.set(lp, off);
+    }
+  }
+
+  private saveOffset(logPath: string): void {
+    try { fs.writeFileSync(this.offsetFileFor(logPath), String(this.logOffsets.get(logPath) ?? 0)); }
     catch { /* noop */ }
   }
 
   private watch(): void {
-    try {
-      this.watcher = fs.watch(LOG_PATH, { persistent: false }, () => {
-        this.processNewEvents();
-      });
-    } catch (e) {
-      console.error('[terminal-sessions] claude-tracker watch:', e);
+    for (const lp of LOG_PATHS) {
+      try {
+        this.watchers.push(fs.watch(lp, { persistent: false }, () => this.processLog(lp)));
+      } catch (e) {
+        // File may not exist yet — ensureFiles creates both, so this is rare.
+        console.error('[terminal-sessions] claude-tracker watch:', lp, e);
+      }
     }
   }
 
   private processNewEvents(): void {
+    for (const lp of LOG_PATHS) this.processLog(lp);
+  }
+
+  private processLog(logPath: string): void {
     try {
-      const stat = fs.statSync(LOG_PATH);
-      if (stat.size === this.lastOffset) return;
-      if (stat.size < this.lastOffset) this.lastOffset = 0;
-      const bytes = stat.size - this.lastOffset;
-      const fd = fs.openSync(LOG_PATH, 'r');
+      const stat = fs.statSync(logPath);
+      let offset = this.logOffsets.get(logPath) ?? 0;
+      if (stat.size === offset) return;
+      if (stat.size < offset) offset = 0;
+      const bytes = stat.size - offset;
+      const fd = fs.openSync(logPath, 'r');
       const buf = Buffer.alloc(bytes);
-      fs.readSync(fd, buf, 0, bytes, this.lastOffset);
+      fs.readSync(fd, buf, 0, bytes, offset);
       fs.closeSync(fd);
       const text = buf.toString('utf8');
       const lines = text.split('\n').filter(Boolean);
@@ -497,11 +615,14 @@ export class ClaudeTracker {
       for (const line of lines) {
         if (this.handleLine(line)) changed = true;
       }
-      this.lastOffset = stat.size;
-      this.saveOffset();
+      this.logOffsets.set(logPath, stat.size);
+      this.saveOffset(logPath);
       if (changed) this._onChange.fire();
     } catch (e) {
-      console.error('[terminal-sessions] processNewEvents:', e);
+      // statSync throws ENOENT if the log doesn't exist yet — benign.
+      if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {
+        console.error('[terminal-sessions] processLog:', logPath, e);
+      }
     }
   }
 
@@ -514,22 +635,28 @@ export class ClaudeTracker {
 
     const tsMs = (e.ts || Math.floor(Date.now() / 1000)) * 1000;
     const snap = this.snapshots.get(e.tmuxSession) ?? ({ state: 'none' } as ClaudeSnapshot);
+    // Resolve which AI CLI this event came from. Legacy claude-events.log lines
+    // have no `agent` field → providerForAgent defaults to Claude.
+    const provider = this.registry.providerForAgent(e.agent);
+    const agent = provider.id;
+    snap.agent = agent;
 
     // Validate untrusted hook-sourced fields before feeding them to path joins
-    // or the snapshot. sessionId is a Claude UUID — reject anything else so
-    // a malformed log line can't smuggle `../../foo` into transcript paths.
-    if (e.sessionId && !UUID_RE.test(e.sessionId)) return false;
+    // or the snapshot. The provider decides what a valid id looks like so a
+    // malformed log line can't smuggle `../../foo` into transcript paths.
+    if (e.sessionId && !provider.isValidSessionId(e.sessionId)) return false;
     if (e.cwd) e.cwd = path.resolve(e.cwd); // collapses any `..` segments
 
     // Always update sessionId + transcript if we have one
     if (e.sessionId) {
       snap.sessionId = e.sessionId;
       if (e.transcriptPath || e.cwd) {
-        const tp = e.transcriptPath || transcriptPathFor(e.cwd, e.sessionId);
-        // A Claude sessionId can only be "live" in one tmux session at a time.
-        // If the user ran `claude --resume <id>` in a different tmux tab later,
-        // transfer ownership: clear any OTHER tmux sessions that had this id
-        // so the sidebar doesn't show N tabs all mirroring the same state.
+        const tp = provider.resolveTranscriptPath(e.sessionId, e.cwd, e.transcriptPath)
+          || e.transcriptPath || '';
+        // A sessionId can only be "live" in one tmux session at a time. If the
+        // user resumed it in a different tmux tab later, transfer ownership:
+        // clear any OTHER tmux sessions that had this id so the sidebar doesn't
+        // show N tabs all mirroring the same state.
         for (const [otherTmux, entry] of this.map.entries()) {
           if (otherTmux !== e.tmuxSession && entry.sessionId === e.sessionId) {
             this.map.delete(otherTmux);
@@ -542,29 +669,26 @@ export class ClaudeTracker {
         }
         this.map.set(e.tmuxSession, {
           sessionId: e.sessionId,
+          agent,
           cwd: e.cwd,
-          transcriptPath: tp,
+          transcriptPath: tp || undefined,
           timestamp: tsMs,
         });
         this.saveMap();
-        this.transcript.start(e.sessionId, tp);
-        // Persist the historical mapping in the session index too — the
-        // live `map` above gets wiped when this sessionId moves to another
-        // tmux (claude --resume in a different tab), but Stop -> Start needs
-        // to find the original conversation here. The index entry survives
-        // because nothing else writes to it. `recordClaudeSession` keeps an
-        // ordered history (most recent first, capped at 10) so older
-        // conversations remain accessible via manual resume too.
+        if (tp) this.transcript.start(e.sessionId, tp, provider);
+        // Persist the historical mapping in the session index too — the live
+        // `map` above gets wiped when this sessionId moves to another tmux
+        // (resume in a different tab), but Stop -> Start needs to find the
+        // original conversation here. recordAgentSession keeps an ordered,
+        // agent-tagged history so older conversations remain resumable too.
         if (this.index) {
           const cfgPrefix = getConfig().sessionPrefix;
           const parsed = parseSessionName(e.tmuxSession, cfgPrefix);
           if (parsed) {
-            this.index.recordClaudeSession(parsed.hash, e.tmuxSession, e.sessionId);
+            this.index.recordAgentSession(parsed.hash, e.tmuxSession, agent, e.sessionId);
             // Backfill folderPath the first time we see a cwd for this tmux —
             // sticky once set, so a later `cd` inside the session doesn't
-            // overwrite the original creation directory. Resolves the slug
-            // used for the transcript existence check in cmdStart and the
-            // reboot restore path.
+            // overwrite the original creation directory.
             if (e.cwd) {
               const meta = this.index.getSessionMeta(parsed.hash, e.tmuxSession);
               if (!meta?.folderPath) {
@@ -615,7 +739,7 @@ export class ClaudeTracker {
         }
         snap.state = 'waiting';
         snap.waitingSince = new Date(tsMs);
-        this.triggerWaitingNotify(e, tsMs);
+        this.triggerWaitingNotify(e, tsMs, provider);
         break;
       case 'Stop':
         snap.state = 'idle';
@@ -624,7 +748,7 @@ export class ClaudeTracker {
         snap.toolInput = undefined;
         snap.toolSince = undefined;
         snap.waitingSince = undefined;
-        this.triggerStopNotify(e, tsMs);
+        this.triggerStopNotify(e, tsMs, provider);
         break;
       case 'SessionEnd':
         snap.state = 'none';
@@ -638,7 +762,7 @@ export class ClaudeTracker {
     return true;
   }
 
-  private triggerStopNotify(e: ClaudeEvent, tsMs: number): void {
+  private triggerStopNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
     if (this.isSessionMuted(e.tmuxSession)) return;
@@ -654,15 +778,15 @@ export class ClaudeTracker {
     if (Date.now() - lastNotify < NOTIFY_COOLDOWN_MS) return;
     this.lastNotifyPerWs.set(wsKey, Date.now());
 
-    const label = path.basename(e.cwd || '') || 'Claude';
+    const label = path.basename(e.cwd || '') || provider.displayName;
     void notify({
-      title: '🤖 Claude done',
+      title: `🤖 ${provider.displayName} done`,
       subtitle: label,
       body: 'Ready for your next prompt',
     });
   }
 
-  private triggerWaitingNotify(e: ClaudeEvent, _tsMs: number): void {
+  private triggerWaitingNotify(e: ClaudeEvent, _tsMs: number, provider: AgentProvider): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeWaiting) return;
     if (this.isSessionMuted(e.tmuxSession)) return;
@@ -672,14 +796,14 @@ export class ClaudeTracker {
     if (Date.now() - last < NOTIFY_COOLDOWN_MS) return;
     this.lastWaitingNotifyPerSession.set(e.tmuxSession, Date.now());
 
-    const label = path.basename(e.cwd || '') || 'Claude';
+    const label = path.basename(e.cwd || '') || provider.displayName;
     const tmuxSession = e.tmuxSession;
 
     if (cfg.waitingAlertStyle === 'alert' && process.platform === 'darwin') {
       // Modal dialog (persistent until user clicks a button).
       void (async () => {
         const clicked = await macosAlert({
-          title: 'Claude needs approval',
+          title: `${provider.displayName} needs approval`,
           message: `Session: ${label}\n\nClick "Show terminal" to jump to it.`,
           primaryButton: 'Show terminal',
           secondaryButton: 'Dismiss',
@@ -718,7 +842,7 @@ export class ClaudeTracker {
         }
       });
       void notify({
-        title: '⚠ Claude needs approval',
+        title: `⚠ ${provider.displayName} needs approval`,
         subtitle: label,
         body: 'Waiting for your input',
         sound: cfg.notificationSoundWaiting,

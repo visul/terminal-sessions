@@ -4,6 +4,96 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.14.2] — 2026-06-10
+
+### Added
+- **"Reveal Session Folder" is now also in the terminal TAB context menu.** Right-click a terminal tab in the panel (not just inside the terminal body or the sidebar) and pick "Reveal Session Folder in Explorer / Finder". The command resolves the terminal VS Code hands it (or the active terminal, since right-clicking a tab activates it) back to its tmux session to find the folder.
+
+## [0.14.1] — 2026-06-10
+
+### Added
+- **"Reveal Session Folder" right-click command (Explorer + Finder).** A session now carries the folder it was opened in (its recorded `folderPath`, or the workspace root for workspace-level sessions); right-click a session in the sidebar — or right-click inside a session terminal — and pick "Reveal Session Folder in Explorer" / "...in Finder" to jump straight to that exact folder. Distinct from the existing selection-based "Reveal in Finder/Explorer" (which resolves a path you highlighted in the terminal output): this one always targets where the session started, no selection needed. The terminal-side entry resolves the active terminal back to its tmux session to find the folder.
+
+## [0.14.0] — 2026-06-08
+
+### Added
+- **Multi-agent support: Codex and Antigravity (`agy`) alongside Claude.** The deep per-session integration the sidebar gave Claude Code (live working/tool/waiting/idle state, context %, token/cost, auto-resume after Stop→Start and reboot, OS notifications) now also tracks OpenAI **Codex** and Google **Antigravity** running in your tmux panes. Each row shows the agent it belongs to ("Codex working 12s" vs Claude's "working 12s"), and resume sends the right command per agent (`claude --resume`, `codex resume`, `agy --conversation`).
+  - **How it works:** a single `AgentProvider` abstraction with Claude as provider #1. A shared hook forwarder (`agent-hook.sh`) self-identifies the source agent and writes a unified, agent-tagged event log; per-agent providers own transcript parsing (Codex rollout JSONL `token_count`, Antigravity `brain/<id>/…/transcript.jsonl` + statusLine), resume syntax, and hook install targets (`~/.codex/hooks.json`, `~/.gemini/antigravity-cli/settings.json`).
+  - **Enable:** `terminalSessions.enabledAgents` (defaults to auto-detect: Claude always on; Codex and Antigravity turn on when their CLI is found on PATH). Run "Terminal Sessions: Install AI Agent Hooks (Claude / Codex / Antigravity)" to wire the hooks, or accept the install prompt.
+  - **Codex caveat:** Codex `PreToolUse`/`PostToolUse` hooks currently fire only for the Bash tool, so working/idle state is driven primarily from the rollout transcript (`task_started`/`task_complete`), with hooks/notify for the done / needs-approval notifications.
+- **Agent-tagged session history.** Resume history (`agentSessions[]`) now spans every CLI that ran in a tmux session; the legacy Claude-only fields are still mirrored for back-compat, and old index files keep working.
+
+### Changed
+- **Hook install/uninstall, resume, and notifications are now agent-aware.** The install command installs hooks for every enabled agent and migrates existing Claude installs from the legacy `claude-hook.sh` to the shared `agent-hook.sh` forwarder (the silent activation upgrade only touches agents whose hook is already present). Notifications read "🤖 Codex done" / "Antigravity needs approval" etc. The "Resume Other Session..." picker is agent-scoped. Claude behavior is unchanged.
+
+## [0.13.22] — 2026-06-02
+
+### Added
+- **Master groups (groups of groups).** A new container kind that holds only other groups/masters, never sessions directly. Rendered with a distinct `library` icon and a `(N groups)` description so it reads clearly as a folder-of-folders. Nesting is arbitrary-depth: master → master → … → group → sessions.
+  - **Create:** right-click workspace → "New Master Group..."; right-click a master → "New Group Inside" / "New Master Group..." to nest.
+  - **Move:** drag a group/master onto a master to nest it; drag it onto the workspace root to pop it back out; or right-click → "Move to Master Group..." for a quick pick (cycle-creating targets are filtered out).
+  - **Delete:** deleting a master pops its direct children up one level (to the master's own parent, or root) — nothing nested is recursively deleted, and no sessions are touched.
+  - **Cycle-safe:** a master can't be moved inside itself or any of its own descendants (enforced in both drag-drop and the quick pick).
+  - **Filter-aware:** under the running/stopped filter, a master is hidden when no session anywhere beneath it matches.
+
+## [0.13.21] — 2026-05-26
+
+### Fixed
+- **Couldn't reorder a group between two other groups via drag-drop.** Dropping a group onto another group set the drop destination to the *target group's interior* (`destGroupId = target.groupId`), so the reorder ran against the sessions inside that group — a list the dragged group isn't even part of, hence nothing moved. Groups can only ever live at the workspace root, so the destination parent is now forced to root whenever the drag payload contains a group; the target (group or session) acts purely as a reorder anchor among root-level siblings. Group-between-groups reordering now works, as does dropping a group next to a root-level session.
+
+## [0.13.20] — 2026-05-26
+
+### Added
+- **"Resume Other Claude Session..." right-click command.** Surfaces every Claude sessionId in the tmux's `claudeSessionHistory`, with cwd · line count · age · first user prompt preview. Pick one explicitly and the extension sends `cd "<recordedCwd>" && claude --resume <id>` to the session's attached terminal. Use when auto-resume's smart pick is still wrong (e.g. multiple substantial conversations under the same folderPath) or when you want to revisit an older conversation that auto-resume deprioritized.
+
+### Changed
+- **Auto-resume now applies a cwd-subset filter + size-based tie-break instead of head-first walk.** A sessionId's transcript cwd must be the tmux session's `folderPath` (or workspace root) or a descendant of it — otherwise it's polluted history (a brief `claude --resume <foreign-id>` glance) and gets skipped. Among in-scope candidates, the largest transcript wins; brief touches under 5 KB are dropped from auto-resume entirely (still visible in the picker). Real consequence: in a tmux where a tiny categorize-categories session and a 22k-line FirstHand-Data conversation share the same folderPath, auto-resume now picks the FirstHand one. Falls back to head-first if every candidate fails the cwd filter, so the worst case is "no change in behavior" rather than "silently does nothing".
+
+## [0.13.19] — 2026-05-26
+
+### Fixed
+- **Auto-resume skipped sessions whose `lastClaudeSessionId` pointed at a transcript Claude had since pruned.** Claude Code deletes 0-turn / aborted sessions from disk silently. If a previous Stop->Start fired `claude --resume <head>` and it failed (e.g. the cwd was wrong before v0.13.18, or the user hit Esc immediately), Claude created a fresh 0-turn session, recorded its id as the new head via the hook, then deleted that transcript when it ended — leaving `lastClaudeSessionId` pointing at a dead file. Every subsequent Stop->Start then silently skipped resume (`findTranscriptBySessionId` returned undefined for the dead head), and the original conversation sitting one slot deeper in `claudeSessionHistory` was ignored. Fix: new `resolveResumeFromHistory(liveSid, meta, cwd)` walks the live map → `lastClaudeSessionId` → full `claudeSessionHistory` (most-recent-first, deduped) and returns the first one whose transcript is still on disk. Wired into cmdStart, cmdRestart, cmdReattachAll, and the reboot-recovery path in restore.ts. Now a botched resume can't poison subsequent restarts — they walk past the ghost and pick up the real conversation.
+
+## [0.13.18] — 2026-05-25
+
+### Fixed
+- **Auto-resume fired `claude --resume <id>` from the wrong cwd, returning "No conversation found".** Even after v0.13.17 located the transcript across all project-slug dirs, the actual resume command was sent in whatever cwd the new tmux session landed in (`folderPath` or workspace root). `claude --resume` is project-scoped — it only finds the conversation when invoked from the SAME cwd-slug it was launched in. A session recorded in `__DPF_DB/_Categories` cannot be resumed from `__DPF_DB`. Fix: new `readTranscriptCwd(path)` reads the first `cwd` field embedded in the JSONL transcript and `buildResumeCommand` prepends `cd "<recordedCwd>" && ` to the resume command when it differs from the terminal's current cwd. Wired into `cmdStart`, `cmdRestart`, `cmdReattachAll`, and `maybeOfferRestore`. Properly quoted to survive spaces / `@` / underscores in folder names.
+
+## [0.13.17] — 2026-05-25
+
+### Fixed
+- **Auto-resume Claude after Stop->Start skipped sessions whose transcript was written under a different cwd than the recorded `folderPath`.** Stop->Start computed the transcript path as `~/.claude/projects/<slug(folderPath)>/<sessionId>.jsonl` and bailed if the file wasn't there — but the slug Claude actually chose at session-start depends on the cwd in effect when `claude` was launched. Common shapes that broke: (a) user `cd`-ed into a subdir before running `claude`, (b) `claude --resume <id>` was fired from the workspace root after the session had been created in a subfolder, (c) the user moved between two distinct project dirs in the same tmux tab. Fix: new helper `findTranscriptBySessionId(cwd, sessionId)` tries the fast path first (slug(cwd)) and otherwise single-level scans `~/.claude/projects/*/` for `<sessionId>.jsonl` — finds the transcript wherever Claude wrote it. Wired into `cmdStart`, `cmdRestart`, `cmdReattachAll`, and `maybeOfferRestore`, so auto-resume now succeeds for every sessionId Claude still has on disk.
+
+## [0.13.16] — 2026-05-25
+
+### Fixed
+- **`recordWorkspace` wiped `groups` on every workspace touch.** The function rebuilt the workspace entry listing only `path/label/lastSeen/sessions`, silently dropping the newly-added `groups` map. Pressing "+ New Persistent Terminal" calls `recordWorkspace` first thing in `provideTerminalProfile`, so creating any new session erased every user-defined folder while leaving `session.groupId` refs dangling. Fix: spread the existing entry first and only override the volatile fields.
+
+## [0.13.15] — 2026-05-25
+
+### Added
+- **User-defined groups (folders) within a workspace.** Sessions and groups sit at the same level under the workspace and share a single sortOrder pool — drag-drop reorders both kinds. New per-workspace `groups: Record<id, {name, sortOrder}>` in index.json keyed by short random ids (so renaming a group doesn't invalidate `session.groupId` refs). Empty groups are hidden when the filter (running/stopped) eliminates all their members.
+- **Commands:** "New Group..." (right-click workspace), "Rename Group" / "Delete Group" (right-click group), "Move to Group..." (right-click session — quick pick of existing groups + "New group..." + "Remove from group"). Delete group asks for confirmation and orphans sessions back to the workspace root (none are killed).
+- **Drag-drop into / out of groups:** session dropped on a group folder gets that groupId; dropped on a session inside a group joins that group; dropped on the workspace gets its groupId cleared. Groups dropped on each other reorder at root. Cross-workspace drops are still refused.
+
+## [0.13.14] — 2026-05-25
+
+### Fixed
+- **Ghost "working" spinner on sessions that aren't running Claude.** When a Claude session-id moved between tmux tabs (`/clear` + `claude --resume <id>` in another tab) or a session was Stopped, the source tab's tracker snap kept pointing at the now-foreign transcript. The 90s mtime stale-out couldn't trigger because the new owner kept writing chunks, so the abandoned row sat spinning "working 48h" forever — and the spin would noticeably reappear after every sidebar refresh (notably right after Stop on a different session). Two-part fix: (a) `getSnapshot` now does an ownership check before any state reasoning — if the snap's sessionId doesn't match the active claude-map entry for this tmux, the snap is cleared to `none` and returned early; (b) `cmdStop` calls a new `tracker.forgetSession(name)` that drops the map entry, snapshot, and waiting-notify cooldown for the stopped tmux, so the sidebar doesn't keep mirroring a Claude conversation the killed tab no longer owns.
+
+## [0.13.13] — 2026-05-25
+
+### Changed
+- **Detached sessions now show a hollow circle icon** (`circle-outline`) regardless of Claude state, instead of inheriting the attached state icon. Visual cue that nobody's currently attached to the tmux session, while the icon color still carries Claude state.
+- **Removed trailing "· attached" from session descriptions.** The attached state is now encoded entirely in the icon (filled vs outline), freeing up horizontal space on every row.
+- **Removed "🤖 N done" subagent counter.** Only "🤖 N running" stays — the done count was historical noise that grew unbounded over a session's lifetime without offering anything actionable.
+- **Context % moved from the main row to the expanded details row.** Now appears alongside `model · cost · turns`, e.g. `opus · $3.51 · 14 turns · 9% ctx`. Keeps the always-visible row tighter while still showing context usage when the session is expanded. Warning prefix (`⚠`) still fires when crossing `terminalSessions.contextPctAlert`.
+
+## [0.13.12] — 2026-05-25
+
+### Added
+- **"Re-attach All" sidebar action.** New toolbar button next to Refresh that disposes every "process exited" ghost terminal (the orange ⚠ tabs VS Code leaves behind after a Cursor restart) and re-creates a live tmux-attached terminal for each, in the current sidebar sort order. Skips: stopped sessions, sessions without any tab in the terminal panel (user wasn't using them), and sessions whose terminal is already live (no scroll-buffer disruption). Claude `--resume <id>` is batched after a single shell-init wait — N sessions cost ~1.5 s total instead of N × 1.5 s. Toast summarizes attached / resumed / skipped / failed.
+
 ## [0.13.11] — 2026-05-24
 
 ### Fixed

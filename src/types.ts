@@ -1,3 +1,13 @@
+import type { AgentId } from './agents/types';
+
+/** One AI-agent session that ran in a tmux session, tagged by which CLI it
+ *  belongs to. Replaces the Claude-only history with an agent-aware list. */
+export interface AgentSessionRef {
+  agent: AgentId;
+  id: string;
+  ts: number;
+}
+
 export interface SessionInfo {
   name: string;
   workspaceHash: string;
@@ -14,6 +24,7 @@ export interface SessionInfo {
   attached: boolean;
   muted?: boolean;  // when true, notifications are suppressed for this session
   stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
+  groupId?: string;  // when set, session lives inside a custom group at workspace level
 }
 
 export interface WorkspaceIndex {
@@ -26,6 +37,23 @@ export interface WorkspaceEntry {
   label: string;
   lastSeen: string;
   sessions: Record<string, SessionLabel>;
+  // User-defined groups (folders) within this workspace. Keyed by short
+  // random id so renaming a group doesn't invalidate session.groupId refs.
+  // sortOrder is shared with ungrouped sessions at workspace root — they live
+  // at the same hierarchy level and the user reorders both via drag-drop.
+  groups?: Record<string, GroupLabel>;
+}
+
+export interface GroupLabel {
+  name: string;
+  sortOrder?: number;
+  // 'group' (default) holds sessions only. 'master' holds other groups/masters
+  // only (a "group of groups"), never sessions directly.
+  kind?: 'group' | 'master';
+  // Parent master id. Unset = lives at the workspace root. Set = nested inside
+  // that master group. Both normal groups and masters can have a parent master,
+  // enabling arbitrary-depth nesting (master -> master -> group -> sessions).
+  parentGroupId?: string;
 }
 
 export interface SessionLabel {
@@ -53,6 +81,15 @@ export interface SessionLabel {
   // Stop -> Start and post-reboot restore; older entries are kept so the user
   // can manually `claude --resume <id>` an older conversation if needed.
   claudeSessionHistory?: string[];
+  // Agent-tagged session history (most recent first), spanning every AI CLI
+  // that ran in this tmux session (claude/codex/agy). Supersedes the Claude-only
+  // fields above, which are still mirrored for back-compat with older index
+  // files and code paths that read only `claudeSessionHistory`.
+  agentSessions?: AgentSessionRef[];
+  // When set, this session lives inside the named group at workspace level.
+  // Cleared (or undefined) means the session sits at the workspace root,
+  // siblings with the groups, ordered by sortOrder among them.
+  groupId?: string;
 }
 
 export interface TmuxSessionRow {

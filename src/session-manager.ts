@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel } from './types';
+import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel, GroupLabel } from './types';
+import type { AgentId } from './agents/types';
 import * as tmux from './tmux';
 import { parseSessionName } from './workspace-id';
 
@@ -35,11 +36,16 @@ export class SessionIndex {
 
   recordWorkspace(hash: string, wsPath: string, label: string): void {
     const existing = this.data.workspaces[hash];
+    // CRITICAL: spread `existing` FIRST and only override the volatile fields
+    // (path/label/lastSeen). Earlier we rebuilt the object listing only
+    // `sessions`, which silently wiped `groups` on every workspace touch —
+    // pressing "+ New Persistent Terminal" would call recordWorkspace and
+    // erase every user-defined folder.
     this.data.workspaces[hash] = {
+      ...(existing || { sessions: {} }),
       path: wsPath,
       label,
       lastSeen: new Date().toISOString(),
-      sessions: existing?.sessions || {},
     };
     this.save();
   }
@@ -130,16 +136,57 @@ export class SessionIndex {
    * with code that reads only that field.
    */
   recordClaudeSession(hash: string, sessionName: string, sessionId: string): void {
+    this.recordAgentSession(hash, sessionName, 'claude', sessionId);
+  }
+
+  /**
+   * Push an AI-agent session id onto the front of this tmux session's
+   * agent-tagged history. Dedupes by (agent,id), caps at 20 total, and (for
+   * Claude) mirrors the head into the legacy `claudeSessionHistory` /
+   * `lastClaudeSessionId` fields so older code paths keep working.
+   */
+  recordAgentSession(hash: string, sessionName: string, agent: AgentId, sessionId: string): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     const s = ws.sessions[sessionName];
-    const existing = s.claudeSessionHistory ?? [];
-    if (existing[0] === sessionId) return; // already at the front, nothing to do
-    const deduped = existing.filter(id => id !== sessionId);
-    const next = [sessionId, ...deduped].slice(0, 10);
-    s.claudeSessionHistory = next;
-    s.lastClaudeSessionId = sessionId;
+    const list = s.agentSessions ?? [];
+    if (list[0]?.agent === agent && list[0]?.id === sessionId) {
+      // already at the front for this agent — but still ensure legacy mirror
+      if (agent !== 'claude') return;
+    }
+    const filtered = list.filter(e => !(e.agent === agent && e.id === sessionId));
+    filtered.unshift({ agent, id: sessionId, ts: Date.now() });
+    s.agentSessions = filtered.slice(0, 20);
+    if (agent === 'claude') {
+      const deduped = (s.claudeSessionHistory ?? []).filter(id => id !== sessionId);
+      s.claudeSessionHistory = [sessionId, ...deduped].slice(0, 10);
+      s.lastClaudeSessionId = sessionId;
+    }
     this.save();
+  }
+
+  /** Ordered (most-recent-first) session-id history for one agent in a tmux
+   *  session. Falls back to the legacy Claude fields when no agent-tagged
+   *  history exists yet (index files written before the agent dimension). */
+  getAgentSessionHistory(hash: string, sessionName: string, agent: AgentId): string[] {
+    const s = this.data.workspaces[hash]?.sessions[sessionName];
+    if (!s) return [];
+    if (s.agentSessions && s.agentSessions.length > 0) {
+      return s.agentSessions.filter(e => e.agent === agent).map(e => e.id);
+    }
+    if (agent === 'claude') {
+      const legacy = s.claudeSessionHistory ?? [];
+      if (legacy.length) return legacy;
+      if (s.lastClaudeSessionId) return [s.lastClaudeSessionId];
+    }
+    return [];
+  }
+
+  /** The agent that most recently ran in this tmux session (for resume routing).
+   *  Defaults to 'claude' when nothing is recorded. */
+  getLastAgent(hash: string, sessionName: string): AgentId {
+    const s = this.data.workspaces[hash]?.sessions[sessionName];
+    return s?.agentSessions?.[0]?.agent ?? 'claude';
   }
 
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
@@ -192,6 +239,185 @@ export class SessionIndex {
     }
     return max + 1;
   }
+
+  // ────────────────────── Group operations ──────────────────────
+  //
+  // Groups live at workspace level and share the sortOrder pool with
+  // ungrouped sessions — both are siblings at the workspace root, ordered
+  // together via drag-drop. session.groupId is the parent pointer; an
+  // undefined groupId means the session sits at the root level.
+
+  /** Generate a short stable id. Random enough that renaming doesn't break
+   *  refs; short enough to keep index.json readable. */
+  private nextGroupId(hash: string): string {
+    const ws = this.data.workspaces[hash];
+    const existing = new Set(Object.keys(ws?.groups || {}));
+    // 4 random chars from base36 — 36^4 = ~1.7M, plenty for a workspace.
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const id = 'g_' + Math.random().toString(36).slice(2, 6);
+      if (!existing.has(id)) return id;
+    }
+    return 'g_' + Date.now().toString(36); // fallback, near-impossible to collide
+  }
+
+  /** Create a new group (or master) with the given display name. Optionally
+   *  nested inside a parent master. Returns the new id. */
+  createGroup(
+    hash: string,
+    name: string,
+    kind: 'group' | 'master' = 'group',
+    parentGroupId?: string,
+  ): string | undefined {
+    const ws = this.data.workspaces[hash];
+    if (!ws) return undefined;
+    if (!ws.groups) ws.groups = {};
+    // Reject a parent that isn't a master (only masters can contain groups).
+    if (parentGroupId !== undefined) {
+      const parent = ws.groups[parentGroupId];
+      if (!parent || parent.kind !== 'master') parentGroupId = undefined;
+    }
+    const id = this.nextGroupId(hash);
+    // Append to the end of the destination container's order. For a nested
+    // group that's the parent master's children; for root it's the root pool.
+    const maxOrder = this.maxSortOrderInContainer(hash, parentGroupId);
+    ws.groups[id] = {
+      name: name.trim(),
+      sortOrder: maxOrder + 1,
+      kind,
+      parentGroupId,
+    };
+    this.save();
+    return id;
+  }
+
+  renameGroup(hash: string, groupId: string, name: string): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.groups?.[groupId]) return;
+    ws.groups[groupId].name = name.trim();
+    this.save();
+  }
+
+  /**
+   * Delete a group or master.
+   *   - Normal group: its sessions orphan back to the workspace root.
+   *   - Master: its direct child groups/masters pop up one level to the
+   *     master's own parent (root if it had none). Nothing is recursively
+   *     deleted — the user loses only the one container they asked to remove.
+   */
+  deleteGroup(hash: string, groupId: string): void {
+    const ws = this.data.workspaces[hash];
+    const target = ws?.groups?.[groupId];
+    if (!ws || !target) return;
+    if (target.kind === 'master') {
+      // Pop direct children up to this master's parent.
+      const grandparent = target.parentGroupId;
+      let nextOrder = this.maxSortOrderInContainer(hash, grandparent) + 1;
+      for (const g of Object.values(ws.groups || {})) {
+        if (g.parentGroupId === groupId) {
+          g.parentGroupId = grandparent;
+          g.sortOrder = nextOrder++;
+        }
+      }
+    } else {
+      // Normal group: orphan its sessions to root.
+      let nextOrder = this.maxSortOrderInContainer(hash, undefined) + 1;
+      for (const s of Object.values(ws.sessions)) {
+        if (s.groupId === groupId) {
+          s.groupId = undefined;
+          s.sortOrder = nextOrder++;
+        }
+      }
+    }
+    delete ws.groups![groupId];
+    this.save();
+  }
+
+  /**
+   * Re-parent a group/master into a master (or to root when parentGroupId is
+   * undefined). Rejects cycles: a master can't be moved inside its own
+   * descendant. Rejects parents that aren't masters.
+   */
+  setGroupParent(hash: string, groupId: string, parentGroupId: string | undefined): boolean {
+    const ws = this.data.workspaces[hash];
+    const g = ws?.groups?.[groupId];
+    if (!ws || !ws.groups || !g) return false;
+    if (parentGroupId !== undefined) {
+      if (parentGroupId === groupId) return false; // can't parent to self
+      const parent = ws.groups[parentGroupId];
+      if (!parent || parent.kind !== 'master') return false; // only masters hold groups
+      if (this.isDescendantGroup(hash, groupId, parentGroupId)) return false; // cycle
+    }
+    g.parentGroupId = parentGroupId;
+    this.save();
+    return true;
+  }
+
+  /** True if `candidate` is `ancestor` itself or nested somewhere beneath it.
+   *  Used to block cycles when re-parenting. */
+  isDescendantGroup(hash: string, ancestor: string, candidate: string): boolean {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.groups) return false;
+    let cur: string | undefined = candidate;
+    const seen = new Set<string>();
+    while (cur !== undefined) {
+      if (cur === ancestor) return true;
+      if (seen.has(cur)) break; // defensive: malformed cycle in data
+      seen.add(cur);
+      cur = ws.groups[cur]?.parentGroupId;
+    }
+    return false;
+  }
+
+  setSessionGroup(hash: string, sessionName: string, groupId: string | undefined): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (groupId !== undefined && !ws.groups?.[groupId]) return; // unknown group
+    if (groupId === undefined) delete ws.sessions[sessionName].groupId;
+    else ws.sessions[sessionName].groupId = groupId;
+    this.save();
+  }
+
+  setGroupSortOrder(hash: string, groupId: string, order: number | undefined): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.groups?.[groupId]) return;
+    if (order === undefined) delete ws.groups[groupId].sortOrder;
+    else ws.groups[groupId].sortOrder = order;
+    this.save();
+  }
+
+  /**
+   * Highest sortOrder among the children of a given container. The container
+   * is the workspace root (parentGroupId undefined) or a master group. Used so
+   * newly-added items append at the end of the user's manual order within that
+   * container.
+   *   - Root children: top-level groups/masters (no parent) + ungrouped sessions.
+   *   - Master children: groups/masters whose parentGroupId === the master.
+   *     (Masters never directly contain sessions.)
+   */
+  private maxSortOrderInContainer(hash: string, parentGroupId: string | undefined): number {
+    const ws = this.data.workspaces[hash];
+    if (!ws) return 0;
+    let max = 0;
+    for (const g of Object.values(ws.groups || {})) {
+      if (g.parentGroupId !== parentGroupId) continue;
+      if (g.sortOrder !== undefined && g.sortOrder > max) max = g.sortOrder;
+    }
+    if (parentGroupId === undefined) {
+      for (const s of Object.values(ws.sessions)) {
+        if (s.groupId) continue; // grouped sessions don't compete at root
+        if (s.sortOrder !== undefined && s.sortOrder > max) max = s.sortOrder;
+      }
+    }
+    return max;
+  }
+
+  getGroup(hash: string, groupId: string): GroupLabel | undefined {
+    return this.data.workspaces[hash]?.groups?.[groupId];
+  }
+
+  getGroups(hash: string): Record<string, GroupLabel> {
+    return this.data.workspaces[hash]?.groups || {};
+  }
 }
 
 export async function enrichSessions(
@@ -226,6 +452,7 @@ export async function enrichSessions(
       attached: row.attached,
       muted: meta?.muted,
       stopped: false,
+      groupId: meta?.groupId,
     });
   }
 
@@ -254,6 +481,7 @@ export async function enrichSessions(
         attached: false,
         muted: meta.muted,
         stopped: true,
+        groupId: meta.groupId,
       });
     }
   }

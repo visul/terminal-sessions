@@ -5,7 +5,64 @@ import { ClaudeSnapshot } from '../claude-tracker';
 import { SubagentSnapshot } from '../claude-transcript';
 import { STOPPED_URI_SCHEME } from '../config';
 
+/**
+ * User-defined folder within a workspace.
+ *   - kind 'group': holds sessions that share a groupId.
+ *   - kind 'master': holds other groups/masters (a "group of groups"), never
+ *     sessions directly. Rendered with a distinct `library` icon and a
+ *     `(N groups)` description so it reads clearly as a container of folders.
+ * Both kinds sit at their parent level (root or inside a master) and share the
+ * parent's sortOrder pool — drag-drop reorders and re-parents them.
+ */
+export class GroupTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly groupId: string,
+    public readonly groupName: string,
+    public readonly kind: 'group' | 'master',
+    public readonly sessions: SessionInfo[],
+    // For masters: the direct child groups/masters (used for the count +
+    // recursive session tally). Empty for normal groups.
+    public readonly childGroupCount: number = 0,
+  ) {
+    super(groupName, vscode.TreeItemCollapsibleState.Collapsed);
+    if (kind === 'master') {
+      this.contextValue = 'masterGroup';
+      this.iconPath = new vscode.ThemeIcon('library');
+      const n = childGroupCount;
+      this.description = `${n} group${n === 1 ? '' : 's'}`;
+      // sessions here is the RECURSIVE tally of all sessions under this master.
+      const stopped = sessions.filter(s => s.stopped).length;
+      const active = sessions.filter(s => !s.stopped && s.attached).length;
+      this.tooltip = new vscode.MarkdownString(
+        [
+          `**${groupName}**  _(master group)_`,
+          `${n} group${n === 1 ? '' : 's'} · ${sessions.length} session${sessions.length === 1 ? '' : 's'} total`,
+          `Active: ${active}  ·  Stopped: ${stopped}`,
+          `Holds only groups — drag groups in/out.`,
+        ].join('\n\n'),
+      );
+      return;
+    }
+    this.contextValue = 'group';
+    this.iconPath = new vscode.ThemeIcon('folder-library');
+    const stopped = sessions.filter(s => s.stopped).length;
+    const active = sessions.filter(s => !s.stopped && s.attached).length;
+    const detached = sessions.filter(s => !s.stopped && !s.attached).length;
+    const stoppedSuffix = stopped > 0 ? ` · ${stopped}⏸` : '';
+    this.description = `${active}▶ ${detached}⇄${stoppedSuffix}`;
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${groupName}**  _(group)_`,
+        `${sessions.length} session${sessions.length === 1 ? '' : 's'}`,
+        `Active: ${active}  ·  Detached: ${detached}${stopped > 0 ? `  ·  Stopped: ${stopped}` : ''}`,
+      ].join('\n\n'),
+    );
+  }
+}
+
 export class WorkspaceTreeItem extends vscode.TreeItem {
+  public readonly allSessions: SessionInfo[];
   constructor(
     public readonly label: string,
     public readonly workspaceHash: string,
@@ -14,6 +71,7 @@ export class WorkspaceTreeItem extends vscode.TreeItem {
     allSessions?: SessionInfo[],
   ) {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
+    this.allSessions = allSessions ?? sessions;
     this.contextValue = 'workspace';
     // Counts always reflect the whole workspace (pre-filter), so the stopped
     // tally is visible even when sidebarFilterMode is hiding stopped rows.
@@ -52,43 +110,44 @@ function formatElapsed(ms: number): string {
   return `${h}h`;
 }
 
-function claudeStateDescription(snap: ClaudeSnapshot, contextPctAlert: number): string | undefined {
-  // Always show context % when we have it, with a warning prefix when high.
-  let ctxSuffix = '';
-  if (snap.contextPct !== undefined && snap.contextPct > 0) {
-    const pct = Math.round(snap.contextPct * 100);
-    const warn = snap.contextPct >= contextPctAlert ? '⚠ ' : '';
-    ctxSuffix = ` · ${warn}${pct}% ctx`;
-  }
-  // Inline subagent counter (only when >0) so you can see at a glance how
-  // many Tasks this session is juggling without having to expand.
+function claudeStateDescription(snap: ClaudeSnapshot): string | undefined {
+  // Context % moved to the expanded details row (alongside model · cost · turns)
+  // to keep the main row tight. "N done" count removed entirely; only the
+  // active-running counter survives because it's the only one that's actionable.
   const active = (snap.subagents || []).filter((s) => s.state !== 'done').length;
-  const done = (snap.subagents || []).filter((s) => s.state === 'done').length;
-  let agentSuffix = '';
-  if (active > 0) agentSuffix = ` · 🤖 ${active} running`;
-  else if (done > 0) agentSuffix = ` · 🤖 ${done} done`;
+  const agentSuffix = active > 0 ? ` · 🤖 ${active} running` : '';
   switch (snap.state) {
     case 'working': {
       const since = snap.lastPromptAt ? formatElapsed(Date.now() - snap.lastPromptAt.getTime()) : '';
-      return `working${since ? ' ' + since : ''}${ctxSuffix}${agentSuffix}`;
+      return `working${since ? ' ' + since : ''}${agentSuffix}`;
     }
     case 'tool': {
       const since = snap.toolSince ? formatElapsed(Date.now() - snap.toolSince.getTime()) : '';
       const name = snap.toolName || 'tool';
-      return `${name}${since ? ' ' + since : ''}${ctxSuffix}${agentSuffix}`;
+      return `${name}${since ? ' ' + since : ''}${agentSuffix}`;
     }
     case 'waiting':
-      return `waiting input${ctxSuffix}${agentSuffix}`;
+      return `waiting input${agentSuffix}`;
     case 'idle': {
       const since = snap.lastStopAt
         ? formatElapsed(Date.now() - snap.lastStopAt.getTime())
         : (snap.lastAssistantMessageAt
           ? formatElapsed(Date.now() - snap.lastAssistantMessageAt.getTime())
           : '');
-      return since ? `idle ${since}${ctxSuffix}${agentSuffix}` : `idle${ctxSuffix}${agentSuffix}`;
+      return since ? `idle ${since}${agentSuffix}` : `idle${agentSuffix}`;
     }
     case 'none':
       return undefined;
+  }
+}
+
+/** Short label distinguishing non-Claude agents in the row/tooltip. Empty for
+ *  Claude (and legacy/undefined) so existing Claude rows read exactly as before. */
+function agentLabel(agent: ClaudeSnapshot['agent']): string {
+  switch (agent) {
+    case 'codex': return 'Codex';
+    case 'agy': return 'Antigravity';
+    default: return '';
   }
 }
 
@@ -151,19 +210,29 @@ export class SessionTreeItem extends vscode.TreeItem {
     // "session.muted" are matched by existing menus via =~ /^session/.
     this.contextValue = session.muted ? 'session.muted' : 'session';
 
-    const attachedHint = session.attached ? ' · attached' : '';
+    // Attached state is now encoded in the icon (filled vs outline) instead
+    // of a trailing " · attached" text, which was just noise on every row.
     const mutedHint = session.muted ? ' · 🔕' : '';
-    const claudeDesc = claude ? claudeStateDescription(claude, contextPctAlert) : undefined;
+    const aLabel = claude ? agentLabel(claude.agent) : '';
+    const claudeDesc = claude ? claudeStateDescription(claude) : undefined;
+    // Prefix the agent name for non-Claude rows so "Codex working 12s" vs
+    // "working 12s" (Claude) are distinguishable at a glance.
+    const stateDesc = claudeDesc
+      ? (aLabel ? `${aLabel} · ${claudeDesc}` : claudeDesc)
+      : undefined;
     const ageHint = humanAge(session.lastAttached);
-    this.description = claudeDesc
-      ? `${claudeDesc}${attachedHint}${mutedHint}`
-      : `${ageHint}${attachedHint}${mutedHint}`;
+    this.description = stateDesc
+      ? `${stateDesc}${mutedHint}`
+      : `${ageHint}${mutedHint}`;
 
     const customized = Boolean(session.icon || session.color || session.label);
     const claudeIcon = claude ? STATE_ICONS[claude.state] : '';
-    const iconId = claudeIcon
-      || session.icon
-      || (session.attached ? 'pass-filled' : 'circle-outline');
+    // Detached sessions get a hollow circle regardless of Claude state — a
+    // clear visual cue that nobody's currently attached to the tmux session.
+    // Claude state is still visible via the icon color below.
+    const iconId = !session.attached
+      ? 'circle-outline'
+      : (claudeIcon || session.icon || 'pass-filled');
 
     let colorId: string | undefined;
     if (claude) {
@@ -194,7 +263,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     if (session.icon) parts.push(`Icon: \`${session.icon}\``);
     if (session.color) parts.push(`Color: \`${session.color}\``);
     if (claude && claude.state !== 'none') {
-      parts.push(`Claude: ${claudeDesc || claude.state}`);
+      parts.push(`${aLabel || 'Claude'}: ${claudeDesc || claude.state}`);
       if (claude.model) parts.push(`Model: \`${claude.model}\``);
       if (claude.messageCount) parts.push(`Turns: ${claude.messageCount}`);
       if (claude.cost !== undefined) {
@@ -220,7 +289,7 @@ export class SessionTreeItem extends vscode.TreeItem {
         );
       }
       if (claude.lastUserMessage) parts.push(`**User:** ${claude.lastUserMessage}`);
-      if (claude.lastAssistantMessage) parts.push(`**Claude:** ${claude.lastAssistantMessage}`);
+      if (claude.lastAssistantMessage) parts.push(`**${aLabel || 'Claude'}:** ${claude.lastAssistantMessage}`);
       if (claude.toolInput) parts.push(`**Tool input:** \`${claude.toolInput}\``);
     }
     this.tooltip = new vscode.MarkdownString(parts.join('\n\n'));
@@ -383,7 +452,7 @@ function formatElapsedMs(ms: number): string {
   return `${h}h`;
 }
 
-export function buildClaudeDetails(snap: ClaudeSnapshot): ClaudeDetailItem[] {
+export function buildClaudeDetails(snap: ClaudeSnapshot, contextPctAlert: number): ClaudeDetailItem[] {
   const items: ClaudeDetailItem[] = [];
   if (snap.lastUserMessage) {
     items.push(new ClaudeDetailItem(`"${snap.lastUserMessage}"`, undefined, 'comment'));
@@ -401,6 +470,13 @@ export function buildClaudeDetails(snap: ClaudeSnapshot): ClaudeDetailItem[] {
     metaBits.push(`$${snap.cost.toFixed(2)}`);
   }
   if (snap.messageCount) metaBits.push(`${snap.messageCount} turns`);
+  // Context % lives here now (used to sit in the main row description).
+  // Warning prefix when over the configured alert threshold.
+  if (snap.contextPct !== undefined && snap.contextPct > 0) {
+    const pct = Math.round(snap.contextPct * 100);
+    const warn = snap.contextPct >= contextPctAlert ? '⚠ ' : '';
+    metaBits.push(`${warn}${pct}% ctx`);
+  }
   if (metaBits.length > 0) {
     items.push(new ClaudeDetailItem(metaBits.join(' · '), undefined, 'info'));
   }

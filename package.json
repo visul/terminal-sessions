@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.13.11",
+  "version": "0.14.2",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -47,6 +47,15 @@
           "type": "string",
           "default": "ts",
           "description": "Prefix for all tmux session names created by this extension."
+        },
+        "terminalSessions.enabledAgents": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["claude", "codex", "agy"]
+          },
+          "default": [],
+          "markdownDescription": "Which AI CLIs to track in the sidebar (status, context %, auto-resume, notifications). Leave empty to auto-detect: Claude is always on; Codex and Antigravity (`agy`) turn on when their CLI is found on PATH. Set explicitly to override, e.g. `[\"claude\", \"codex\"]`."
         },
         "terminalSessions.autoRestore": {
           "type": "string",
@@ -234,6 +243,49 @@
         "icon": "$(refresh)"
       },
       {
+        "command": "terminalSessions.reattachAll",
+        "title": "Re-attach All Ghost Terminals (fix orange tabs after Cursor restart, in sidebar order)",
+        "shortTitle": "Re-attach All",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "terminalSessions.newGroup",
+        "title": "Terminal Sessions: New Group...",
+        "shortTitle": "New Group",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "terminalSessions.newMasterGroup",
+        "title": "Terminal Sessions: New Master Group...",
+        "shortTitle": "New Master Group",
+        "icon": "$(library)"
+      },
+      {
+        "command": "terminalSessions.newGroupInMaster",
+        "title": "New Group Inside"
+      },
+      {
+        "command": "terminalSessions.moveGroupToMaster",
+        "title": "Move to Master Group..."
+      },
+      {
+        "command": "terminalSessions.renameGroup",
+        "title": "Rename Group"
+      },
+      {
+        "command": "terminalSessions.deleteGroup",
+        "title": "Delete Group"
+      },
+      {
+        "command": "terminalSessions.moveSessionToGroup",
+        "title": "Move to Group..."
+      },
+      {
+        "command": "terminalSessions.resumeOtherClaude",
+        "title": "Resume Other Session... (Claude / Codex / Antigravity)",
+        "shortTitle": "Resume Other..."
+      },
+      {
         "command": "terminalSessions.revealSidebar",
         "title": "Terminal Sessions: Reveal Sidebar"
       },
@@ -288,11 +340,11 @@
       },
       {
         "command": "terminalSessions.installClaudeHook",
-        "title": "Terminal Sessions: Install Claude Code Hook"
+        "title": "Terminal Sessions: Install AI Agent Hooks (Claude / Codex / Antigravity)"
       },
       {
         "command": "terminalSessions.uninstallClaudeHook",
-        "title": "Terminal Sessions: Uninstall Claude Code Hook"
+        "title": "Terminal Sessions: Uninstall AI Agent Hooks"
       },
       {
         "command": "terminalSessions.restart",
@@ -373,6 +425,15 @@
       {
         "command": "terminalSessions.revealSelectionInExplorer",
         "title": "Reveal in Explorer"
+      },
+      {
+        "command": "terminalSessions.revealSessionFolder",
+        "title": "Reveal Session Folder in Explorer",
+        "icon": "$(folder-opened)"
+      },
+      {
+        "command": "terminalSessions.revealSessionFolderFinder",
+        "title": "Reveal Session Folder in Finder"
       }
     ],
     "menus": {
@@ -389,6 +450,24 @@
         },
         {
           "command": "terminalSessions.revealSelectionInExplorer",
+          "group": "navigation@11"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolder",
+          "group": "navigation@12"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolderFinder",
+          "group": "navigation@13"
+        }
+      ],
+      "terminal/title/context": [
+        {
+          "command": "terminalSessions.revealSessionFolder",
+          "group": "navigation@10"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolderFinder",
           "group": "navigation@11"
         }
       ],
@@ -417,6 +496,11 @@
           "command": "terminalSessions.refreshSidebar",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@3"
+        },
+        {
+          "command": "terminalSessions.reattachAll",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@3.5"
         },
         {
           "command": "terminalSessions.alertsDisable",
@@ -474,6 +558,61 @@
           "command": "terminalSessions.rename",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "edit@1"
+        },
+        {
+          "command": "terminalSessions.moveSessionToGroup",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "edit@0"
+        },
+        {
+          "command": "terminalSessions.resumeOtherClaude",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@3"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolder",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@4"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolderFinder",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@5"
+        },
+        {
+          "command": "terminalSessions.newGroup",
+          "when": "view == terminalSessions.sessions && viewItem == workspace",
+          "group": "navigation@0"
+        },
+        {
+          "command": "terminalSessions.newMasterGroup",
+          "when": "view == terminalSessions.sessions && viewItem == workspace",
+          "group": "navigation@1"
+        },
+        {
+          "command": "terminalSessions.newGroup",
+          "when": "view == terminalSessions.sessions && viewItem == masterGroup",
+          "group": "navigation@0"
+        },
+        {
+          "command": "terminalSessions.newMasterGroup",
+          "when": "view == terminalSessions.sessions && viewItem == masterGroup",
+          "group": "navigation@1"
+        },
+        {
+          "command": "terminalSessions.moveGroupToMaster",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^(group|masterGroup)$/",
+          "group": "edit@0"
+        },
+        {
+          "command": "terminalSessions.renameGroup",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^(group|masterGroup)$/",
+          "group": "edit@1"
+        },
+        {
+          "command": "terminalSessions.deleteGroup",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^(group|masterGroup)$/",
+          "group": "danger@1"
         },
         {
           "command": "terminalSessions.setIcon",

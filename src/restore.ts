@@ -11,7 +11,9 @@ import { openTerminalForSession } from './profile-provider';
 import { sleep } from './util';
 import { SessionLabel } from './types';
 import { ClaudeTracker } from './claude-tracker';
-import { transcriptPathFor } from './claude-transcript';
+import { findTranscriptBySessionId, readTranscriptCwd } from './claude-transcript';
+import { AgentRegistry } from './agents/registry';
+import type { AgentProvider } from './agents/types';
 
 const SHELL_INIT_DELAY_MS = 1500;
 
@@ -37,6 +39,7 @@ const EMPTY: RestoreResult = { ran: false, recreated: 0, attached: 0 };
  */
 export async function maybeOfferRestore(
   index: SessionIndex,
+  registry: AgentRegistry,
   claudeTracker?: ClaudeTracker,
 ): Promise<RestoreResult> {
   const cfg = getConfig();
@@ -102,7 +105,14 @@ export async function maybeOfferRestore(
   // Collect resume commands so we can fire them in a single batch after the
   // 1.5s shell-init wait. Doing it per-session would be 16 * 1.5s = 24s on a
   // big workspace; batching keeps it to ~1.5s total.
-  const resumes: Array<{ term: vscode.Terminal; sessionId: string; label: string }> = [];
+  const resumes: Array<{
+    term: vscode.Terminal;
+    provider: AgentProvider;
+    sessionId: string;
+    label: string;
+    transcriptPath?: string;
+    cwd: string;
+  }> = [];
 
   for (const c of toRecreate) {
     try {
@@ -114,19 +124,28 @@ export async function maybeOfferRestore(
       const term = await openTerminalForSession(c.sessionName, cwd, index);
       if (term) attached++;
       // Pre-pull the Claude resume id, mirroring cmdStart's logic so reboot
-      // recovery and Stop->Start behave the same. Prefer live tracker (rare
-      // post-reboot since the in-memory map is empty), then the persisted
-      // index. Transcript existence check uses the session's folder path —
-      // subfolder sessions write to a different Claude project directory.
-      let claudeSessionId: string | undefined;
+      // recovery and Stop->Start behave the same. Walk the full history so a
+      // dead head sessionId (Claude prunes 0-turn ghosts) doesn't shadow the
+      // real conversation sitting one or two slots deeper.
       if (term) {
-        claudeSessionId = claudeTracker?.getSessionId(c.sessionName)
-          || c.meta.lastClaudeSessionId;
-        if (claudeSessionId && !fs.existsSync(transcriptPathFor(cwd, claudeSessionId))) {
-          claudeSessionId = undefined;
+        const parsed = parseSessionName(c.sessionName, cfg.sessionPrefix);
+        const agent = parsed ? index.getLastAgent(parsed.hash, c.sessionName) : 'claude';
+        const provider = registry.providerForAgent(agent);
+        const liveSid = claudeTracker?.getSessionId(c.sessionName);
+        const recorded = parsed ? index.getAgentSessionHistory(parsed.hash, c.sessionName, agent) : [];
+        const seen = new Set<string>();
+        const ids: string[] = [];
+        for (const id of [liveSid, ...recorded]) {
+          if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
         }
-        if (claudeSessionId) {
-          resumes.push({ term, sessionId: claudeSessionId, label: c.label });
+        let resolvedSid: string | undefined;
+        let resolvedTp: string | undefined;
+        for (const sid of ids) {
+          const tp = provider.resolveTranscriptPath(sid, cwd, undefined);
+          if (tp && fs.existsSync(tp)) { resolvedSid = sid; resolvedTp = tp; break; }
+        }
+        if (resolvedSid) {
+          resumes.push({ term, provider, sessionId: resolvedSid, label: c.label, transcriptPath: resolvedTp, cwd });
         }
       }
       await sleep(150);
@@ -145,7 +164,9 @@ export async function maybeOfferRestore(
     for (const r of resumes) {
       if (!vscode.window.terminals.includes(r.term)) continue;
       try {
-        r.term.sendText(`claude --resume ${r.sessionId}`);
+        // The provider builds its own resume command and handles cd-to-recorded
+        // -cwd when it's cwd-sensitive (Claude is; Codex restores cwd itself).
+        r.term.sendText(r.provider.buildResumeCommand(r.sessionId, r.cwd, r.transcriptPath));
         resumed++;
       } catch (e) {
         console.error('[terminal-sessions] resume sendText failed:', r.label, e);
@@ -155,7 +176,7 @@ export async function maybeOfferRestore(
 
   const summary = `Restored ${attached}/${recreated} session${recreated === 1 ? '' : 's'}` +
     (failed > 0 ? ` (${failed} failed)` : '') +
-    (resumed > 0 ? ` · auto-resumed Claude in ${resumed}` : '');
+    (resumed > 0 ? ` · auto-resumed ${resumed}` : '');
   vscode.window.showInformationMessage(summary);
   refreshSidebar();
   return { ran: true, recreated, attached };
