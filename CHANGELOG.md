@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.14.5] — 2026-06-13
+
+### Fixed
+- **Agent teams no longer spam a "done" notification for every teammate.** With Claude Code's experimental agent teams, each teammate fires its own `Stop` (and `Notification`) lifecycle hook when it finishes, so the sidebar tracker was firing a "Claude done" notification per teammate, and, because teammates share the lead's tmux session, a teammate's Stop could also overwrite the lead session's tracked conversation id/state. The extension is now teammate-aware: the unified forwarder (`agent-hook.sh`) captures `agent_id`/`agent_type`, which Claude Code attaches only to teammate and Task-tool subagent payloads (never to the main session). The tracker drops any event carrying `agentId` before it notifies or mutates state, so only the lead session drives the tab's status and notifications. Normal single-session use is unchanged (lead events never carry `agent_id`). As a bonus this also stops Task-tool subagent tool-calls from briefly flipping the lead's status icon.
+
 ## [0.14.4] — 2026-06-12
 
 ### Fixed

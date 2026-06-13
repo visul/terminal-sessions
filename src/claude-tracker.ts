@@ -81,6 +81,14 @@ interface ClaudeEvent {
    *  Stop while sitting at the prompt). Captured by hook-script v3+; older
    *  installs leave this empty and are treated as permission for safety. */
   message?: string;
+  /** Present only when the hook fired for an agent-team teammate or a Task-tool
+   *  subagent. Claude Code attaches `agent_id`/`agent_type` to those payloads
+   *  but NEVER to the main (lead) session's events, so the presence of
+   *  `agentId` is the reliable discriminator. Teammates share the lead's tmux
+   *  session, so we drop their events (see handleLine) to stop teammate Stops
+   *  both spamming "done" notifications and overwriting the lead's tracked id. */
+  agentId?: string;
+  agentType?: string;
 }
 
 /** Returns true when a Notification event is the harmless "Claude is waiting
@@ -632,6 +640,14 @@ export class ClaudeTracker {
     catch { return false; }
     if (!e.event) return false;
     if (!e.tmuxSession) return false;
+    // Agent-team teammates and Task-tool subagents fire the same lifecycle
+    // hooks as the lead, tagged with `agentId`/`agentType` (the main session
+    // never carries `agentId`). In split-pane mode they share the lead's tmux
+    // session, so without this guard a teammate's Stop would fire a "done"
+    // notification AND overwrite the lead's tracked sessionId/state below. Drop
+    // them outright: the sidebar tracks the lead per tmux tab; teammate activity
+    // is Claude-internal and must not hijack the tab.
+    if (e.agentId) return false;
 
     const tsMs = (e.ts || Math.floor(Date.now() / 1000)) * 1000;
     const snap = this.snapshots.get(e.tmuxSession) ?? ({ state: 'none' } as ClaudeSnapshot);

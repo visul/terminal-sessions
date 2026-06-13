@@ -51,6 +51,14 @@ cwd = pick(data, "cwd", "current_dir") or os.environ.get("CWD_FALLBACK", "")
 tool_name = pick(data, "tool_name", "toolName")
 message = pick(data, "message")
 
+# Agent-team teammates and Task-tool subagents carry agent_id / agent_type on
+# their hook payloads; the main (lead) session never does. Forwarding agent_id
+# lets the tracker drop teammate/subagent events so they do not fire "done"
+# notifications or hijack the tracked state of the lead session. (No apostrophes
+# in this block — the whole program is inside a single-quoted python3 -c string.)
+agent_id = pick(data, "agent_id", "agentId")
+agent_type = pick(data, "agent_type", "agentType")
+
 ti = data.get("tool_input")
 if ti is None:
     ti = data.get("toolInput") or {}
@@ -75,6 +83,12 @@ out = {
     "toolInput": tool_input_preview,
     "message": str(message)[:300],
 }
+
+# Only present for teammates/subagents — keep lead-session lines unchanged.
+if agent_id:
+    out["agentId"] = str(agent_id)
+if agent_type:
+    out["agentType"] = str(agent_type)
 
 # Antigravity statusLine payload carries live state + context usage; forward the
 # extra fields so the tracker can map agent_state and context %.
