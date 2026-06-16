@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.14.6] — 2026-06-13
+
+### Added
+- **New `collapsed` option for `terminalSessions.claudeSidebarDetails`.** Until now the per-session Claude detail rows (last message, model · cost · turns · ctx, status) auto-expanded whenever a session was working/tool/waiting (`auto`) or always (`always`). The new `collapsed` mode keeps the details as a collapsible row that **never auto-expands** — the session shows a chevron and you reveal the details by clicking, and they stay where you leave them. Use it if you want a compact one-line-per-session sidebar without losing the details on demand. (`auto` remains the default; `off` still hides the rows entirely.)
+
 ## [0.14.5] — 2026-06-13
 
 ### Fixed

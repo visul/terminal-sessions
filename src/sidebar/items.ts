@@ -155,7 +155,7 @@ export class SessionTreeItem extends vscode.TreeItem {
   constructor(
     public readonly session: SessionInfo,
     public readonly claude: ClaudeSnapshot | undefined,
-    public readonly detailsMode: 'auto' | 'always' | 'off',
+    public readonly detailsMode: 'auto' | 'always' | 'collapsed' | 'off',
     public readonly contextPctAlert: number,
   ) {
     const label = session.label || `#${session.tabId}`;
@@ -167,6 +167,8 @@ export class SessionTreeItem extends vscode.TreeItem {
     if (hasAnyClaudeData && detailsMode !== 'off') {
       const shouldExpand = detailsMode === 'always'
         ? true
+        : detailsMode === 'collapsed'
+        ? false // details exist as a collapsible row, but never auto-expand
         : (claude!.state === 'working' || claude!.state === 'tool' || claude!.state === 'waiting');
       collapsible = shouldExpand
         ? vscode.TreeItemCollapsibleState.Expanded

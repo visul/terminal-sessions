@@ -5,7 +5,7 @@ export type NativeNotifMode = 'auto' | 'always' | 'never';
 export type SidebarSortMode = 'custom' | 'mru' | 'created' | 'alphabetical';
 export type SidebarFilterMode = 'all' | 'running' | 'stopped';
 export const FILTER_MODES: SidebarFilterMode[] = ['all', 'running', 'stopped'];
-export type ClaudeDetailsMode = 'auto' | 'always' | 'off';
+export type ClaudeDetailsMode = 'auto' | 'always' | 'collapsed' | 'off';
 
 export const SORT_MODES: SidebarSortMode[] = ['custom', 'mru', 'created', 'alphabetical'];
 
@@ -67,7 +67,7 @@ export function getConfig(): Config {
     sidebarFilterMode: filterMode,
     claudeSidebarDetails: ((): ClaudeDetailsMode => {
       const v = c.get<string>('claudeSidebarDetails', 'auto');
-      return v === 'always' || v === 'off' || v === 'auto' ? v : 'auto';
+      return v === 'always' || v === 'off' || v === 'auto' || v === 'collapsed' ? v : 'auto';
     })(),
     contextWarnPct: Math.max(0, Math.min(1, c.get<number>('contextWarnPct', 0.8))),
     showCompletedSubagents: c.get('showCompletedSubagents', true),
