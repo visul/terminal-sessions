@@ -124,6 +124,7 @@ export const COMMAND = {
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
   openSubagentTranscript: 'terminalSessions.openSubagentTranscript',
   viewConversation: 'terminalSessions.viewConversation',
+  nameSession: 'terminalSessions.nameSession',
   toggleShowCompletedSubagents: 'terminalSessions.toggleShowCompletedSubagents',
   collapseSessions: 'terminalSessions.collapseSessions',
   reattachAll: 'terminalSessions.reattachAll',

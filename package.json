@@ -301,6 +301,11 @@
         "icon": "$(book)"
       },
       {
+        "command": "terminalSessions.nameSession",
+        "title": "Name Conversation...",
+        "icon": "$(edit)"
+      },
+      {
         "command": "terminalSessions.rename",
         "title": "Rename Session",
         "icon": "$(edit)"
@@ -602,6 +607,11 @@
           "command": "terminalSessions.viewConversation",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@6"
+        },
+        {
+          "command": "terminalSessions.nameSession",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@7"
         },
         {
           "command": "terminalSessions.revealSessionFolder",

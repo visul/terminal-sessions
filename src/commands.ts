@@ -233,6 +233,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
+    vscode.commands.registerCommand(COMMAND.nameSession, (arg?: SessionTreeItem | { sessionId: string; current?: string }) => cmdNameSession(index, registry, claudeTracker, arg)),
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
     vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
@@ -321,6 +322,48 @@ async function cmdViewConversation(
     const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(transcriptPath));
     await vscode.window.showTextDocument(doc);
   }
+}
+
+/**
+ * Prompt for a friendly name for an agent session and store it in the sidecar
+ * names map. Empty input clears the name. Accepts a SessionTreeItem (resolve the
+ * live session's current sessionId) or an explicit { sessionId, current }.
+ * Returns the saved name (undefined when cleared/cancelled).
+ */
+async function cmdNameSession(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  arg?: SessionTreeItem | { sessionId: string; current?: string },
+): Promise<string | undefined> {
+  let sessionId: string | undefined;
+  let current: string | undefined;
+
+  if (arg && 'sessionId' in arg) {
+    sessionId = arg.sessionId;
+    current = arg.current ?? index.getSessionName(sessionId);
+  } else if (arg && 'session' in arg) {
+    const session = arg.session;
+    const { history } =
+      resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
+    sessionId = history[0];
+    current = sessionId ? index.getSessionName(sessionId) : undefined;
+  }
+
+  if (!sessionId) {
+    vscode.window.showInformationMessage('No agent session id to name yet (run the agent once first).');
+    return undefined;
+  }
+
+  const input = await vscode.window.showInputBox({
+    prompt: 'Friendly name for this conversation (empty to clear)',
+    value: current ?? '',
+  });
+  if (input === undefined) return current; // cancelled
+  const name = input.trim() || undefined;
+  index.setSessionName(sessionId, name);
+  refreshSidebar();
+  return name;
 }
 
 async function cmdOpenSubagentTranscript(item?: SubagentTreeItem): Promise<void> {
