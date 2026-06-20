@@ -148,6 +148,10 @@ export interface TranscriptSummary {
   lineCount: number;
   byteSize: number;
   mtimeMs: number;
+  /** Count of user+assistant records (cleanup "empty" = 0). */
+  userAssistantCount: number;
+  /** True if any `summary` record is present (a summary-only file survives cleanup). */
+  hasSummary: boolean;
 }
 export function readTranscriptSummary(transcriptPath: string): TranscriptSummary | undefined {
   try {
@@ -156,6 +160,8 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
     let cwd: string | undefined;
     let firstUser: string | undefined;
     let lineCount = 0;
+    let userAssistantCount = 0;
+    let hasSummary = false;
     // Walk lines, but only parse the first ~200 for cwd/first-user — the rest
     // is just counted. Saves a lot of JSON.parse work on 22k-line transcripts.
     let cursor = 0;
@@ -165,24 +171,34 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
       const line = buf.slice(cursor, end);
       if (line.length > 0) {
         lineCount++;
-        if (lineCount <= 200 && line[0] === '{' && (!cwd || !firstUser)) {
-          try {
-            const obj = JSON.parse(line);
-            if (!cwd && typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) {
-              cwd = obj.cwd;
-            }
-            if (!firstUser && obj.type === 'user') {
-              const c = obj.message?.content;
-              if (typeof c === 'string') firstUser = c;
-              else if (Array.isArray(c)) {
-                for (const p of c) {
-                  if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
-                    firstUser = p.text; break;
+        if (line[0] === '{') {
+          // Cheap type sniff on every line (no full parse needed for the tally).
+          // Claude writes compact JSON (no spaces after colons), so the literal
+          // substring match is safe and avoids JSON.parse on huge transcripts.
+          if (line.includes('"type":"user"') || line.includes('"type":"assistant"')) {
+            userAssistantCount++;
+          } else if (line.includes('"type":"summary"')) {
+            hasSummary = true;
+          }
+          if (lineCount <= 200 && (!cwd || !firstUser)) {
+            try {
+              const obj = JSON.parse(line);
+              if (!cwd && typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) {
+                cwd = obj.cwd;
+              }
+              if (!firstUser && obj.type === 'user') {
+                const c = obj.message?.content;
+                if (typeof c === 'string') firstUser = c;
+                else if (Array.isArray(c)) {
+                  for (const p of c) {
+                    if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
+                      firstUser = p.text; break;
+                    }
                   }
                 }
               }
-            }
-          } catch { /* malformed line */ }
+            } catch { /* malformed line */ }
+          }
         }
       }
       if (next < 0) break;
@@ -194,6 +210,8 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
       lineCount,
       byteSize: stat.size,
       mtimeMs: stat.mtimeMs,
+      userAssistantCount,
+      hasSummary,
     };
   } catch {
     return undefined;
