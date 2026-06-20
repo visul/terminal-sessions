@@ -1,6 +1,6 @@
 # Terminal Sessions
 
-Persistent terminal sessions for Cursor and VS Code, with first-class Claude Code awareness. Terminals survive full editor restart, organized per workspace, and the sidebar shows live Claude state: working/tool/waiting, cost, context usage, last user and assistant messages, fuzzy search across every past Claude conversation on your machine.
+Persistent terminal sessions for Cursor and VS Code, with first-class awareness of your AI coding agents — **Claude Code, Codex, and Antigravity (`agy`)**. Terminals survive full editor restart, organized per workspace, and the sidebar shows live agent state: working/tool/waiting, context usage, cost, last user and assistant messages. Browse, read, name, resume, and clean up every past conversation on your machine, across all three agents.
 
 Every terminal is wrapped in a tmux session whose server runs independent of the editor. Quit Cursor, reboot the window, crash the renderer: Claude Code, dev servers, REPLs, migrations, SSH sessions keep running. Reopen the workspace and everything is where you left it.
 
@@ -33,7 +33,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 **2. A managed `~/.terminal-sessions/tmux.conf`.** The extension writes its own tmux config with defaults tuned for Cursor: mouse on, large scrollback, OSC 52 clipboard, modern CSI-u keys, DECSET 2026 synchronized output, and since v0.11 the `CLAUDE_CODE_NO_FLICKER` and `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` env vars baked in so Claude Code renders cleanly in alt-screen and trackpad scroll stays inside the conversation view. Your own `~/.tmux.conf` is never touched; the managed file loads it at the end if it exists, so your personal theme or keybindings still apply.
 
-**3. Claude Code awareness via hooks + transcript tailing.** If you opt in, the extension installs a `SessionStart | UserPromptSubmit | PreToolUse | PostToolUse | Notification | Stop | SessionEnd` hook in `~/.claude/settings.json`. Each event writes a JSON line to `~/.terminal-sessions/claude-events.log` tagged with the tmux session name Claude is running in. A file watcher feeds those events into an in-memory map and sets the per-session state (working, tool, waiting, idle). In parallel, the transcript tailer follows `~/.claude/projects/<workspace>/<sessionId>.jsonl` directly and extracts model, token counts, cache tier breakdown, and per-model cost using the live Anthropic rate card. The sidebar reads both streams and renders the merged snapshot. A Claude conversation can only belong to one tmux session at a time; starting the same conversation in a different tab transfers ownership so the sidebar never shows duplicate live states.
+**3. AI-agent awareness via hooks + transcript tailing.** If you opt in, the extension installs lifecycle hooks for each agent you use — `SessionStart | UserPromptSubmit | PreToolUse | PostToolUse | Notification | Stop | SessionEnd` for Claude (`~/.claude/settings.json`), the equivalent events for Codex (`~/.codex/hooks.json`) and Antigravity (`~/.gemini/antigravity-cli/settings.json`, plus a `statusLine` for live context). A single shared forwarder normalizes each agent's differing event payload and writes a JSON line to `~/.terminal-sessions/agent-events.log`, tagged with the agent id and the tmux session the agent is running in. A file watcher feeds those events into an in-memory map and sets the per-session state (working, tool, waiting, idle). In parallel, a transcript tailer follows the agent's on-disk conversation file and, through that agent's provider, extracts model, token counts, context-window usage, and cost. The sidebar reads both streams and renders the merged snapshot. A conversation can only belong to one tmux session at a time; starting the same conversation in a different tab transfers ownership so the sidebar never shows duplicate live states. Everything below works the same way for Claude, Codex, and Antigravity — Claude is simply the most battle-tested provider.
 
 **What persists across what**
 
@@ -79,6 +79,14 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Alphabetical** — by session label
 - Toggle via the `$(list-ordered)` icon in the sidebar title bar; dragging automatically switches to Custom
 
+### Filter, groups & navigation
+- **Filter modes** — show `all`, only `running`, or only `stopped` sessions via the `$(filter)` icon in the title bar (`terminalSessions.sidebarFilterMode`)
+- **Stop / Start a session** — pause a session (kills the tmux session but keeps the row, with its label, icon, color, and agent history) and start it again later, instead of killing it outright. Stopped rows get an inline `$(play)`
+- **Groups & master groups** — organize sessions under named groups, and groups under master groups, via right-click `New Group…` / `New Master Group…` / `Move to Group…`, with drag-and-drop and per-group rename/delete. Purely organizational; the underlying tmux sessions are untouched
+- **Re-attach All Ghost Terminals** — one click (`$(debug-restart)` in the title bar) revives the orange/disconnected tabs you get after a Cursor restart, in sidebar order
+- **Reveal Session Folder** — right-click → open the session's working directory in the OS file manager (Finder/Explorer), or jump to its row from the terminal tab via `Reveal Session in Sidebar`
+- **Copy Last Session ID / Path** — right-click → put the most recent agent conversation's UUID, or the full path to its transcript `.jsonl`, on the clipboard (works for Claude, Codex, and Antigravity)
+
 ### Subagents in the sidebar (v0.12+)
 - **`🤖 Agents (N running · M done)` folder per session** — one collapsible row groups every subagent a Claude session spawned, so sessions with lots of agents stay tidy. Auto-expanded while anything is live; collapsed when everything finishes. Tooltip previews the first five agents with their state
 - **Live per-subagent rows** — state icon (spinner / tools / check), elapsed time, current tool with input preview, last streamed message. Nests recursively for agents that spawn sub-subagents
@@ -89,13 +97,26 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **`Open Subagent Transcript` command** — right-click a subagent row → opens its transcript jsonl in an editor tab jumped to the first line where that agent was registered. For background agents this is the small per-agent file, much easier to read than the main conversation transcript
 - **Auto-done on parent idle** — when the parent session has been idle for 2+ minutes, stragglers flagged `working` are marked done in the rendered snapshot so the sidebar doesn't spin forever on interrupted agents
 
-### Claude Code integration (live status in the sidebar)
-- **Per-session state indicator** — icon + description reflect whether Claude is `working`, running a `tool` (with tool name), `waiting` for user permission, or `idle` (with time-since). State is derived from the transcript .jsonl directly so it stays correct even when hooks are out of date
+### Multi-agent support (Claude · Codex · Antigravity)
+- **One sidebar, three agents** — the same live status, context %, cost, history, and auto-resume work for **Claude Code**, **Codex**, and **Antigravity** (`agy`). Each tracked session shows which agent it's running, so a row reads `Codex working 12s` vs `Claude working 12s`
+- **Auto-detection** — Claude is always on; Codex and Antigravity turn on automatically when their CLI (`codex` / `agy`) is found on your `PATH`. Override explicitly with `terminalSessions.enabledAgents` (e.g. `["claude", "codex"]`)
+- **Per-agent hooks, one forwarder** — `Terminal Sessions: Install AI Agent Hooks` writes the right hook into each agent's own settings file (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/antigravity-cli/settings.json`); a single shared script normalizes their differing event payloads. Your model and MCP config are never disturbed
+- **Agent-correct resume** — restart/resume runs the right command per agent: `claude --resume <id>` (cwd-sensitive), `codex resume <id>` (restores its own recorded cwd), or `agy --conversation <id>`. The extension picks it from the session's recorded agent automatically
+- **Provider abstraction** — adding more agents later is a new provider file, no core changes; all three share one tracker, state machine, and notification path
+
+### Live agent status in the sidebar
+- **Per-session state indicator** — icon + description reflect whether the agent is `working`, running a `tool` (with tool name), `waiting` for user permission, or `idle` (with time-since). State is derived from the transcript directly so it stays correct even when hooks are out of date
 - **API-equivalent cost in USD** — real cost per session computed from the transcript using the live Anthropic rate card, per-model (Opus 4.7 at $5/$25 in/out, Opus 4.1 at $15/$75, Sonnet at $3/$15, Haiku at $1/$5, plus separate cache-read and 5-min/1-hour cache-write tiers). Retried turns are de-duplicated by `message.id`; subagents on different models are counted automatically with their own rate. Sidebar shows `opus · $55.25 · 364 turns`; tooltip shows per-model breakdown and the raw token totals
 - **Context-window gauge** (v0.11 fix) — the `31% ctx` suffix appears next to every Claude-active session. Crosses `terminalSessions.contextWarnPct` (default 0.8) → `⚠ 87% ctx`. Limit is auto-detected per session: Opus/Sonnet 4.5+ default to 1M-context, older models to 200k; if any single turn exceeds 200k we pin the limit to 1M. Subagent turns are excluded because they have their own context
 - **Nested detail rows** — under each active session, rows show last user message, last Claude reply, model/cost/turns, current tool with its input (e.g. `Bash: "npm run build"`); configurable `auto | always | off`
 - **Search past sessions** — `$(search)` button in the sidebar (or `Terminal Sessions: Find Session by Prompt…` command) opens a fuzzy picker over every transcript on your machine. Jump to transcript, copy session ID, or reveal the cwd
 - **Deduplicated live state** (v0.11+) — if you ran `claude --resume <id>` in multiple tabs over time, the tracker now transfers ownership on each new hook event, so only the tab currently running that conversation shows live state. Others snap back to idle
+
+### Archive, conversation viewer & cleanup (v0.15)
+- **Resume Session from Archive** — the `$(history)` button on the sidebar toolbar (or `Terminal Sessions: Resume Session from Archive…`) opens a picker of **every** past conversation on disk, across all three agents, even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Accepting a row resumes it into your active session or a fresh persistent one
+- **View Conversation** — right-click a session (or the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`
+- **Name Conversation** — give any session a friendly name; it shows in the archive picker and the viewer title. Names live in the extension's sidecar index, so the agent's transcript files are never modified
+- **Clean Up Empty / Invalid Sessions** — a maintenance action (sidebar overflow `⋯` menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. The agent's own database and session index are never touched; moved files can be restored manually
 
 ### Notifications
 - **Claude Stop notification** — fires when Claude finishes a response. Distinct from the waiting variant so you can glance at the sound/icon and know whether you need to act. Min-duration filter prevents notif-storms on short turns
@@ -186,7 +207,7 @@ The extension works out of the box, but the click-to-focus behavior on notificat
 
 ### From VSIX
 ```bash
-cursor --install-extension terminal-sessions-0.11.0.vsix --force
+cursor --install-extension terminal-sessions-0.15.0.vsix --force
 ```
 Or in Cursor: Extensions panel → `⋯` → **Install from VSIX...**
 
@@ -223,7 +244,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 2. Install the extension and reload Cursor (full quit + reopen if you see stale state)
 3. Run `Terminal Sessions: Set as Default Terminal Profile` so every `+` button creates a tmux-wrapped terminal
 4. Open the **Terminal Sessions** activity bar icon to see the sidebar
-5. Optional: run `Terminal Sessions: Install Claude Code Hook` to enable live Claude state + notifications
+5. Optional: run `Terminal Sessions: Install AI Agent Hooks` to enable live agent state + notifications for Claude, Codex, and Antigravity
 
 ## Commands
 
@@ -240,13 +261,23 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Set as Default Terminal Profile` | Write the VS Code setting so `+` auto-wraps |
 | `Terminal Sessions: Open tmux.conf` | Edit `~/.terminal-sessions/tmux.conf` |
 | `Terminal Sessions: Reload tmux Config` | Apply config changes to running sessions |
-| `Terminal Sessions: Install Claude Code Hook` | Writes the SessionStart/UserPromptSubmit/PreToolUse/PostToolUse/Notification/Stop/SessionEnd hooks to `~/.claude/settings.json` |
-| `Terminal Sessions: Uninstall Claude Code Hook` | Removes the hooks |
+| `Terminal Sessions: Install AI Agent Hooks` | Writes lifecycle hooks for each enabled agent into its own settings file (Claude `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `~/.gemini/antigravity-cli/settings.json`) |
+| `Terminal Sessions: Uninstall AI Agent Hooks` | Removes the hooks for all agents |
+| `Terminal Sessions: Resume Session from Archive...` | Picker over every past conversation on disk (Claude/Codex/Antigravity); resume, view, or name any of them |
+| `Terminal Sessions: Resume Other Session...` | Resume a different past conversation into the current session (cross-agent) |
+| `Terminal Sessions: Change Sidebar Filter` | Show all / running-only / stopped-only sessions |
 | `Terminal Sessions: Fix Claude Code Rendering in Shell` | Appends `CLAUDE_CODE_NO_FLICKER=1` and `CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1` to your rc file (optional — v0.11 bakes these into tmux.conf so most users won't need this) |
 | `Terminal Sessions: Toggle Claude Waiting Alerts (Global)` | Flip the `notifyOnClaudeWaiting` setting |
 | `Terminal Sessions: Recreate Sessions from Index` | After a reboot, rebuild tmux sessions from the stored index |
 | Right-click on sidebar session → `Preview Scrollback` | Last 200 lines in an editor tab |
-| Right-click on sidebar session → `Restart` | Kill + fresh shell; auto-resume Claude if detected |
+| Right-click on sidebar session → `Restart` | Kill + fresh shell; auto-resume the agent if detected |
+| Right-click on sidebar session → `View Conversation` | Open a readable Markdown rendering of the conversation |
+| Right-click on sidebar session → `Name Conversation...` | Give the session a friendly name (shown in the archive picker) |
+| Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
+| Right-click on sidebar session → `Copy Last Session ID` / `Copy Last Session Path` | Clipboard the conversation UUID or its transcript path |
+| Right-click on sidebar session → `Reveal Session Folder` | Open the session's working directory in Finder/Explorer |
+| Right-click on workspace/group → `New Group…` / `Move to Group…` | Organize sessions into (master) groups |
+| Sidebar overflow `⋯` → `Clean Up Empty / Invalid Sessions...` | Soft-delete empty/invalid conversations to `~/.claude/projects/.bak` |
 | Right-click on sidebar session → `Rename` | Set a friendly label |
 | Right-click on sidebar session → `Change Icon` / `Change Color` | Pick custom icon or theme color |
 | Right-click on sidebar session → `Mute Notifications` / `Unmute Notifications` | Per-session silencing |
@@ -270,11 +301,13 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 |---|---|---|
 | `terminalSessions.tmuxPath` | `""` | Absolute path to tmux binary. Empty = autodetect from PATH and common locations |
 | `terminalSessions.sessionPrefix` | `"ts"` | Prefix for session names, e.g. `ts-a3f2c71d-1` |
+| `terminalSessions.enabledAgents` | `[]` (auto-detect) | Which AI CLIs to track. Empty = Claude always on, Codex/Antigravity on when found on PATH. Override e.g. `["claude","codex"]` |
 | `terminalSessions.autoRestore` | `"ask"` | On workspace open: `auto`, `ask`, or `off` |
 | `terminalSessions.autoRestoreMaxAgeHours` | `72` | Skip auto-restore for sessions older than this |
 | `terminalSessions.pruneAfterDays` | `14` | Offer to prune sessions idle longer than this (`0` to disable) |
 | `terminalSessions.sidebarSortMode` | `"created"` | `custom`, `mru`, `created`, or `alphabetical` |
-| `terminalSessions.claudeSidebarDetails` | `"auto"` | Expand the nested rows under a Claude session: `auto`/`always`/`off` |
+| `terminalSessions.sidebarFilterMode` | `"all"` | Filter sidebar by state: `all`, `running`, or `stopped` |
+| `terminalSessions.claudeSidebarDetails` | `"auto"` | Expand the nested rows under a Claude session: `auto`/`always`/`collapsed`/`off` |
 | `terminalSessions.contextWarnPct` | `0.8` | Threshold (0-1) for the `⚠ 87% ctx` warning next to Claude state |
 | `terminalSessions.nativeNotifications` | `"auto"` | `auto` (native when Cursor unfocused), `always`, `never` |
 | `terminalSessions.notificationSound` | `"Glass"` | macOS sound for Claude Stop notifications |
@@ -337,7 +370,8 @@ If you started Claude in a session before the v3 config was applied, the env var
 - Budget-alert thresholds (warn when a session's cost crosses $X)
 - Daily / workspace-level cost rollup in the status bar
 - Stuck / error detection from `tool_result` content
-- Inline sidebar action buttons on Claude-active sessions (Interrupt, `/compact`, Open transcript)
+- Inline sidebar action buttons on agent-active sessions (Interrupt, `/compact`)
+- More agents behind the provider abstraction (Gemini CLI, opencode, …)
 - Windows native support (requires a tmux alternative — out of scope for now)
 
 ## Changelog
