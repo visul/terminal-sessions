@@ -246,6 +246,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem) => cmdMoveSessionToGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry)),
+    vscode.commands.registerCommand(COMMAND.cleanupSessions, () => cmdCleanupSessions(index, registry)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
     vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
@@ -1500,6 +1501,59 @@ async function cmdResumeFromArchive(
   refreshSidebar();
   await sleep(SHELL_INIT_DELAY_MS);
   term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, ws.path));
+}
+
+/**
+ * Find empty / invalid sessions and soft-delete them into ~/.claude/projects/.bak.
+ * Default scope is the current workspace; a scope step can widen to all projects.
+ * HARD BOUNDARY: only session .jsonl files (+ subagents dirs) are moved. Claude's
+ * __store.db / index are never touched.
+ */
+async function cmdCleanupSessions(
+  index: SessionIndex,
+  registry: AgentRegistry,
+): Promise<void> {
+  const ws = currentWorkspace();
+  const scopeChoice = await vscode.window.showQuickPick(
+    [
+      { label: '$(home) This workspace only', all: false },
+      { label: '$(globe) All projects', all: true },
+    ],
+    { placeHolder: 'Scan which sessions for cleanup?' },
+  );
+  if (!scopeChoice) return;
+  const scopeCwd = scopeChoice.all ? undefined : ws?.path;
+
+  const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+  const targets: Array<{ s: ArchivedSession; verdict: 'empty' | 'invalid' }> = [];
+  for (const s of sessions) {
+    if (!s.transcriptPath) continue;
+    const summary = readTranscriptSummary(s.transcriptPath);
+    const verdict = classifyForCleanup(summary);
+    if (verdict === 'empty' || verdict === 'invalid') targets.push({ s, verdict });
+  }
+
+  if (targets.length === 0) {
+    vscode.window.showInformationMessage('No empty or invalid sessions found.');
+    return;
+  }
+
+  const nEmpty = targets.filter(t => t.verdict === 'empty').length;
+  const nInvalid = targets.filter(t => t.verdict === 'invalid').length;
+  const confirm = await vscode.window.showWarningMessage(
+    `Move ${targets.length} session(s) to .bak (${nEmpty} empty, ${nInvalid} invalid)? Claude's database is left untouched; files go to ~/.claude/projects/.bak and can be restored manually.`,
+    { modal: true },
+    'Move to .bak',
+  );
+  if (confirm !== 'Move to .bak') return;
+
+  let moved = 0;
+  let failed = 0;
+  for (const t of targets) {
+    const r = softDeleteSession(t.s.transcriptPath!);
+    if (r.ok) moved++; else { failed++; console.error('[terminal-sessions] cleanup failed:', t.s.transcriptPath, r.error); }
+  }
+  vscode.window.showInformationMessage(`Cleanup done: moved ${moved}${failed ? `, skipped ${failed} (see console)` : ''}.`);
 }
 
 /**

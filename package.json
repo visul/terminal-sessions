@@ -562,6 +562,11 @@
           "group": "navigation@5"
         },
         {
+          "command": "terminalSessions.cleanupSessions",
+          "when": "view == terminalSessions.sessions",
+          "group": "1_maintenance@1"
+        },
+        {
           "command": "terminalSessions.collapseSessions",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@9"
