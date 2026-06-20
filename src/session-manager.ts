@@ -229,6 +229,22 @@ export class SessionIndex {
     return this.data.workspaces[hash]?.sessions[sessionName];
   }
 
+  /** Set (or clear, when name is empty/undefined) a friendly label for an agent
+   *  session id. Stored in the sidecar `sessionNames` map; never touches
+   *  ~/.claude. */
+  setSessionName(sessionId: string, name: string | undefined): void {
+    if (!sessionId) return;
+    if (!this.data.sessionNames) this.data.sessionNames = {};
+    const trimmed = name?.trim();
+    if (trimmed) this.data.sessionNames[sessionId] = { name: trimmed, ts: Date.now() };
+    else delete this.data.sessionNames[sessionId];
+    this.save();
+  }
+
+  getSessionName(sessionId: string): string | undefined {
+    return this.data.sessionNames?.[sessionId]?.name;
+  }
+
   getNextTabId(hash: string, prefix: string): number {
     const ws = this.data.workspaces[hash];
     if (!ws) return 1;

@@ -16,8 +16,10 @@ import { notify } from './notifications';
 import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInstalled } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary } from './claude-transcript';
+import { transcriptToMarkdown } from './transcript-render';
+import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
 import { AgentRegistry } from './agents/registry';
-import type { AgentProvider } from './agents/types';
+import type { AgentProvider, AgentId } from './agents/types';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -230,6 +232,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
+    vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
+    vscode.commands.registerCommand(COMMAND.nameSession, (arg?: SessionTreeItem | { sessionId: string; current?: string }) => cmdNameSession(index, registry, claudeTracker, arg)),
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
     vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
@@ -241,8 +245,12 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.deleteGroup, (item?: GroupTreeItem) => cmdDeleteGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem) => cmdMoveSessionToGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry)),
+    vscode.commands.registerCommand(COMMAND.cleanupSessions, () => cmdCleanupSessions(index, registry)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
+    vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
+    vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem) => cmdCopySessionPath(index, registry, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
   );
 
@@ -267,6 +275,97 @@ async function cmdSetAllAlerts(value?: boolean): Promise<void> {
   vscode.window.showInformationMessage(
     `Claude waiting alerts ${next ? 'enabled' : 'disabled'} globally.`,
   );
+}
+
+/**
+ * Open a readable Markdown rendering of a conversation in VS Code's preview.
+ * Two entry shapes:
+ *   - a SessionTreeItem (live session right-click) → resolve its current agent's
+ *     newest transcript via the resume context;
+ *   - { transcriptPath, title } (from the archive picker's eye button).
+ */
+async function cmdViewConversation(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  arg?: SessionTreeItem | { transcriptPath: string; title?: string },
+): Promise<void> {
+  let transcriptPath: string | undefined;
+  let title: string | undefined;
+
+  if (arg && 'transcriptPath' in arg) {
+    transcriptPath = arg.transcriptPath;
+    title = arg.title;
+  } else if (arg && 'session' in arg) {
+    const session = arg.session;
+    const { provider, history } =
+      resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
+    const cwd = index.getSessionMeta(session.workspaceHash, session.name)?.folderPath
+      || session.workspacePath || '';
+    const sid = history[0];
+    if (sid) {
+      transcriptPath = provider.resolveTranscriptPath(sid, cwd, undefined);
+      title = index.getSessionName(sid) || session.label || session.name;
+    }
+  }
+
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    vscode.window.showInformationMessage('No conversation transcript found for this session yet.');
+    return;
+  }
+
+  try {
+    const md = transcriptToMarkdown(transcriptPath, { title });
+    const doc = await vscode.workspace.openTextDocument({ content: md, language: 'markdown' });
+    await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
+  } catch (e) {
+    // Fall back to the raw file so the user still sees something.
+    vscode.window.showWarningMessage(`Render failed (${String(e).slice(0, 120)}); opening raw transcript.`);
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(transcriptPath));
+    await vscode.window.showTextDocument(doc);
+  }
+}
+
+/**
+ * Prompt for a friendly name for an agent session and store it in the sidecar
+ * names map. Empty input clears the name. Accepts a SessionTreeItem (resolve the
+ * live session's current sessionId) or an explicit { sessionId, current }.
+ * Returns the saved name (undefined when cleared/cancelled).
+ */
+async function cmdNameSession(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  arg?: SessionTreeItem | { sessionId: string; current?: string },
+): Promise<string | undefined> {
+  let sessionId: string | undefined;
+  let current: string | undefined;
+
+  if (arg && 'sessionId' in arg) {
+    sessionId = arg.sessionId;
+    current = arg.current ?? index.getSessionName(sessionId);
+  } else if (arg && 'session' in arg) {
+    const session = arg.session;
+    const { history } =
+      resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
+    sessionId = history[0];
+    current = sessionId ? index.getSessionName(sessionId) : undefined;
+  }
+
+  if (!sessionId) {
+    vscode.window.showInformationMessage('No agent session id to name yet (run the agent once first).');
+    return undefined;
+  }
+
+  const input = await vscode.window.showInputBox({
+    prompt: 'Friendly name for this conversation (empty to clear)',
+    value: current ?? '',
+  });
+  if (input === undefined) return current; // cancelled
+  const name = input.trim() || undefined;
+  index.setSessionName(sessionId, name);
+  refreshSidebar();
+  return name;
 }
 
 async function cmdOpenSubagentTranscript(item?: SubagentTreeItem): Promise<void> {
@@ -1276,6 +1375,188 @@ async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem
 }
 
 /**
+ * Resume ANY past session from disk (cross-agent), even when nothing is live in
+ * tmux for it. Scans every enabled provider's on-disk sessions (default: the
+ * current workspace's cwd; a toggle widens to all projects). Each row has an eye
+ * button (View Conversation) and an edit button (Name Conversation). Accepting a
+ * row resumes it into the active Terminal Sessions terminal (if any) or a new
+ * persistent session.
+ */
+async function cmdResumeFromArchive(
+  index: SessionIndex,
+  registry: AgentRegistry,
+): Promise<void> {
+  const ws = currentWorkspace();
+  let scopeCwd: string | undefined = ws?.path;
+
+  const eyeBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('book'), tooltip: 'View Conversation' };
+  const editBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Name Conversation' };
+
+  interface Pick extends vscode.QuickPickItem { sess?: ArchivedSession; toggle?: boolean }
+
+  const build = (): Pick[] => {
+    const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+    const rows: Pick[] = sessions.slice(0, 500).map(s => {
+      const provider = registry.getProvider(s.agent);
+      const badge = provider?.displayName || s.agent;
+      const primary = s.friendlyName || (s.firstUserMessage?.replace(/\s+/g, ' ').slice(0, 80)) || '(no user message)';
+      const lines = (s.lineCount ?? 0).toLocaleString();
+      const ageMs = Date.now() - (s.mtimeMs ?? Date.now());
+      const ageMin = Math.round(ageMs / 60000);
+      const ageStr = ageMin < 60 ? `${ageMin}m` : ageMin < 60 * 24 ? `${Math.round(ageMin / 60)}h` : `${Math.round(ageMin / 60 / 24)}d`;
+      const cwdShort = s.cwd ? s.cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
+      return {
+        sess: s,
+        label: `$(comment-discussion) ${primary}`,
+        description: `${badge} · ${lines} lines · ${ageStr} ago · ${s.sessionId.slice(0, 8)}`,
+        detail: cwdShort,
+        buttons: [eyeBtn, editBtn],
+      };
+    });
+    const toggle: Pick = {
+      toggle: true,
+      label: scopeCwd ? '$(globe) Show sessions from all projects...' : '$(home) Show only this workspace',
+      alwaysShow: true,
+    };
+    return [toggle, ...rows];
+  };
+
+  const qp = vscode.window.createQuickPick<Pick>();
+  qp.matchOnDetail = true;
+  const refresh = () => {
+    qp.placeholder = scopeCwd
+      ? `Resume a past session (this workspace${ws?.label ? ' — ' + ws.label : ''})`
+      : 'Resume a past session (all projects)';
+    qp.items = build();
+  };
+  refresh();
+
+  const chosen = await new Promise<Pick | undefined>((resolve) => {
+    qp.onDidTriggerItemButton(async (e) => {
+      const s = e.item.sess;
+      if (!s || !s.transcriptPath) return;
+      if (e.button === eyeBtn) {
+        await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: s.friendlyName || s.firstUserMessage });
+      } else if (e.button === editBtn) {
+        const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, { sessionId: s.sessionId, current: s.friendlyName });
+        if (name !== undefined) refresh();
+      }
+    });
+    qp.onDidAccept(() => {
+      const sel = qp.selectedItems[0];
+      if (sel?.toggle) { scopeCwd = scopeCwd ? undefined : ws?.path; refresh(); return; }
+      resolve(sel);
+    });
+    qp.onDidHide(() => resolve(undefined));
+    qp.show();
+  });
+  qp.hide();
+  qp.dispose();
+  if (!chosen?.sess?.transcriptPath) return;
+
+  const s = chosen.sess;
+  const provider = registry.getProvider(s.agent);
+  if (!provider) return;
+
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+
+  // Resume target: reuse the active TS terminal if the user has one, else make a
+  // new persistent session. The provider's buildResumeCommand handles cd-to-cwd.
+  const active = vscode.window.activeTerminal;
+  const activeName = active ? await resolveTmuxNameForTerminalLive(active, index, cfg.sessionPrefix) : undefined;
+  let useActive = false;
+  if (active && activeName) {
+    const choice = await vscode.window.showQuickPick(['Resume in active session', 'New session'], {
+      placeHolder: 'Where should this conversation resume?',
+    });
+    if (!choice) return;
+    useActive = choice === 'Resume in active session';
+  }
+
+  if (useActive && active) {
+    active.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, s.cwd || ''));
+    active.show();
+    return;
+  }
+
+  // New persistent session (mirrors cmdNewPersistent), then send resume.
+  if (!ws) { vscode.window.showErrorMessage('No workspace folder open to create a session in.'); return; }
+  index.recordWorkspace(ws.hash, ws.path, ws.label);
+  const tabId = index.getNextTabId(ws.hash, cfg.sessionPrefix);
+  const name = buildSessionName(cfg.sessionPrefix, ws.hash, tabId);
+  index.recordSession(ws.hash, name);
+  const meta = index.getSessionMeta(ws.hash, name);
+  const { icon, color } = metaIconAndColor(meta);
+  const term = vscode.window.createTerminal({
+    name: `${ws.label} ${tabId}`,
+    shellPath: tmuxPath,
+    shellArgs: tmux.buildAttachOrCreateArgs(name, ws.path),
+    cwd: ws.path,
+    iconPath: icon,
+    color,
+  });
+  term.show();
+  refreshSidebar();
+  await sleep(SHELL_INIT_DELAY_MS);
+  term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, ws.path));
+}
+
+/**
+ * Find empty / invalid sessions and soft-delete them into ~/.claude/projects/.bak.
+ * Default scope is the current workspace; a scope step can widen to all projects.
+ * HARD BOUNDARY: only session .jsonl files (+ subagents dirs) are moved. Claude's
+ * __store.db / index are never touched.
+ */
+async function cmdCleanupSessions(
+  index: SessionIndex,
+  registry: AgentRegistry,
+): Promise<void> {
+  const ws = currentWorkspace();
+  const scopeChoice = await vscode.window.showQuickPick(
+    [
+      { label: '$(home) This workspace only', all: false },
+      { label: '$(globe) All projects', all: true },
+    ],
+    { placeHolder: 'Scan which sessions for cleanup?' },
+  );
+  if (!scopeChoice) return;
+  const scopeCwd = scopeChoice.all ? undefined : ws?.path;
+
+  const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+  const targets: Array<{ s: ArchivedSession; verdict: 'empty' | 'invalid' }> = [];
+  for (const s of sessions) {
+    if (!s.transcriptPath) continue;
+    const summary = readTranscriptSummary(s.transcriptPath);
+    const verdict = classifyForCleanup(summary);
+    if (verdict === 'empty' || verdict === 'invalid') targets.push({ s, verdict });
+  }
+
+  if (targets.length === 0) {
+    vscode.window.showInformationMessage('No empty or invalid sessions found.');
+    return;
+  }
+
+  const nEmpty = targets.filter(t => t.verdict === 'empty').length;
+  const nInvalid = targets.filter(t => t.verdict === 'invalid').length;
+  const confirm = await vscode.window.showWarningMessage(
+    `Move ${targets.length} session(s) to .bak (${nEmpty} empty, ${nInvalid} invalid)? Claude's database is left untouched; files go to ~/.claude/projects/.bak and can be restored manually.`,
+    { modal: true },
+    'Move to .bak',
+  );
+  if (confirm !== 'Move to .bak') return;
+
+  let moved = 0;
+  let failed = 0;
+  for (const t of targets) {
+    const r = softDeleteSession(t.s.transcriptPath!);
+    if (r.ok) moved++; else { failed++; console.error('[terminal-sessions] cleanup failed:', t.s.transcriptPath, r.error); }
+  }
+  vscode.window.showInformationMessage(`Cleanup done: moved ${moved}${failed ? `, skipped ${failed} (see console)` : ''}.`);
+}
+
+/**
  * Manual resume picker. Right-click on a session → "Resume Other Claude
  * Session..." surfaces every sessionId Claude ever recorded a hook for in this
  * tmux (the `claudeSessionHistory`), with cwd, line count, last-modified time,
@@ -1454,6 +1735,74 @@ async function cmdRevealSessionInSidebar(index: SessionIndex, arg?: unknown): Pr
   // Make sure the view container is visible, then select + focus the session.
   await vscode.commands.executeCommand(COMMAND.revealSidebar);
   await revealSessionInSidebar(name, true);
+}
+
+/**
+ * The most recent AI-agent session (its id + which agent) recorded for a tmux
+ * session, newest first. Reads the agent-tagged `agentSessions` head and falls
+ * back to the legacy Claude-only fields for index entries written before the
+ * agent dimension existed. Returns undefined when no agent has ever run here.
+ */
+function latestAgentSession(
+  index: SessionIndex,
+  hash: string,
+  name: string,
+): { agent: AgentId; id: string } | undefined {
+  const meta = index.getSessionMeta(hash, name);
+  if (!meta) return undefined;
+  const head = meta.agentSessions?.[0];
+  if (head) return { agent: head.agent, id: head.id };
+  const legacy = meta.claudeSessionHistory?.[0] ?? meta.lastClaudeSessionId;
+  return legacy ? { agent: 'claude', id: legacy } : undefined;
+}
+
+/**
+ * Copy the most-recent agent (Claude/Codex/agy) session UUID for a session to
+ * the clipboard. Driven from the sidebar right-click; with no item (e.g. invoked
+ * from the command palette) it explains what to do instead of failing silently.
+ */
+async function cmdCopySessionId(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+  if (!item?.session) {
+    vscode.window.showInformationMessage('Right-click a session in the Terminal Sessions sidebar to copy its session ID.');
+    return;
+  }
+  const s = item.session;
+  const latest = latestAgentSession(index, s.workspaceHash, s.name);
+  if (!latest) {
+    vscode.window.showInformationMessage(`No agent session has run in "${s.label || s.name}" yet — nothing to copy.`);
+    return;
+  }
+  await vscode.env.clipboard.writeText(latest.id);
+  vscode.window.setStatusBarMessage(`Copied last session ID ${latest.id}`, 2500);
+}
+
+/**
+ * Copy the full path to a session's transcript .jsonl (e.g.
+ * `~/.claude/projects/<slug>/<uuid>.jsonl`) to the clipboard. Resolves the path
+ * through the owning agent's provider so it works for Claude/Codex/agy alike,
+ * returning the computed path even when the file isn't written yet.
+ */
+async function cmdCopySessionPath(index: SessionIndex, registry: AgentRegistry, item?: SessionTreeItem): Promise<void> {
+  if (!item?.session) {
+    vscode.window.showInformationMessage('Right-click a session in the Terminal Sessions sidebar to copy its transcript path.');
+    return;
+  }
+  const s = item.session;
+  const latest = latestAgentSession(index, s.workspaceHash, s.name);
+  if (!latest) {
+    vscode.window.showInformationMessage(`No agent session has run in "${s.label || s.name}" yet — no transcript to copy.`);
+    return;
+  }
+  const meta = index.getSessionMeta(s.workspaceHash, s.name);
+  const cwd = meta?.folderPath || s.workspacePath || '';
+  const provider = registry.getProvider(latest.agent) ?? registry.providerForAgent('claude');
+  const transcriptPath = provider.resolveTranscriptPath(latest.id, cwd);
+  if (!transcriptPath) {
+    vscode.window.showWarningMessage(`Couldn't resolve a transcript path for ${latest.id}.`);
+    return;
+  }
+  await vscode.env.clipboard.writeText(transcriptPath);
+  vscode.window.setStatusBarMessage(`Copied last session path ${transcriptPath}`, 3000);
 }
 
 async function cmdAttachTo(index: SessionIndex, item?: SessionTreeItem): Promise<void> {

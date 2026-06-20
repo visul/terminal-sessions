@@ -4,6 +4,27 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.15.0] — 2026-06-20
+
+### Added
+- **Resume Session from Archive.** A new `$(history)` button on the sessions view toolbar (and Command Palette: "Resume Session from Archive…") opens a picker of every past conversation on disk, cross-agent (Claude, Codex, Antigravity), even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Each row carries two buttons: view the conversation, or give it a friendly name. Accepting a row resumes it into your active session or a fresh persistent one.
+- **View Conversation.** Right-click a session (or use the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`.
+- **Clean Up Empty / Invalid Sessions.** A maintenance action (in the sessions view overflow menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. Claude's own database and session index are never touched, and moved files can be restored manually.
+- **Name Conversation.** Assign a friendly name to any session; it shows up in the archive picker and the conversation viewer title. Names live in the extension's sidecar index, so Claude's transcript files are never modified.
+
+## [0.14.9] — 2026-06-20
+
+### Added
+- **"Copy Last Session ID" and "Copy Last Session Path" in the session right-click menu.** Right-click a session in the sidebar and you now get two new actions below "Reveal Session Folder…". **Copy Last Session ID** puts the most recent agent conversation's UUID on the clipboard (e.g. `6051bdc0-f063-4789-8aa9-a335c14c6630`); **Copy Last Session Path** copies the full path to that conversation's transcript `.jsonl` (e.g. `~/.claude/projects/<slug>/<uuid>.jsonl`). Both read the session's recorded agent history (newest first, falling back to the legacy Claude fields) and work for Claude, Codex, and Antigravity sessions alike — the transcript path is resolved through the owning agent's provider. If a session has never run an agent, the command says so instead of copying nothing.
+
+## [0.14.7] — 2026-06-20
+
+### Fixed
+- **Copying any text from inside Claude Code no longer mangles accented characters** (e.g. `București` → `BucureÈ™ti`, `închide` → `Ã®nchide`). Two compounding causes:
+  1. **tmux was forwarding the selection to Claude.** Claude Code (like most TUIs) keeps mouse reporting on so you can scroll its conversation, which sets tmux's `#{mouse_any_flag}`. The `v5` clipboard fix only handled mouse-drag, and even that — plus the new double/triple-click handling — was being skipped because tmux forwarded the click/drag to Claude, which then copied via the OSC 52 path Cursor mis-decodes as Latin-1. The managed `~/.terminal-sessions/tmux.conf` now makes **tmux own mouse selection** (drag, double-click word, triple-click line) so it always pipes through the real clipboard program instead of the app. **Wheel-scroll is deliberately left forwarded**, so scrolling Claude's view still works. Keyboard copy keys (vi `y`, emacs `M-w`/`C-w`) are routed through the clipboard program too. Trade-off: apps that consume click/drag as *input* (vim/lazygit mouse) won't receive those gestures inside these sessions — they keep scroll.
+  2. **`pbcopy` was using the wrong encoding.** macOS `pbcopy` encodes its input per the locale, and a Cursor launched from the Dock/Finder starts the tmux server with no `LANG`/`LC_CTYPE`, so `pbcopy` fell back to MacRoman and corrupted UTF-8 even when it *was* reached. The clipboard command is now `LC_CTYPE=UTF-8 /usr/bin/pbcopy`, which writes correct UTF-8 even with an empty server environment. (Linux `wl-copy`/`xclip`/`xsel` are unaffected and unchanged.)
+- The tmux.conf version bumped (`v5` → `v7`); the extension offers to regenerate it (a backup of your current file is saved alongside). Run **"Terminal Sessions: Reload tmux Config"** — or just reload the window — to pick up the new bindings on your running sessions.
+
 ## [0.14.6] — 2026-06-13
 
 ### Added

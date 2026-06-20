@@ -9,7 +9,7 @@ const execFileP = promisify(execFile);
 
 export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
 
-const CONF_VERSION = 'ts-tmux-conf-v5';
+const CONF_VERSION = 'ts-tmux-conf-v7';
 
 /** True if a command is resolvable on PATH (login shell, for GUI-launched apps). */
 function hasCmd(cmd: string): boolean {
@@ -22,7 +22,12 @@ function hasCmd(cmd: string): boolean {
 /** Pick a real clipboard program for this platform. Returns undefined when none
  *  is available (e.g. a headless Linux box) so we can fall back to OSC 52. */
 function clipboardCopyCmd(): string | undefined {
-  if (process.platform === 'darwin') return '/usr/bin/pbcopy';
+  // macOS: pbcopy encodes its stdin per the locale (LANG/LC_CTYPE). When a
+  // GUI-launched Cursor/VS Code (Dock/Finder) starts the tmux server it often
+  // inherits NO locale, so pbcopy falls back to MacRoman and mangles UTF-8 on
+  // paste (Romanian î → Ã®, ș → È™). Forcing LC_CTYPE=UTF-8 on the invocation
+  // makes pbcopy treat its input as UTF-8 regardless of the server environment.
+  if (process.platform === 'darwin') return 'LC_CTYPE=UTF-8 /usr/bin/pbcopy';
   if (hasCmd('wl-copy')) return 'wl-copy';
   if (hasCmd('xclip')) return 'xclip -selection clipboard -in';
   if (hasCmd('xsel')) return 'xsel --clipboard --input';
@@ -44,17 +49,51 @@ function clipboardCopyCmd(): string | undefined {
 function clipboardConf(): string {
   const cmd = clipboardCopyCmd();
   if (cmd) {
-    const tool = cmd.split(' ')[0].split('/').pop();
+    // Strip any leading "VAR=val " env prefix (darwin uses LC_CTYPE=UTF-8) and a
+    // path so the comment reads the real tool name.
+    const tool = cmd.match(/(pbcopy|wl-copy|xclip|xsel)/)?.[1] ?? 'clipboard';
+    const utf8Note = tool === 'pbcopy'
+      ? '# LC_CTYPE=UTF-8 forces UTF-8 even when a Dock-launched Cursor starts the tmux\n'
+        + '# server with no locale (else pbcopy uses MacRoman and mangles î→Ã®, ș→È™).\n'
+      : '';
     return `# ── Clipboard: copy via ${tool} (correct UTF-8), not OSC 52 ──────────
 # Cursor/VS Code mis-decode OSC 52 as Latin-1 and mangle non-ASCII on paste into
 # other apps; piping to ${tool} writes correct UTF-8 straight to the clipboard.
-set -g set-clipboard external
+# EVERY copy gesture (drag, double-click word, triple-click line, keyboard) is
+# routed through ${tool}; otherwise those gestures fall back to the broken OSC 52
+# path and corrupt accented text (e.g. Romanian închide → Ã®nchide).
+${utf8Note}set -g set-clipboard external
 
-# ── Mouse-drag selection copies (via ${tool}) and exits copy-mode ─────────
+# ── Selection = tmux STOCK; only the COPY step is rerouted to ${tool} ──────
+# Earlier experiments to make plain drag clean inside Claude's TUI broke text
+# selection, so drag/click are restored to tmux's stock behavior (bound
+# explicitly so a reload undoes the experiments on the live server). When a drag
+# ends we pipe the selection to ${tool} instead of OSC 52 — that is the only
+# change to the drag path.
 unbind -T copy-mode    MouseDragEnd1Pane
 unbind -T copy-mode-vi MouseDragEnd1Pane
 bind-key -T copy-mode    MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "${cmd}"
-bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "${cmd}"`;
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T root         MouseDown1Pane select-pane -t = \\; send-keys -M
+bind-key -T root         MouseDrag1Pane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } { copy-mode -M }
+bind-key -T copy-mode    MouseDrag1Pane select-pane \\; send-keys -X begin-selection
+bind-key -T copy-mode-vi MouseDrag1Pane select-pane \\; send-keys -X begin-selection
+
+# ── Double-click word / triple-click line → ${tool} (discrete, tmux-owned) ─
+# These two discrete gestures pipe to ${tool} so a word/line pastes clean (these
+# work reliably — the failed cases were arbitrary-span drags). Drag itself is
+# left at the stock behavior above.
+bind-key -T root DoubleClick1Pane select-pane -t = \\; copy-mode -H \\; send-keys -X select-word \\; run-shell -d 0.3 \\; send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T root TripleClick1Pane select-pane -t = \\; copy-mode -H \\; send-keys -X select-line \\; run-shell -d 0.3 \\; send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode    DoubleClick1Pane select-pane \\; send-keys -X select-word \\; run-shell -d 0.3 \\; send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode-vi DoubleClick1Pane select-pane \\; send-keys -X select-word \\; run-shell -d 0.3 \\; send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode    TripleClick1Pane select-pane \\; send-keys -X select-line \\; run-shell -d 0.3 \\; send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode-vi TripleClick1Pane select-pane \\; send-keys -X select-line \\; run-shell -d 0.3 \\; send-keys -X copy-pipe-and-cancel "${cmd}"
+
+# ── Keyboard copy (vi y, emacs M-w / C-w) → ${tool} too ───────────────────
+bind-key -T copy-mode    M-w send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode    C-w send-keys -X copy-pipe-and-cancel "${cmd}"
+bind-key -T copy-mode-vi y   send-keys -X copy-pipe-and-cancel "${cmd}"`;
   }
   return `# ── Clipboard (OSC 52 fallback — no native clipboard tool found) ──────────
 set -g set-clipboard on

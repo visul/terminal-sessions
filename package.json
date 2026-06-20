@@ -1,8 +1,8 @@
 {
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
-  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.14.6",
+  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, and Antigravity: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
+  "version": "0.15.0",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -287,6 +287,16 @@
         "shortTitle": "Resume Other..."
       },
       {
+        "command": "terminalSessions.resumeFromArchive",
+        "title": "Resume Session from Archive...",
+        "icon": "$(history)"
+      },
+      {
+        "command": "terminalSessions.cleanupSessions",
+        "title": "Clean Up Empty / Invalid Sessions...",
+        "icon": "$(trash)"
+      },
+      {
         "command": "terminalSessions.revealSidebar",
         "title": "Terminal Sessions: Reveal Sidebar"
       },
@@ -294,6 +304,16 @@
         "command": "terminalSessions.preview",
         "title": "Preview Scrollback",
         "icon": "$(eye)"
+      },
+      {
+        "command": "terminalSessions.viewConversation",
+        "title": "View Conversation",
+        "icon": "$(book)"
+      },
+      {
+        "command": "terminalSessions.nameSession",
+        "title": "Name Conversation...",
+        "icon": "$(edit)"
       },
       {
         "command": "terminalSessions.rename",
@@ -437,6 +457,16 @@
         "title": "Reveal Session Folder in Finder"
       },
       {
+        "command": "terminalSessions.copySessionId",
+        "title": "Copy Last Session ID",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "terminalSessions.copySessionPath",
+        "title": "Copy Last Session Path",
+        "icon": "$(file-code)"
+      },
+      {
         "command": "terminalSessions.revealSessionInSidebar",
         "title": "Reveal Session in Sidebar",
         "icon": "$(list-tree)"
@@ -527,6 +557,16 @@
           "group": "navigation@4"
         },
         {
+          "command": "terminalSessions.resumeFromArchive",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@5"
+        },
+        {
+          "command": "terminalSessions.cleanupSessions",
+          "when": "view == terminalSessions.sessions",
+          "group": "1_maintenance@1"
+        },
+        {
           "command": "terminalSessions.collapseSessions",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@9"
@@ -584,6 +624,16 @@
           "group": "open@3"
         },
         {
+          "command": "terminalSessions.viewConversation",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@6"
+        },
+        {
+          "command": "terminalSessions.nameSession",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@7"
+        },
+        {
           "command": "terminalSessions.revealSessionFolder",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@4"
@@ -592,6 +642,16 @@
           "command": "terminalSessions.revealSessionFolderFinder",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@5"
+        },
+        {
+          "command": "terminalSessions.copySessionId",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open_copy@1"
+        },
+        {
+          "command": "terminalSessions.copySessionPath",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open_copy@2"
         },
         {
           "command": "terminalSessions.newGroup",
