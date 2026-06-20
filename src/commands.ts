@@ -245,6 +245,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.deleteGroup, (item?: GroupTreeItem) => cmdDeleteGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem) => cmdMoveSessionToGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
     vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
@@ -1370,6 +1371,135 @@ async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem
     index.setSessionGroup(hash, item.session.name, pick.groupId);
   }
   refreshSidebar();
+}
+
+/**
+ * Resume ANY past session from disk (cross-agent), even when nothing is live in
+ * tmux for it. Scans every enabled provider's on-disk sessions (default: the
+ * current workspace's cwd; a toggle widens to all projects). Each row has an eye
+ * button (View Conversation) and an edit button (Name Conversation). Accepting a
+ * row resumes it into the active Terminal Sessions terminal (if any) or a new
+ * persistent session.
+ */
+async function cmdResumeFromArchive(
+  index: SessionIndex,
+  registry: AgentRegistry,
+): Promise<void> {
+  const ws = currentWorkspace();
+  let scopeCwd: string | undefined = ws?.path;
+
+  const eyeBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('book'), tooltip: 'View Conversation' };
+  const editBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Name Conversation' };
+
+  interface Pick extends vscode.QuickPickItem { sess?: ArchivedSession; toggle?: boolean }
+
+  const build = (): Pick[] => {
+    const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+    const rows: Pick[] = sessions.slice(0, 500).map(s => {
+      const provider = registry.getProvider(s.agent);
+      const badge = provider?.displayName || s.agent;
+      const primary = s.friendlyName || (s.firstUserMessage?.replace(/\s+/g, ' ').slice(0, 80)) || '(no user message)';
+      const lines = (s.lineCount ?? 0).toLocaleString();
+      const ageMs = Date.now() - (s.mtimeMs ?? Date.now());
+      const ageMin = Math.round(ageMs / 60000);
+      const ageStr = ageMin < 60 ? `${ageMin}m` : ageMin < 60 * 24 ? `${Math.round(ageMin / 60)}h` : `${Math.round(ageMin / 60 / 24)}d`;
+      const cwdShort = s.cwd ? s.cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
+      return {
+        sess: s,
+        label: `$(comment-discussion) ${primary}`,
+        description: `${badge} · ${lines} lines · ${ageStr} ago · ${s.sessionId.slice(0, 8)}`,
+        detail: cwdShort,
+        buttons: [eyeBtn, editBtn],
+      };
+    });
+    const toggle: Pick = {
+      toggle: true,
+      label: scopeCwd ? '$(globe) Show sessions from all projects...' : '$(home) Show only this workspace',
+      alwaysShow: true,
+    };
+    return [toggle, ...rows];
+  };
+
+  const qp = vscode.window.createQuickPick<Pick>();
+  qp.matchOnDetail = true;
+  const refresh = () => {
+    qp.placeholder = scopeCwd
+      ? `Resume a past session (this workspace${ws?.label ? ' — ' + ws.label : ''})`
+      : 'Resume a past session (all projects)';
+    qp.items = build();
+  };
+  refresh();
+
+  const chosen = await new Promise<Pick | undefined>((resolve) => {
+    qp.onDidTriggerItemButton(async (e) => {
+      const s = e.item.sess;
+      if (!s || !s.transcriptPath) return;
+      if (e.button === eyeBtn) {
+        await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: s.friendlyName || s.firstUserMessage });
+      } else if (e.button === editBtn) {
+        const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, { sessionId: s.sessionId, current: s.friendlyName });
+        if (name !== undefined) refresh();
+      }
+    });
+    qp.onDidAccept(() => {
+      const sel = qp.selectedItems[0];
+      if (sel?.toggle) { scopeCwd = scopeCwd ? undefined : ws?.path; refresh(); return; }
+      resolve(sel);
+    });
+    qp.onDidHide(() => resolve(undefined));
+    qp.show();
+  });
+  qp.hide();
+  qp.dispose();
+  if (!chosen?.sess?.transcriptPath) return;
+
+  const s = chosen.sess;
+  const provider = registry.getProvider(s.agent);
+  if (!provider) return;
+
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+
+  // Resume target: reuse the active TS terminal if the user has one, else make a
+  // new persistent session. The provider's buildResumeCommand handles cd-to-cwd.
+  const active = vscode.window.activeTerminal;
+  const activeName = active ? await resolveTmuxNameForTerminalLive(active, index, cfg.sessionPrefix) : undefined;
+  let useActive = false;
+  if (active && activeName) {
+    const choice = await vscode.window.showQuickPick(['Resume in active session', 'New session'], {
+      placeHolder: 'Where should this conversation resume?',
+    });
+    if (!choice) return;
+    useActive = choice === 'Resume in active session';
+  }
+
+  if (useActive && active) {
+    active.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, s.cwd || ''));
+    active.show();
+    return;
+  }
+
+  // New persistent session (mirrors cmdNewPersistent), then send resume.
+  if (!ws) { vscode.window.showErrorMessage('No workspace folder open to create a session in.'); return; }
+  index.recordWorkspace(ws.hash, ws.path, ws.label);
+  const tabId = index.getNextTabId(ws.hash, cfg.sessionPrefix);
+  const name = buildSessionName(cfg.sessionPrefix, ws.hash, tabId);
+  index.recordSession(ws.hash, name);
+  const meta = index.getSessionMeta(ws.hash, name);
+  const { icon, color } = metaIconAndColor(meta);
+  const term = vscode.window.createTerminal({
+    name: `${ws.label} ${tabId}`,
+    shellPath: tmuxPath,
+    shellArgs: tmux.buildAttachOrCreateArgs(name, ws.path),
+    cwd: ws.path,
+    iconPath: icon,
+    color,
+  });
+  term.show();
+  refreshSidebar();
+  await sleep(SHELL_INIT_DELAY_MS);
+  term.sendText(buildResumeCommand(provider, s.sessionId, s.transcriptPath, ws.path));
 }
 
 /**

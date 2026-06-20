@@ -133,6 +133,8 @@ export const COMMAND = {
   deleteGroup: 'terminalSessions.deleteGroup',
   moveSessionToGroup: 'terminalSessions.moveSessionToGroup',
   resumeOtherClaude: 'terminalSessions.resumeOtherClaude',
+  resumeFromArchive: 'terminalSessions.resumeFromArchive',
+  cleanupSessions: 'terminalSessions.cleanupSessions',
   newMasterGroup: 'terminalSessions.newMasterGroup',
   newGroupInMaster: 'terminalSessions.newGroupInMaster',
   moveGroupToMaster: 'terminalSessions.moveGroupToMaster',

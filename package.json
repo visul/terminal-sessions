@@ -287,6 +287,16 @@
         "shortTitle": "Resume Other..."
       },
       {
+        "command": "terminalSessions.resumeFromArchive",
+        "title": "Resume Session from Archive...",
+        "icon": "$(history)"
+      },
+      {
+        "command": "terminalSessions.cleanupSessions",
+        "title": "Clean Up Empty / Invalid Sessions...",
+        "icon": "$(trash)"
+      },
+      {
         "command": "terminalSessions.revealSidebar",
         "title": "Terminal Sessions: Reveal Sidebar"
       },
@@ -545,6 +555,11 @@
           "command": "terminalSessions.alertsEnable",
           "when": "view == terminalSessions.sessions && !terminalSessions.alertsEnabled",
           "group": "navigation@4"
+        },
+        {
+          "command": "terminalSessions.resumeFromArchive",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@5"
         },
         {
           "command": "terminalSessions.collapseSessions",
