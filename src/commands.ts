@@ -16,6 +16,8 @@ import { notify } from './notifications';
 import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInstalled } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary } from './claude-transcript';
+import { transcriptToMarkdown } from './transcript-render';
+import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
 import { AgentRegistry } from './agents/registry';
 import type { AgentProvider, AgentId } from './agents/types';
 
@@ -230,6 +232,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
+    vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
     vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
@@ -269,6 +272,55 @@ async function cmdSetAllAlerts(value?: boolean): Promise<void> {
   vscode.window.showInformationMessage(
     `Claude waiting alerts ${next ? 'enabled' : 'disabled'} globally.`,
   );
+}
+
+/**
+ * Open a readable Markdown rendering of a conversation in VS Code's preview.
+ * Two entry shapes:
+ *   - a SessionTreeItem (live session right-click) → resolve its current agent's
+ *     newest transcript via the resume context;
+ *   - { transcriptPath, title } (from the archive picker's eye button).
+ */
+async function cmdViewConversation(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  arg?: SessionTreeItem | { transcriptPath: string; title?: string },
+): Promise<void> {
+  let transcriptPath: string | undefined;
+  let title: string | undefined;
+
+  if (arg && 'transcriptPath' in arg) {
+    transcriptPath = arg.transcriptPath;
+    title = arg.title;
+  } else if (arg && 'session' in arg) {
+    const session = arg.session;
+    const { provider, history } =
+      resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
+    const cwd = index.getSessionMeta(session.workspaceHash, session.name)?.folderPath
+      || session.workspacePath || '';
+    const sid = history[0];
+    if (sid) {
+      transcriptPath = provider.resolveTranscriptPath(sid, cwd, undefined);
+      title = index.getSessionName(sid) || session.label || session.name;
+    }
+  }
+
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) {
+    vscode.window.showInformationMessage('No conversation transcript found for this session yet.');
+    return;
+  }
+
+  try {
+    const md = transcriptToMarkdown(transcriptPath, { title });
+    const doc = await vscode.workspace.openTextDocument({ content: md, language: 'markdown' });
+    await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
+  } catch (e) {
+    // Fall back to the raw file so the user still sees something.
+    vscode.window.showWarningMessage(`Render failed (${String(e).slice(0, 120)}); opening raw transcript.`);
+    const doc = await vscode.workspace.openTextDocument(vscode.Uri.file(transcriptPath));
+    await vscode.window.showTextDocument(doc);
+  }
 }
 
 async function cmdOpenSubagentTranscript(item?: SubagentTreeItem): Promise<void> {

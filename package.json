@@ -296,6 +296,11 @@
         "icon": "$(eye)"
       },
       {
+        "command": "terminalSessions.viewConversation",
+        "title": "View Conversation",
+        "icon": "$(book)"
+      },
+      {
         "command": "terminalSessions.rename",
         "title": "Rename Session",
         "icon": "$(edit)"
@@ -592,6 +597,11 @@
           "command": "terminalSessions.resumeOtherClaude",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@3"
+        },
+        {
+          "command": "terminalSessions.viewConversation",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open@6"
         },
         {
           "command": "terminalSessions.revealSessionFolder",

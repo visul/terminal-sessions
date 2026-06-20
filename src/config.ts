@@ -123,6 +123,7 @@ export const COMMAND = {
   findSession: 'terminalSessions.findSession',
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
   openSubagentTranscript: 'terminalSessions.openSubagentTranscript',
+  viewConversation: 'terminalSessions.viewConversation',
   toggleShowCompletedSubagents: 'terminalSessions.toggleShowCompletedSubagents',
   collapseSessions: 'terminalSessions.collapseSessions',
   reattachAll: 'terminalSessions.reattachAll',
