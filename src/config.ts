@@ -137,4 +137,6 @@ export const COMMAND = {
   revealSessionFolder: 'terminalSessions.revealSessionFolder',
   revealSessionFolderFinder: 'terminalSessions.revealSessionFolderFinder',
   revealSessionInSidebar: 'terminalSessions.revealSessionInSidebar',
+  copySessionId: 'terminalSessions.copySessionId',
+  copySessionPath: 'terminalSessions.copySessionPath',
 } as const;

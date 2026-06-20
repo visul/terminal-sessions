@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live Claude Code status in the sidebar: working/tool/waiting state, API-equivalent cost in USD, context-window %, last user/assistant messages, fuzzy search across every past Claude conversation.",
-  "version": "0.14.6",
+  "version": "0.14.9",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -437,6 +437,16 @@
         "title": "Reveal Session Folder in Finder"
       },
       {
+        "command": "terminalSessions.copySessionId",
+        "title": "Copy Last Session ID",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "terminalSessions.copySessionPath",
+        "title": "Copy Last Session Path",
+        "icon": "$(file-code)"
+      },
+      {
         "command": "terminalSessions.revealSessionInSidebar",
         "title": "Reveal Session in Sidebar",
         "icon": "$(list-tree)"
@@ -592,6 +602,16 @@
           "command": "terminalSessions.revealSessionFolderFinder",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@5"
+        },
+        {
+          "command": "terminalSessions.copySessionId",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open_copy@1"
+        },
+        {
+          "command": "terminalSessions.copySessionPath",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "group": "open_copy@2"
         },
         {
           "command": "terminalSessions.newGroup",

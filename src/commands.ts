@@ -17,7 +17,7 @@ import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInst
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary } from './claude-transcript';
 import { AgentRegistry } from './agents/registry';
-import type { AgentProvider } from './agents/types';
+import type { AgentProvider, AgentId } from './agents/types';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -243,6 +243,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
+    vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
+    vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem) => cmdCopySessionPath(index, registry, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
   );
 
@@ -1454,6 +1456,74 @@ async function cmdRevealSessionInSidebar(index: SessionIndex, arg?: unknown): Pr
   // Make sure the view container is visible, then select + focus the session.
   await vscode.commands.executeCommand(COMMAND.revealSidebar);
   await revealSessionInSidebar(name, true);
+}
+
+/**
+ * The most recent AI-agent session (its id + which agent) recorded for a tmux
+ * session, newest first. Reads the agent-tagged `agentSessions` head and falls
+ * back to the legacy Claude-only fields for index entries written before the
+ * agent dimension existed. Returns undefined when no agent has ever run here.
+ */
+function latestAgentSession(
+  index: SessionIndex,
+  hash: string,
+  name: string,
+): { agent: AgentId; id: string } | undefined {
+  const meta = index.getSessionMeta(hash, name);
+  if (!meta) return undefined;
+  const head = meta.agentSessions?.[0];
+  if (head) return { agent: head.agent, id: head.id };
+  const legacy = meta.claudeSessionHistory?.[0] ?? meta.lastClaudeSessionId;
+  return legacy ? { agent: 'claude', id: legacy } : undefined;
+}
+
+/**
+ * Copy the most-recent agent (Claude/Codex/agy) session UUID for a session to
+ * the clipboard. Driven from the sidebar right-click; with no item (e.g. invoked
+ * from the command palette) it explains what to do instead of failing silently.
+ */
+async function cmdCopySessionId(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+  if (!item?.session) {
+    vscode.window.showInformationMessage('Right-click a session in the Terminal Sessions sidebar to copy its session ID.');
+    return;
+  }
+  const s = item.session;
+  const latest = latestAgentSession(index, s.workspaceHash, s.name);
+  if (!latest) {
+    vscode.window.showInformationMessage(`No agent session has run in "${s.label || s.name}" yet — nothing to copy.`);
+    return;
+  }
+  await vscode.env.clipboard.writeText(latest.id);
+  vscode.window.setStatusBarMessage(`Copied last session ID ${latest.id}`, 2500);
+}
+
+/**
+ * Copy the full path to a session's transcript .jsonl (e.g.
+ * `~/.claude/projects/<slug>/<uuid>.jsonl`) to the clipboard. Resolves the path
+ * through the owning agent's provider so it works for Claude/Codex/agy alike,
+ * returning the computed path even when the file isn't written yet.
+ */
+async function cmdCopySessionPath(index: SessionIndex, registry: AgentRegistry, item?: SessionTreeItem): Promise<void> {
+  if (!item?.session) {
+    vscode.window.showInformationMessage('Right-click a session in the Terminal Sessions sidebar to copy its transcript path.');
+    return;
+  }
+  const s = item.session;
+  const latest = latestAgentSession(index, s.workspaceHash, s.name);
+  if (!latest) {
+    vscode.window.showInformationMessage(`No agent session has run in "${s.label || s.name}" yet — no transcript to copy.`);
+    return;
+  }
+  const meta = index.getSessionMeta(s.workspaceHash, s.name);
+  const cwd = meta?.folderPath || s.workspacePath || '';
+  const provider = registry.getProvider(latest.agent) ?? registry.providerForAgent('claude');
+  const transcriptPath = provider.resolveTranscriptPath(latest.id, cwd);
+  if (!transcriptPath) {
+    vscode.window.showWarningMessage(`Couldn't resolve a transcript path for ${latest.id}.`);
+    return;
+  }
+  await vscode.env.clipboard.writeText(transcriptPath);
+  vscode.window.setStatusBarMessage(`Copied last session path ${transcriptPath}`, 3000);
 }
 
 async function cmdAttachTo(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
