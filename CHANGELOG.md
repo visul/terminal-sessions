@@ -4,6 +4,14 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.15.0] — 2026-06-20
+
+### Added
+- **Resume Session from Archive.** A new `$(history)` button on the sessions view toolbar (and Command Palette: "Resume Session from Archive…") opens a picker of every past conversation on disk, cross-agent (Claude, Codex, Antigravity), even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Each row carries two buttons: view the conversation, or give it a friendly name. Accepting a row resumes it into your active session or a fresh persistent one.
+- **View Conversation.** Right-click a session (or use the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`.
+- **Clean Up Empty / Invalid Sessions.** A maintenance action (in the sessions view overflow menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. Claude's own database and session index are never touched, and moved files can be restored manually.
+- **Name Conversation.** Assign a friendly name to any session; it shows up in the archive picker and the conversation viewer title. Names live in the extension's sidecar index, so Claude's transcript files are never modified.
+
 ## [0.14.9] — 2026-06-20
 
 ### Added
