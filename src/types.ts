@@ -30,6 +30,9 @@ export interface SessionInfo {
 export interface WorkspaceIndex {
   version: 1;
   workspaces: Record<string, WorkspaceEntry>;
+  // Friendly names for agent sessions (any agent), keyed by sessionId. Sidecar
+  // only — Claude's own transcript files are never modified for naming.
+  sessionNames?: Record<string, { name: string; ts: number }>;
 }
 
 export interface WorkspaceEntry {
