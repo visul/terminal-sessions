@@ -57,10 +57,12 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
 - **Auto-prune** stale sessions after configurable days (default 14)
+- **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
 
 ### UI integration
 - **Terminal Profile "Persistent Session"** — available in the `+ ∨` dropdown; can be set as default so every new terminal auto-wraps in tmux
 - **Activity bar sidebar** — tree view grouped by workspace, with status indicators (attached vs detached) and relative timestamps
+- **Rich hover tooltip** — hovering a session row shows its tmux ID, workspace, the actual **start folder (cwd)** for subfolder sessions, created/last-attached times, and — while an agent is active — the live **Conversation ID**, model, API-equivalent cost, context %, token totals, and the last user/assistant messages
 - **Activity bar badge** (v0.11+) — a red numeric badge appears on the Terminal Sessions icon when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which
 - **Click terminal tab → reveal sidebar session** (v0.11+) — clicking any `Terminal Sessions #N` tab in the VS Code terminal panel selects and highlights the matching row in the Terminal Sessions sidebar, auto-expanding its workspace group
 - **Status bar badge** — `⚡ ts: 2▶ 4⇄` (attached · detached), click to open the attach picker
@@ -69,7 +71,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Custom icon & color per session** — pick from codicons (robot, rocket, flame, database, server, bug, etc.) and ANSI colors; applied to the terminal tab icon and sidebar
 - **Restart session** (v0.11+: with Claude auto-resume) — kill the current tmux session (any program in it, incl. Claude Code) and respawn a fresh shell; keeps the label, icon, color, and workspace. If Claude was running, the extension auto-detects its session ID, verifies the transcript is still on disk, and runs `claude --resume <id>` in the new shell. Conversation context survives, Ink renderer state is clean
 - **Smart click behavior** — clicking a session that's already attached focuses its existing terminal tab instead of opening a duplicate
-- **Right-click context menu** on sidebar items — View Conversation, Restart, Stop/Start, Rename, Icon, Color, Mute notifications, Kill
+- **Right-click context menu** on sidebar items — View Conversation, Restart, Stop/Start, Rename, Icon, Color, Mute notifications, Lock/Unlock, Kill
 - **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name (v0.11+; earlier versions always showed the workspace root)
 
 ### Sidebar sort modes
@@ -85,7 +87,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Groups & master groups** — organize sessions under named groups, and groups under master groups, via right-click `New Group…` / `New Master Group…` / `Move to Group…`, with drag-and-drop and per-group rename/delete. Purely organizational; the underlying tmux sessions are untouched
 - **Re-attach All Ghost Terminals** — one click (`$(debug-restart)` in the title bar) revives the orange/disconnected tabs you get after a Cursor restart, in sidebar order
 - **Reveal Session Folder** — right-click → open the session's working directory in the OS file manager (Finder/Explorer), or jump to its row from the terminal tab via `Reveal Session in Sidebar`
-- **Copy Last Session ID / Path** — right-click → put the most recent agent conversation's UUID, or the full path to its transcript `.jsonl`, on the clipboard (works for Claude, Codex, and Antigravity)
+- **Copy Last Conversation ID / Path** — right-click → put the most recent agent conversation's UUID, or the full path to its transcript `.jsonl`, on the clipboard (works for Claude, Codex, and Antigravity)
 
 ### Subagents in the sidebar (v0.12+)
 - **`🤖 Agents (N running · M done)` folder per session** — one collapsible row groups every subagent a Claude session spawned, so sessions with lots of agents stay tidy. Auto-expanded while anything is live; collapsed when everything finishes. Tooltip previews the first five agents with their state
@@ -208,7 +210,7 @@ The extension works out of the box, but the click-to-focus behavior on notificat
 
 ### From VSIX
 ```bash
-cursor --install-extension terminal-sessions-0.15.0.vsix --force
+cursor --install-extension terminal-sessions-0.20.14.vsix --force
 ```
 Or in Cursor: Extensions panel → `⋯` → **Install from VSIX...**
 
@@ -274,14 +276,15 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Right-click on sidebar session → `View Conversation` | Render the session's transcript as Markdown (reads the `.jsonl` directly — works on stopped sessions too) |
 | Right-click on sidebar session → `Name Conversation...` | Give the session a friendly name (shown in the archive picker) |
 | Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
-| Right-click on sidebar session → `Copy Last Session ID` / `Copy Last Session Path` | Clipboard the conversation UUID or its transcript path |
+| Right-click on sidebar session → `Copy Last Conversation ID` / `Copy Last Conversation Path` | Clipboard the agent conversation's UUID or the full path to its transcript `.jsonl` |
 | Right-click on sidebar session → `Reveal Session Folder` | Open the session's working directory in Finder/Explorer |
 | Right-click on workspace/group → `New Group…` / `Move to Group…` | Organize sessions into (master) groups |
 | Sidebar overflow `⋯` → `Clean Up Empty / Invalid Sessions...` | Soft-delete empty/invalid conversations to `~/.claude/projects/.bak` |
 | Right-click on sidebar session → `Rename` | Set a friendly label |
 | Right-click on sidebar session → `Change Icon` / `Change Color` | Pick custom icon or theme color |
 | Right-click on sidebar session → `Mute Notifications` / `Unmute Notifications` | Per-session silencing |
-| Right-click on sidebar session → `Kill` | Terminate that session |
+| Right-click on sidebar session → `Lock (Protect from Kill)` / `Unlock (Allow Kill)` | Protect a session from Kill (padlock takes the Kill slot); Unlock to allow killing again |
+| Right-click on sidebar session → `Kill` | Terminate that session (hidden while the session is locked) |
 | Right-click on folder in Explorer → `Open in Integrated Terminal - Persistent` | New tmux session rooted at that folder |
 
 ## Keyboard (tmux prefix `Ctrl+A`)
@@ -367,15 +370,7 @@ If you started Claude in a session before the v3 config was applied, the env var
 - **From plain shell output (git, build logs, bash):** drag-select with the trackpad as usual. Selection copies to the system clipboard via OSC 52
 - **From the Claude conversation:** press `Ctrl+O` then `[` inside Claude. That dumps the current conversation view into the main tmux scrollback. From there, drag-select normally. Press `Ctrl+O` then `/` for Claude's own in-view search
 - **Cmd+F / tmux copy-mode search** only sees content in the main buffer. The live Claude view lives in alt-screen, so it is not searchable that way — use `Ctrl+O` `/` inside Claude instead
-
-## Roadmap
-
-- Budget-alert thresholds (warn when a session's cost crosses $X)
-- Daily / workspace-level cost rollup in the status bar
-- Stuck / error detection from `tool_result` content
-- Inline sidebar action buttons on agent-active sessions (Interrupt, `/compact`)
-- More agents behind the provider abstraction (Gemini CLI, opencode, …)
-- Windows native support (requires a tmux alternative — out of scope for now)
+- **Over Remote-SSH:** an agent's own copy (Claude/Codex "copied to clipboard") reaches your **local** machine's clipboard with correct UTF-8, accents included. A headless remote has no clipboard tool (`xclip`/`pbcopy` fail) and Cursor's terminal mis-decodes OSC 52 for non-ASCII, so the extension installs a tiny writer on the remote and bridges what it captures to the local clipboard through the VS Code API. No setup on the remote
 
 ## Changelog
 

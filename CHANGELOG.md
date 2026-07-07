@@ -4,6 +4,27 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.15] — 2026-07-07
+
+### Changed
+- **Docs:** README and changelog now reflect the current feature set — session Kill-lock, the Remote-SSH clipboard bridge, the enriched hover tooltip, and the "Copy Last Conversation ID / Path" rename. Removed the stale Roadmap section. (Docs-only; no code change from 0.20.14.)
+
+## [0.20.14] — 2026-07-07
+
+Consolidated entry for 0.18.6 → 0.20.14 (versions were bumped during development without individual changelog notes).
+
+### Added
+- **Grok (xAI) as a fourth tracked agent** — live status, tokens, and messages alongside Claude, Codex, and Antigravity. Grok needs no hooks: sessions are discovered from `~/.grok/active_sessions.json`, matched to their tmux pane by process tree, and its ACP `updates.jsonl` is tailed for state. Nothing is written into your projects.
+- **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**. A padlock takes the Kill button's slot; the session can no longer be killed from the row, from "Kill all for this workspace", or by auto-prune until you **Unlock (Allow Kill)**. The inline padlock is indicator-only (a click won't unlock it). Restart and Stop stay available.
+- **Rich hover tooltip** — session rows now show the actual **start folder (cwd)** for subfolder sessions and, while an agent is active, the live **Conversation ID**.
+
+### Changed
+- **Renamed "Copy Last Session ID / Path" → "Copy Last Conversation ID / Path"** — clearer that it copies the AI conversation's UUID / transcript path, not the terminal session.
+- **Remote-SSH clipboard bridge** — an agent's own copy now reaches your **local** clipboard with correct UTF-8 (accents included) over Remote-SSH, where a headless remote has no clipboard tool and Cursor mis-decodes OSC 52 for non-ASCII.
+
+### Fixed
+- **Restart / Stop→Start / post-reboot restore now resume the RIGHT conversation** — resolution is scoped to the session's own working directory, so a recreated pane never reopens a different workspace's last-closed conversation.
+
 ## [0.18.5] — 2026-06-27
 
 ### Fixed
