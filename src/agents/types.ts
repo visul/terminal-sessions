@@ -11,7 +11,7 @@ import type {
   MsgInfo,
 } from '../claude-transcript';
 
-export type AgentId = 'claude' | 'codex' | 'agy';
+export type AgentId = 'claude' | 'codex' | 'agy' | 'grok';
 
 /** Normalized lifecycle state every provider maps its native events onto. */
 export type AgentState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';
@@ -56,6 +56,12 @@ export interface AgentSessionSummary {
   lineCount?: number;
   byteSize?: number;
   mtimeMs?: number;
+  /** Set when this session is a spawned sub-session rather than a top-level
+   *  user thread: `teammate` = an agent-team member, `subagent` = a transcript
+   *  that is purely subagent/sidechain activity. The archive picker hides these
+   *  so only main threads are listed. Providers without the concept never set
+   *  it, so all their sessions stay visible (Codex/agy/grok today). */
+  subsessionRole?: 'teammate' | 'subagent';
 }
 
 // ───────────────────────── the provider contract ─────────────────────────
@@ -98,11 +104,26 @@ export interface AgentProvider {
    *  an explicit limit). */
   contextLimitFor(model: string | undefined): number;
 
+  // ---- launch-flag preservation ----
+  /** Executable basenames to match when reading launch flags from `ps`
+   *  (e.g. `['claude']`). Used to find the live agent process under a tmux pane. */
+  processNames: readonly string[];
+  /** Extract the allowlisted "character" launch flags (yolo, --model, sandbox, …)
+   *  from a live process argv, so resume can relaunch the conversation the way it
+   *  was started. Drops resume/continue/print/prompt and ephemeral MCP flags. */
+  captureResumeFlags(argv: readonly string[]): string[];
+
   // ---- resume ----
   /** Build the shell command that resumes `sessionId`. `terminalCwd` is where
    *  the attached terminal currently sits; providers that are cwd-sensitive may
-   *  prepend a `cd`. */
-  buildResumeCommand(sessionId: string, terminalCwd: string, transcriptPath?: string): string;
+   *  prepend a `cd`. `extraFlags` are the captured launch flags to re-apply
+   *  (dead path flags are filtered out by the provider at build time). */
+  buildResumeCommand(
+    sessionId: string,
+    terminalCwd: string,
+    transcriptPath?: string,
+    extraFlags?: readonly string[],
+  ): string;
   /** Whether resume needs to run from the recorded cwd (Claude: yes; Codex: no). */
   resumeNeedsCwd: boolean;
 
@@ -119,5 +140,6 @@ export interface AgentProvider {
     lineCount?: number;
     byteSize?: number;
     mtimeMs?: number;
+    subsessionRole?: 'teammate' | 'subagent';
   } | undefined;
 }

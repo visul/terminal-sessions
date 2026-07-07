@@ -113,6 +113,18 @@ export class SessionIndex {
     return this.data.workspaces[hash]?.sessions[sessionName]?.muted === true;
   }
 
+  setSessionLocked(hash: string, sessionName: string, locked: boolean): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (locked) ws.sessions[sessionName].locked = true;
+    else delete ws.sessions[sessionName].locked;
+    this.save();
+  }
+
+  isSessionLocked(hash: string, sessionName: string): boolean {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.locked === true;
+  }
+
   setSessionStopped(hash: string, sessionName: string, stopped: boolean): void {
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
@@ -180,6 +192,25 @@ export class SessionIndex {
       if (s.lastClaudeSessionId) return [s.lastClaudeSessionId];
     }
     return [];
+  }
+
+  /** Record the "character" launch flags seen on a live agent process, per agent,
+   *  so Restart / post-reboot restore can relaunch the conversation the way it was
+   *  started. Stores `[]` too (clears stale), and skips the write when unchanged. */
+  recordResumeFlags(hash: string, sessionName: string, agent: AgentId, flags: string[]): void {
+    const s = this.data.workspaces[hash]?.sessions[sessionName];
+    if (!s) return;
+    const map = s.resumeFlags ?? {};
+    const prev = map[agent];
+    if (prev && prev.length === flags.length && prev.every((v, i) => v === flags[i])) return;
+    map[agent] = flags;
+    s.resumeFlags = map;
+    this.save();
+  }
+
+  /** Captured launch flags for an agent in this tmux session (empty when none). */
+  getResumeFlags(hash: string, sessionName: string, agent: AgentId): string[] {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.resumeFlags?.[agent] ?? [];
   }
 
   /** The agent that most recently ran in this tmux session (for resume routing).
@@ -310,6 +341,15 @@ export class SessionIndex {
     const ws = this.data.workspaces[hash];
     if (!ws?.groups?.[groupId]) return;
     ws.groups[groupId].name = name.trim();
+    this.save();
+  }
+
+  /** Set (or clear, when color is undefined) the icon tint for a group/master. */
+  setGroupColor(hash: string, groupId: string, color: string | undefined): void {
+    const ws = this.data.workspaces[hash];
+    if (!ws?.groups?.[groupId]) return;
+    if (color) ws.groups[groupId].color = color;
+    else delete ws.groups[groupId].color;
     this.save();
   }
 
@@ -467,8 +507,10 @@ export async function enrichSessions(
       sortOrder: meta?.sortOrder,
       attached: row.attached,
       muted: meta?.muted,
+      locked: meta?.locked,
       stopped: false,
       groupId: meta?.groupId,
+      folderPath: meta?.folderPath,
     });
   }
 
@@ -496,8 +538,10 @@ export async function enrichSessions(
         sortOrder: meta.sortOrder,
         attached: false,
         muted: meta.muted,
+        locked: meta.locked,
         stopped: true,
         groupId: meta.groupId,
+        folderPath: meta.folderPath,
       });
     }
   }

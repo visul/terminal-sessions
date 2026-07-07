@@ -33,6 +33,7 @@ export interface Config {
   claudeSidebarDetails: ClaudeDetailsMode;
   contextWarnPct: number;
   showCompletedSubagents: boolean;
+  claudeNoFlicker: boolean;
 }
 
 export function getConfig(): Config {
@@ -71,6 +72,16 @@ export function getConfig(): Config {
     })(),
     contextWarnPct: Math.max(0, Math.min(1, c.get<number>('contextWarnPct', 0.8))),
     showCompletedSubagents: c.get('showCompletedSubagents', true),
+    claudeNoFlicker: ((): boolean => {
+      const raw = c.get<string | boolean>('claudeNoFlicker', 'auto');
+      if (raw === true || raw === 'on') return true;
+      if (raw === false || raw === 'off') return false;
+      // 'auto': NO_FLICKER on everywhere. tmux's MouseDrag binding pipes selections
+      // through pbcopy/xclip, so copy works in alt-screen too (drag the visible text)
+      // without relying on Claude's OSC 52 — the old reason to disable it on Cursor.
+      // On = the wheel scrolls Claude's conversation natively (smooth).
+      return true;
+    })(),
   };
 }
 
@@ -94,6 +105,9 @@ export const COMMAND = {
   alertsDisable: 'terminalSessions.alertsDisable',
   muteSession: 'terminalSessions.muteSession',
   unmuteSession: 'terminalSessions.unmuteSession',
+  lockSession: 'terminalSessions.lockSession',
+  unlockSession: 'terminalSessions.unlockSession',
+  lockedHint: 'terminalSessions.lockedHint',
   newPersistent: 'terminalSessions.newPersistent',
   newPersistentInFolder: 'terminalSessions.newPersistentInFolder',
   attachTo: 'terminalSessions.attachTo',
@@ -102,7 +116,6 @@ export const COMMAND = {
   killWorkspace: 'terminalSessions.killWorkspace',
   refreshSidebar: 'terminalSessions.refreshSidebar',
   revealSidebar: 'terminalSessions.revealSidebar',
-  preview: 'terminalSessions.preview',
   rename: 'terminalSessions.rename',
   resumeAll: 'terminalSessions.resumeAll',
   setAsDefaultProfile: 'terminalSessions.setAsDefaultProfile',
@@ -110,7 +123,6 @@ export const COMMAND = {
   reloadTmuxConfig: 'terminalSessions.reloadTmuxConfig',
   setIcon: 'terminalSessions.setIcon',
   setColor: 'terminalSessions.setColor',
-  mirror: 'terminalSessions.mirror',
   restoreFromIndex: 'terminalSessions.restoreFromIndex',
   testNotification: 'terminalSessions.testNotification',
   installClaudeHook: 'terminalSessions.installClaudeHook',
@@ -131,6 +143,7 @@ export const COMMAND = {
   newGroup: 'terminalSessions.newGroup',
   renameGroup: 'terminalSessions.renameGroup',
   deleteGroup: 'terminalSessions.deleteGroup',
+  setGroupColor: 'terminalSessions.setGroupColor',
   moveSessionToGroup: 'terminalSessions.moveSessionToGroup',
   resumeOtherClaude: 'terminalSessions.resumeOtherClaude',
   resumeFromArchive: 'terminalSessions.resumeFromArchive',

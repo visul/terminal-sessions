@@ -149,6 +149,7 @@ class SessionsTreeProvider
           isMaster ? 'master' : 'group',
           isMaster ? visibleSessions : sortSessions(visibleSessions, cfg.sidebarSortMode),
           childCount,
+          g.color,
         ),
       });
     }

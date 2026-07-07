@@ -14,17 +14,26 @@ export interface ArchivedSession extends AgentSessionSummary {
  * attach friendly names. Pure: providers and the name lookup are injected, so
  * this stays vscode-free and node-testable. `scopeCwd` is forwarded to each
  * provider's listSessions (undefined = all projects, a cwd = that slug only).
+ *
+ * Spawned sub-sessions (agent-team teammates, pure subagent transcripts) are
+ * dropped by default so callers see only top-level, user-driven main threads.
+ * Providers tag them via `subsessionRole`; filtering here keeps the policy in
+ * one place so it applies uniformly to every agent (Claude/Codex/agy/grok) and
+ * to both the resume picker and the cleanup scan. Pass
+ * `{ includeSubsessions: true }` to keep them (none of today's callers do).
  */
 export function scanArchive(
   providers: Pick<AgentProvider, 'listSessions'>[],
   nameLookup: (sessionId: string) => string | undefined,
   scopeCwd?: string,
+  opts?: { includeSubsessions?: boolean },
 ): ArchivedSession[] {
   const merged: ArchivedSession[] = [];
   for (const p of providers) {
     let list: AgentSessionSummary[] = [];
     try { list = p.listSessions(scopeCwd); } catch { list = []; }
     for (const s of list) {
+      if (s.subsessionRole && !opts?.includeSubsessions) continue;
       merged.push({ ...s, friendlyName: nameLookup(s.sessionId) });
     }
   }

@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AgentProvider, AgentSessionSummary, TranscriptTailState } from '../types';
 import { commandOnPath } from '../detect';
+import { FlagSpec, captureFlags, withFlags } from '../launch-flags';
 import {
   installJsonSettingsHook,
   uninstallJsonSettingsHook,
@@ -17,6 +18,21 @@ import {
 // session ids (version nibble = 7, e.g. `019ea6e0-752a-7500-ae0b-...`). The
 // generic regex already covers every version, so no special-casing needed.
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// Codex "character" launch flags. Codex's resume restores the recorded cwd, so
+// `--cd`/`-C` is intentionally NOT carried. MCP lives in ~/.codex/config.toml,
+// not on the command line, so there's nothing MCP-ish to capture here.
+const CODEX_FLAGS: FlagSpec = {
+  bool: ['--full-auto', '--dangerously-bypass-approvals-and-sandbox', '--yolo'],
+  value: {
+    '--model': {},
+    '--sandbox': {},
+    '--ask-for-approval': {},
+    '--profile': {},
+    '--config': {},
+  },
+  alias: { '-m': '--model', '-s': '--sandbox', '-a': '--ask-for-approval', '-c': '--config' },
+};
 
 const CODEX_HOME = path.join(os.homedir(), '.codex');
 const SESSIONS_ROOT = path.join(CODEX_HOME, 'sessions');
@@ -140,10 +156,21 @@ export const codexProvider: AgentProvider = {
     return 256_000;
   },
 
-  buildResumeCommand(sessionId: string, _terminalCwd: string, _transcriptPath?: string): string {
+  processNames: ['codex'],
+
+  captureResumeFlags(argv: readonly string[]): string[] {
+    return captureFlags(argv, CODEX_FLAGS);
+  },
+
+  buildResumeCommand(
+    sessionId: string,
+    _terminalCwd: string,
+    _transcriptPath?: string,
+    extraFlags?: readonly string[],
+  ): string {
     // Interactive resume restores the recorded cwd itself — no `cd` prefix.
     // (`codex exec resume` is headless-only and must not be used for the pane.)
-    return `codex resume ${sessionId}`;
+    return withFlags(`codex resume ${sessionId}`, extraFlags, CODEX_FLAGS);
   },
 
   listSessions(cwd?: string): AgentSessionSummary[] {

@@ -152,16 +152,58 @@ export interface TranscriptSummary {
   userAssistantCount: number;
   /** True if any `summary` record is present (a summary-only file survives cleanup). */
   hasSummary: boolean;
+  /** Set when this transcript is a spawned sub-session rather than a top-level
+   *  user thread: `teammate` = an agent-team member (its records carry an
+   *  `agentName` role such as "curator"; the human-driven team *lead* has only
+   *  `teamName`, so leads stay `undefined`); `subagent` = a transcript whose
+   *  user turns are all sidechain (no human-driven turn). The archive picker
+   *  hides both so only main threads are listed. */
+  subsessionRole?: 'teammate' | 'subagent';
 }
+/**
+ * Sessions that began with a slash command (`/clear`, `/compact`, `/plugin`…) or
+ * a `!` bash command record the first user turn wrapped in a
+ * `<local-command-caveat>…</local-command-caveat>` preamble plus
+ * `<command-name>` / `<command-message>` / `<command-args>` /
+ * `<local-command-stdout>` tags — so the raw first message reads as XML noise in
+ * the picker. Strip those tags: return any real text left over (e.g. the message
+ * typed right after `/clear`), and the command name (e.g. `/clear`) as a fallback
+ * label. Non-wrapped messages pass through untouched.
+ */
+function unwrapLocalCommand(raw: string): { text?: string; commandName?: string } {
+  if (!raw.includes('<local-command-caveat>')
+    && !raw.includes('<command-name>')
+    && !raw.includes('<local-command-stdout>')) {
+    return { text: raw };
+  }
+  const m = raw.match(/<command-name>\s*([^<]+?)\s*<\/command-name>/);
+  const commandName = m ? m[1].trim() : undefined;
+  const stripped = raw
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/g, '')
+    .replace(/<command-name>[\s\S]*?<\/command-name>/g, '')
+    .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+    .replace(/<command-args>[\s\S]*?<\/command-args>/g, '')
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
+    .trim();
+  return { text: stripped || undefined, commandName };
+}
+
 export function readTranscriptSummary(transcriptPath: string): TranscriptSummary | undefined {
   try {
     const stat = fs.statSync(transcriptPath);
     const buf = fs.readFileSync(transcriptPath, 'utf8');
     let cwd: string | undefined;
     let firstUser: string | undefined;
+    // Fallback title when every early user turn is a bare slash command
+    // (`/clear`, `/plugin`…) with no typed message after it.
+    let firstCommandName: string | undefined;
+    let sawLocalCommand = false;
     let lineCount = 0;
     let userAssistantCount = 0;
     let hasSummary = false;
+    // Sub-session detection (agent-team teammate / pure subagent transcript).
+    let isTeammate = false;
+    let sawMainUser = false;
     // Walk lines, but only parse the first ~200 for cwd/first-user — the rest
     // is just counted. Saves a lot of JSON.parse work on 22k-line transcripts.
     let cursor = 0;
@@ -175,7 +217,12 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
           // Cheap type sniff on every line (no full parse needed for the tally).
           // Claude writes compact JSON (no spaces after colons), so the literal
           // substring match is safe and avoids JSON.parse on huge transcripts.
-          if (line.includes('"type":"user"') || line.includes('"type":"assistant"')) {
+          if (line.includes('"type":"user"')) {
+            userAssistantCount++;
+            // A human-driven turn is a non-sidechain user record. A pure
+            // subagent (Task-tool) transcript has only sidechain user records.
+            if (!line.includes('"isSidechain":true')) sawMainUser = true;
+          } else if (line.includes('"type":"assistant"')) {
             userAssistantCount++;
           } else if (line.includes('"type":"summary"')) {
             hasSummary = true;
@@ -186,14 +233,32 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
               if (!cwd && typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) {
                 cwd = obj.cwd;
               }
+              // Agent-team teammates tag every record with their role; the team
+              // lead carries only `teamName`. `agentName` present ⇒ teammate.
+              if (!isTeammate && typeof obj.agentName === 'string' && obj.agentName) {
+                isTeammate = true;
+              }
               if (!firstUser && obj.type === 'user') {
                 const c = obj.message?.content;
-                if (typeof c === 'string') firstUser = c;
+                let text: string | undefined;
+                if (typeof c === 'string') text = c;
                 else if (Array.isArray(c)) {
                   for (const p of c) {
                     if (p && typeof p === 'object' && p.type === 'text' && typeof p.text === 'string') {
-                      firstUser = p.text; break;
+                      text = p.text; break;
                     }
+                  }
+                }
+                if (text) {
+                  // Sessions whose first turn was a slash command record a
+                  // `<local-command-caveat>` wrapper instead of a typed message.
+                  // Unwrap it: prefer the real text that follows (keep scanning
+                  // later user turns for it); fall back to the command name.
+                  const u = unwrapLocalCommand(text);
+                  if (u.text) firstUser = u.text;
+                  else {
+                    sawLocalCommand = true;
+                    if (u.commandName && !firstCommandName) firstCommandName = u.commandName;
                   }
                 }
               }
@@ -204,14 +269,19 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
       if (next < 0) break;
       cursor = next + 1;
     }
+    const subsessionRole: 'teammate' | 'subagent' | undefined =
+      isTeammate ? 'teammate'
+        : (userAssistantCount > 0 && !sawMainUser) ? 'subagent'
+          : undefined;
     return {
       cwd,
-      firstUserMessage: firstUser?.slice(0, 200),
+      firstUserMessage: (firstUser ?? firstCommandName ?? (sawLocalCommand ? '(local command)' : undefined))?.slice(0, 200),
       lineCount,
       byteSize: stat.size,
       mtimeMs: stat.mtimeMs,
       userAssistantCount,
       hasSummary,
+      subsessionRole,
     };
   } catch {
     return undefined;

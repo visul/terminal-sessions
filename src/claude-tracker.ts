@@ -5,6 +5,9 @@ import * as os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { parseSessionName } from './workspace-id';
+import { detectTmuxPath, panePids, listSessions } from './tmux';
+import { readAgentArgv, processTree, collectDescendantPids } from './agents/launch-flags';
+import { readGrokActiveSessions } from './agents/grok/provider';
 import type { SessionIndex } from './session-manager';
 import type { AgentId, AgentProvider } from './agents/types';
 import type { AgentRegistry } from './agents/registry';
@@ -127,6 +130,10 @@ const STALE_TOOL_MS = 30 * 60 * 1000;
 // an interrupt marker the tailer can pick up.
 const STALE_WORKING_MS = 2 * 60 * 1000;
 
+// Grok has no global hook, so we discover its live sessions by polling
+// ~/.grok/active_sessions.json and matching each session's pid to a tmux pane.
+const GROK_POLL_MS = 5_000;
+
 const HOOK_EVENTS = [
   'SessionStart',
   'UserPromptSubmit',
@@ -143,6 +150,8 @@ export class ClaudeTracker {
   private lastNotifyPerWs = new Map<string, number>();
   private lastWaitingNotifyPerSession = new Map<string, number>();
   private logOffsets = new Map<string, number>();   // logPath → byte offset
+  private flagCapTried = new Set<string>();          // tmuxSession we've read launch flags for
+  private grokTimer?: ReturnType<typeof setInterval>;
   private watchers: fs.FSWatcher[] = [];
   private transcript = new TranscriptTailer();
   private _onChange = new vscode.EventEmitter<void>();
@@ -184,11 +193,13 @@ export class ClaudeTracker {
         this.snapshots.set(tmux, { state: 'none', sessionId: map.sessionId, agent: map.agent });
       }
     }
+    this.startGrokDiscovery();
   }
 
   dispose(): void {
     for (const w of this.watchers) { try { w.close(); } catch { /* noop */ } }
     this.watchers = [];
+    if (this.grokTimer) { clearInterval(this.grokTimer); this.grokTimer = undefined; }
     this.transcript.dispose();
     this._onChange.dispose();
   }
@@ -215,6 +226,7 @@ export class ClaudeTracker {
     this.map.delete(tmuxSession);
     this.snapshots.delete(tmuxSession);
     this.lastWaitingNotifyPerSession.delete(tmuxSession);
+    this.flagCapTried.delete(tmuxSession);
     this.saveMap();
     this._onChange.fire();
   }
@@ -719,6 +731,9 @@ export class ClaudeTracker {
     switch (e.event) {
       case 'SessionStart':
         snap.state = 'idle';
+        // Fresh launch/resume → re-read this pane's process flags (a Restart may
+        // have relaunched with different character flags).
+        this.flagCapTried.delete(e.tmuxSession);
         break;
       case 'UserPromptSubmit':
         snap.state = 'working';
@@ -774,8 +789,111 @@ export class ClaudeTracker {
         break;
     }
 
+    // Opportunistically capture the launch flags of the live agent process (the
+    // hook just fired from inside it, so it's running now). Self-dedupes per tmux
+    // session via flagCapTried; fire-and-forget so we never block event handling.
+    if (e.sessionId) void this.captureLaunchFlags(e.tmuxSession, agent);
+
     this.snapshots.set(e.tmuxSession, snap);
     return true;
+  }
+
+  /**
+   * Read the live agent process's "character" launch flags (yolo, --model, …)
+   * and persist them on the session so Restart / post-reboot restore can relaunch
+   * the conversation the way it was started. Best-effort: if no agent process is
+   * up yet (e.g. claude-pick's picker is still open) we clear the tried-marker so
+   * a later event retries.
+   */
+  private async captureLaunchFlags(tmuxSession: string, agent: AgentId): Promise<void> {
+    if (!this.index) return;
+    if (this.flagCapTried.has(tmuxSession)) return;
+    this.flagCapTried.add(tmuxSession);
+    try {
+      const provider = this.registry.providerForAgent(agent);
+      const tmuxPath = await detectTmuxPath(getConfig().tmuxPath);
+      if (!tmuxPath) { this.flagCapTried.delete(tmuxSession); return; }
+      const pids = await panePids(tmuxPath, tmuxSession);
+      const argv = readAgentArgv(pids, provider.processNames);
+      if (!argv) { this.flagCapTried.delete(tmuxSession); return; } // not up yet → retry next event
+      const flags = provider.captureResumeFlags(argv);
+      const parsed = parseSessionName(tmuxSession, getConfig().sessionPrefix);
+      if (parsed) this.index.recordResumeFlags(parsed.hash, tmuxSession, agent, flags);
+    } catch {
+      this.flagCapTried.delete(tmuxSession);
+    }
+  }
+
+  /** Grok is the one tracked agent with no global lifecycle hook, so nothing
+   *  writes to the events log for it. Instead we poll: read its live sessions
+   *  from ~/.grok/active_sessions.json and match each session's pid to a tmux
+   *  pane's process subtree. Only runs when Grok is enabled. */
+  private startGrokDiscovery(): void {
+    if (!this.registry.enabled().some(p => p.id === 'grok')) return;
+    const tick = (): void => { void this.pollGrokSessions(); };
+    this.grokTimer = setInterval(tick, GROK_POLL_MS);
+    tick();
+  }
+
+  private async pollGrokSessions(): Promise<void> {
+    if (!this.index) return;
+    const grok = this.registry.getProvider('grok');
+    if (!grok) return;
+    const active = readGrokActiveSessions();
+    if (!active.length) return;
+
+    // Steady-state fast path: once every live grok session is already mapped to a
+    // pane, skip the tmux/process enumeration entirely (just the file read above).
+    const trackedGrokIds = new Set(
+      [...this.map.values()].filter(m => m.agent === 'grok').map(m => m.sessionId),
+    );
+    const pending = active.filter(a => !trackedGrokIds.has(a.session_id));
+    if (!pending.length) return;
+
+    const cfg = getConfig();
+    const tmuxPath = await detectTmuxPath(cfg.tmuxPath);
+    if (!tmuxPath) return;
+    let rows: { name: string }[];
+    try { rows = await listSessions(tmuxPath, cfg.sessionPrefix); }
+    catch { return; }
+    if (!rows.length) return;
+
+    const tree = processTree();
+    let changed = false;
+    for (const row of rows) {
+      const pids = await panePids(tmuxPath, row.name);
+      if (!pids.length) continue;
+      const descendants = collectDescendantPids(pids, tree);
+      const hit = pending.find(a => descendants.has(a.pid));
+      if (!hit) continue;
+
+      const tp = grok.resolveTranscriptPath(hit.session_id, hit.cwd);
+      this.map.set(row.name, {
+        sessionId: hit.session_id,
+        agent: 'grok',
+        cwd: hit.cwd,
+        transcriptPath: tp || undefined,
+        timestamp: Date.now(),
+      });
+      if (tp) this.transcript.start(hit.session_id, tp, grok);
+      const prev = this.snapshots.get(row.name);
+      if (prev) { prev.sessionId = hit.session_id; prev.agent = 'grok'; }
+      else this.snapshots.set(row.name, { state: 'idle', sessionId: hit.session_id, agent: 'grok' });
+
+      const parsed = parseSessionName(row.name, cfg.sessionPrefix);
+      if (parsed) {
+        this.index.recordAgentSession(parsed.hash, row.name, 'grok', hit.session_id);
+        const argv = readAgentArgv(pids, grok.processNames, tree);
+        if (argv) this.index.recordResumeFlags(parsed.hash, row.name, 'grok', grok.captureResumeFlags(argv));
+        if (hit.cwd) {
+          const meta = this.index.getSessionMeta(parsed.hash, row.name);
+          if (!meta?.folderPath) this.index.setSessionFolderPath(parsed.hash, row.name, hit.cwd);
+        }
+      }
+      this.saveMap();
+      changed = true;
+    }
+    if (changed) this._onChange.fire();
   }
 
   private triggerStopNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider): void {

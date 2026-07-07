@@ -17,6 +17,17 @@ import type { AgentProvider } from './agents/types';
 
 const SHELL_INIT_DELAY_MS = 1500;
 
+/** True when `child` is `parent` or a descendant of it. Both must be absolute and
+ *  normalized. Mirrors the helper in commands.ts; kept local to avoid a cross-module
+ *  import cycle. Used so reboot-restore's auto-resume stays strictly per-session-scope
+ *  and never resumes a foreign workspace's conversation into a recreated pane. */
+function isCwdUnder(parent: string, child: string | undefined): boolean {
+  if (!child || !parent) return false;
+  if (child === parent) return true;
+  const p = parent.endsWith('/') ? parent : parent + '/';
+  return child.startsWith(p);
+}
+
 interface Candidate {
   sessionName: string;
   label: string;
@@ -112,6 +123,7 @@ export async function maybeOfferRestore(
     label: string;
     transcriptPath?: string;
     cwd: string;
+    flags: string[];
   }> = [];
 
   for (const c of toRecreate) {
@@ -138,14 +150,28 @@ export async function maybeOfferRestore(
         for (const id of [liveSid, ...recorded]) {
           if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
         }
+        // Resolve to the conversation that actually belongs to THIS pane's folder.
+        // Scope guard (same intent as resolveResumeFromHistory): an in-scope
+        // transcript (cwd under this session's folder) wins; a candidate whose cwd
+        // is KNOWN to be a different workspace is rejected (polluted history from a
+        // cross-workspace `claude --resume` glance — resuming it here is the "wrong
+        // session restored" bug). An unreadable-cwd transcript is a last resort only.
         let resolvedSid: string | undefined;
         let resolvedTp: string | undefined;
+        let fallbackSid: string | undefined;
+        let fallbackTp: string | undefined;
         for (const sid of ids) {
           const tp = provider.resolveTranscriptPath(sid, cwd, undefined);
-          if (tp && fs.existsSync(tp)) { resolvedSid = sid; resolvedTp = tp; break; }
+          if (!tp || !fs.existsSync(tp)) continue;
+          const tcwd = readTranscriptCwd(tp);
+          if (tcwd && isCwdUnder(cwd, tcwd)) { resolvedSid = sid; resolvedTp = tp; break; }
+          if (!tcwd && !fallbackSid) { fallbackSid = sid; fallbackTp = tp; }
+          // known-foreign cwd → skip (do not restore a stranger's conversation)
         }
+        if (!resolvedSid && fallbackSid) { resolvedSid = fallbackSid; resolvedTp = fallbackTp; }
         if (resolvedSid) {
-          resumes.push({ term, provider, sessionId: resolvedSid, label: c.label, transcriptPath: resolvedTp, cwd });
+          const flags = parsed ? index.getResumeFlags(parsed.hash, c.sessionName, agent) : [];
+          resumes.push({ term, provider, sessionId: resolvedSid, label: c.label, transcriptPath: resolvedTp, cwd, flags });
         }
       }
       await sleep(150);
@@ -166,7 +192,7 @@ export async function maybeOfferRestore(
       try {
         // The provider builds its own resume command and handles cd-to-recorded
         // -cwd when it's cwd-sensitive (Claude is; Codex restores cwd itself).
-        r.term.sendText(r.provider.buildResumeCommand(r.sessionId, r.cwd, r.transcriptPath));
+        r.term.sendText(r.provider.buildResumeCommand(r.sessionId, r.cwd, r.transcriptPath, r.flags));
         resumed++;
       } catch (e) {
         console.error('[terminal-sessions] resume sendText failed:', r.label, e);

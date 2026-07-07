@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { AgentProvider, AgentSessionSummary, TranscriptTailState } from './types';
 import { commandOnPath } from './detect';
+import { FlagSpec, captureFlags, withFlags } from './launch-flags';
 import {
   installJsonSettingsHook,
   uninstallJsonSettingsHook,
@@ -21,6 +22,21 @@ import {
 const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 const SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
+
+// Launch flags worth restoring on resume. `--strict-mcp-config`/`--mcp-config`
+// are captured but the path filter drops the ephemeral claude-pick temp at
+// relaunch (and `--strict-mcp-config` goes with it), leaving MCP to claude-pick.
+const CLAUDE_FLAGS: FlagSpec = {
+  bool: ['--dangerously-skip-permissions', '--strict-mcp-config'],
+  value: {
+    '--model': {},
+    '--permission-mode': {},
+    '--add-dir': { path: true },
+    '--settings': { path: true },
+    '--mcp-config': { path: true },
+  },
+  companion: { '--strict-mcp-config': '--mcp-config' },
+};
 
 // Order matters only for readability; the forwarder is installed for each.
 const CLAUDE_HOOK_EVENTS = [
@@ -117,14 +133,25 @@ export const claudeProvider: AgentProvider = {
     return /claude-(opus|sonnet)-4-[5-9]/i.test(m) ? 1_000_000 : 200_000;
   },
 
-  buildResumeCommand(sessionId: string, terminalCwd: string, transcriptPath?: string): string {
+  processNames: ['claude'],
+
+  captureResumeFlags(argv: readonly string[]): string[] {
+    return captureFlags(argv, CLAUDE_FLAGS);
+  },
+
+  buildResumeCommand(
+    sessionId: string,
+    terminalCwd: string,
+    transcriptPath?: string,
+    extraFlags?: readonly string[],
+  ): string {
     const recordedCwd = transcriptPath ? readTranscriptCwd(transcriptPath) : undefined;
-    if (recordedCwd && recordedCwd !== terminalCwd) {
+    const base = recordedCwd && recordedCwd !== terminalCwd
       // `claude --resume` only finds the conversation when invoked from the same
       // project slug it was launched in, so cd back to the recorded cwd first.
-      return `cd "${recordedCwd.replace(/"/g, '\\"')}" && claude --resume ${sessionId}`;
-    }
-    return `claude --resume ${sessionId}`;
+      ? `cd "${recordedCwd.replace(/"/g, '\\"')}" && claude --resume ${sessionId}`
+      : `claude --resume ${sessionId}`;
+    return withFlags(base, extraFlags, CLAUDE_FLAGS);
   },
 
   listSessions(cwd?: string): AgentSessionSummary[] {
@@ -148,6 +175,9 @@ export const claudeProvider: AgentProvider = {
           lineCount: s?.lineCount,
           byteSize: s?.byteSize,
           mtimeMs: s?.mtimeMs,
+          // Agent-team teammates / pure subagent transcripts are tagged here;
+          // scanArchive() drops them so the picker lists only main threads.
+          subsessionRole: s?.subsessionRole,
         });
       }
     }

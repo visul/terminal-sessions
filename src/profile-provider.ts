@@ -198,6 +198,16 @@ export async function openTerminalForSession(
     const existing = findTerminalForSession(name);
     if (existing && !existing.exitStatus) {
       existing.show();
+      // Re-assert focus on the next tick: a sidebar TreeItem click (and the
+      // refreshSidebar that follows) can leave keyboard focus on the tree, so
+      // show() alone often isn't enough — you'd have to click the terminal to
+      // type. Re-showing after the click settles puts the cursor in the terminal.
+      setTimeout(() => { try { existing.show(); } catch { /* disposed */ } }, 0);
+      // If this pane was left in copy-mode (scrolled up to read), exit it so the
+      // terminal is ready to type the moment you switch to it — no extra click.
+      void tmux.detectTmuxPath(getConfig().tmuxPath).then(tp => {
+        if (tp) void tmux.exitCopyMode(tp, name);
+      });
       return existing;
     }
     // A "process exited" ghost (yellow ⚠ in the picker) — dispose it so
@@ -240,6 +250,7 @@ export async function openTerminalForSession(
     color: colorFromMeta(meta),
   });
   terminal.show();
+  void tmux.exitCopyMode(tmuxPath, name);
   return terminal;
 }
 

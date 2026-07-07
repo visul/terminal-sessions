@@ -1,6 +1,6 @@
 # Terminal Sessions
 
-Persistent terminal sessions for Cursor and VS Code, with first-class awareness of your AI coding agents — **Claude Code, Codex, and Antigravity (`agy`)**. Terminals survive full editor restart, organized per workspace, and the sidebar shows live agent state: working/tool/waiting, context usage, cost, last user and assistant messages. Browse, read, name, resume, and clean up every past conversation on your machine, across all three agents.
+Persistent terminal sessions for Cursor and VS Code, with first-class awareness of your AI coding agents — **Claude Code, Codex, Antigravity (`agy`), and Grok (xAI)**. Terminals survive full editor restart, organized per workspace, and the sidebar shows live agent state: working/tool/waiting, context usage, cost, last user and assistant messages. Browse, read, name, resume, and clean up every past conversation on your machine, across all four agents.
 
 Every terminal is wrapped in a tmux session whose server runs independent of the editor. Quit Cursor, reboot the window, crash the renderer: Claude Code, dev servers, REPLs, migrations, SSH sessions keep running. Reopen the workspace and everything is where you left it.
 
@@ -64,12 +64,12 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Activity bar badge** (v0.11+) — a red numeric badge appears on the Terminal Sessions icon when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which
 - **Click terminal tab → reveal sidebar session** (v0.11+) — clicking any `Terminal Sessions #N` tab in the VS Code terminal panel selects and highlights the matching row in the Terminal Sessions sidebar, auto-expanding its workspace group
 - **Status bar badge** — `⚡ ts: 2▶ 4⇄` (attached · detached), click to open the attach picker
-- **Preview scrollback** — peek at a session's last 200 lines in an editor tab without attaching
+- **View conversation** — open the session's agent transcript as readable Markdown; reads the transcript `.jsonl` directly, so it works on stopped sessions too (not just live ones) and shows the real conversation regardless of renderer
 - **Rename sessions** with custom labels (persisted in index)
 - **Custom icon & color per session** — pick from codicons (robot, rocket, flame, database, server, bug, etc.) and ANSI colors; applied to the terminal tab icon and sidebar
 - **Restart session** (v0.11+: with Claude auto-resume) — kill the current tmux session (any program in it, incl. Claude Code) and respawn a fresh shell; keeps the label, icon, color, and workspace. If Claude was running, the extension auto-detects its session ID, verifies the transcript is still on disk, and runs `claude --resume <id>` in the new shell. Conversation context survives, Ink renderer state is clean
 - **Smart click behavior** — clicking a session that's already attached focuses its existing terminal tab instead of opening a duplicate
-- **Right-click context menu** on sidebar items — Preview, Mirror, Restart, Rename, Icon, Color, Mute notifications, Kill
+- **Right-click context menu** on sidebar items — View Conversation, Restart, Stop/Start, Rename, Icon, Color, Mute notifications, Kill
 - **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name (v0.11+; earlier versions always showed the workspace root)
 
 ### Sidebar sort modes
@@ -97,10 +97,11 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **`Open Subagent Transcript` command** — right-click a subagent row → opens its transcript jsonl in an editor tab jumped to the first line where that agent was registered. For background agents this is the small per-agent file, much easier to read than the main conversation transcript
 - **Auto-done on parent idle** — when the parent session has been idle for 2+ minutes, stragglers flagged `working` are marked done in the rendered snapshot so the sidebar doesn't spin forever on interrupted agents
 
-### Multi-agent support (Claude · Codex · Antigravity)
-- **One sidebar, three agents** — the same live status, context %, cost, history, and auto-resume work for **Claude Code**, **Codex**, and **Antigravity** (`agy`). Each tracked session shows which agent it's running, so a row reads `Codex working 12s` vs `Claude working 12s`
-- **Auto-detection** — Claude is always on; Codex and Antigravity turn on automatically when their CLI (`codex` / `agy`) is found on your `PATH`. Override explicitly with `terminalSessions.enabledAgents` (e.g. `["claude", "codex"]`)
+### Multi-agent support (Claude · Codex · Antigravity · Grok)
+- **One sidebar, four agents** — the same live status, context %, cost, history, and auto-resume work for **Claude Code**, **Codex**, **Antigravity** (`agy`), and **Grok** (xAI). Each tracked session shows which agent it's running, so a row reads `Codex working 12s` vs `Claude working 12s`
+- **Auto-detection** — Claude is always on; Codex, Antigravity and Grok turn on automatically when their CLI (`codex` / `agy` / `grok`) is found on your `PATH`. Override explicitly with `terminalSessions.enabledAgents` (e.g. `["claude", "codex"]`)
 - **Per-agent hooks, one forwarder** — `Terminal Sessions: Install AI Agent Hooks` writes the right hook into each agent's own settings file (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/antigravity-cli/settings.json`); a single shared script normalizes their differing event payloads. Your model and MCP config are never disturbed
+- **Grok needs no hooks** — Grok's lifecycle hooks are project-scoped and trust-gated, so the extension tracks it without installing anything: it discovers live Grok sessions from `~/.grok/active_sessions.json`, matches each to its tmux pane by process tree, and tails the session's ACP `updates.jsonl` for status, tokens, and messages. Nothing is written into your projects
 - **Agent-correct resume** — restart/resume runs the right command per agent: `claude --resume <id>` (cwd-sensitive), `codex resume <id>` (restores its own recorded cwd), or `agy --conversation <id>`. The extension picks it from the session's recorded agent automatically
 - **Provider abstraction** — adding more agents later is a new provider file, no core changes; all three share one tracker, state machine, and notification path
 
@@ -269,9 +270,8 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Fix Claude Code Rendering in Shell` | Appends `CLAUDE_CODE_NO_FLICKER=1` and `CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1` to your rc file (optional — v0.11 bakes these into tmux.conf so most users won't need this) |
 | `Terminal Sessions: Toggle Claude Waiting Alerts (Global)` | Flip the `notifyOnClaudeWaiting` setting |
 | `Terminal Sessions: Recreate Sessions from Index` | After a reboot, rebuild tmux sessions from the stored index |
-| Right-click on sidebar session → `Preview Scrollback` | Last 200 lines in an editor tab |
 | Right-click on sidebar session → `Restart` | Kill + fresh shell; auto-resume the agent if detected |
-| Right-click on sidebar session → `View Conversation` | Open a readable Markdown rendering of the conversation |
+| Right-click on sidebar session → `View Conversation` | Render the session's transcript as Markdown (reads the `.jsonl` directly — works on stopped sessions too) |
 | Right-click on sidebar session → `Name Conversation...` | Give the session a friendly name (shown in the archive picker) |
 | Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
 | Right-click on sidebar session → `Copy Last Session ID` / `Copy Last Session Path` | Clipboard the conversation UUID or its transcript path |
@@ -308,6 +308,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.sidebarSortMode` | `"created"` | `custom`, `mru`, `created`, or `alphabetical` |
 | `terminalSessions.sidebarFilterMode` | `"all"` | Filter sidebar by state: `all`, `running`, or `stopped` |
 | `terminalSessions.claudeSidebarDetails` | `"auto"` | Expand the nested rows under a Claude session: `auto`/`always`/`collapsed`/`off` |
+| `terminalSessions.claudeNoFlicker` | `"auto"` | `CLAUDE_CODE_NO_FLICKER` mode. `auto` = off on Cursor (conversation copyable), on in VS Code (clean alt-screen). `on` = always clean, no copy from live view. `off` = always copyable, slight flicker |
 | `terminalSessions.contextWarnPct` | `0.8` | Threshold (0-1) for the `⚠ 87% ctx` warning next to Claude state |
 | `terminalSessions.nativeNotifications` | `"auto"` | `auto` (native when Cursor unfocused), `always`, `never` |
 | `terminalSessions.notificationSound` | `"Glass"` | macOS sound for Claude Stop notifications |
@@ -356,6 +357,8 @@ so every new tmux window inherits these at startup. No shell rc edit needed. The
 - **`CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1`** — clicks are handed to tmux (so you can still click-select panes, tabs, the sidebar, etc.) but scroll events still reach Claude Code. Trackpad scrolls Claude's conversation view directly. `DISABLE_MOUSE=1` alone would block trackpad scroll
 
 Requires Claude Code ≥ 2.1.110 (earlier versions had a regression that wiped scrollback).
+
+**Default is editor-aware (`terminalSessions.claudeNoFlicker: auto`):** on **Cursor**, NO_FLICKER is **off** by default — Claude uses the classic renderer so the conversation lands in tmux scrollback and copies cleanly via pbcopy/xclip (Cursor mis-decodes Claude's own OSC 52 copy, so this is the only way to copy accented text). On **VS Code** it stays **on** (clean alt-screen; VS Code copies OSC 52 fine, so nothing is lost). Force it either way with `on` (always clean, but no copy from the live Claude view) or `off` (always copyable, at the cost of a little flicker on heavy redraws). Changing it regenerates and reloads tmux.conf; restart the Claude session to apply.
 
 If you started Claude in a session before the v3 config was applied, the env vars aren't in that shell yet. Either run `Restart Session` on the sidebar (auto-resumes the conversation) or `exec bash` / `exec zsh` inside the pane to pick them up.
 

@@ -39,10 +39,12 @@ function buildResumeCommand(
   sessionId: string,
   transcriptPath: string | undefined,
   terminalCwd: string,
+  extraFlags?: readonly string[],
 ): string {
   // The provider owns its resume syntax (`claude --resume`, `codex resume`,
-  // `agy --conversation`) and whether it needs a `cd` to the recorded cwd.
-  return provider.buildResumeCommand(sessionId, terminalCwd, transcriptPath);
+  // `agy --conversation`), whether it needs a `cd` to the recorded cwd, and how
+  // to re-apply the captured launch flags (filtering out dead path flags).
+  return provider.buildResumeCommand(sessionId, terminalCwd, transcriptPath, extraFlags);
 }
 
 /** A history sessionId with everything needed to rank it as resume candidate. */
@@ -139,9 +141,11 @@ function isCwdUnder(parent: string, child: string | undefined): boolean {
  *      folderPath). Otherwise a brief `claude --resume <id>` glance at a
  *      foreign session pollutes the history and gets picked over the real
  *      conversation.
- *   2. **size tie-break** — among the survivors, prefer the largest
- *      transcript (bytes). Quick "open then Esc" touches stay tiny;
- *      conversations the user actually worked in are large.
+ *   2. **history order** — among the survivors, keep the order from the
+ *      history (live/running conversation first, then the most-recently-
+ *      recorded one for this pane). The substantial-bytes filter already
+ *      drops tiny "open then Esc" glances, so we never override the
+ *      conversation the pane is actually on with a larger sibling.
  *
  * Brief touches under BRIEF_TOUCH_BYTES are dropped from auto-resume entirely.
  * They're still visible in the manual "Resume Other Claude Session..." picker.
@@ -167,15 +171,30 @@ function resolveResumeFromHistory(
   const inScope = candidates.filter(c => isCwdUnder(anchor, c.cwd));
   const substantial = inScope.filter(c => c.byteSize >= BRIEF_TOUCH_BYTES);
 
-  // Pool: substantial in-scope > any in-scope > head-first fallback.
+  // Pool: substantial in-scope > any in-scope > unknown-cwd fallback.
   let pool: ResumeCandidate[];
   if (substantial.length > 0) pool = substantial;
   else if (inScope.length > 0) pool = inScope;
-  else pool = candidates;
+  else {
+    // Nothing sits under this tmux session's folder. NEVER fall back to a
+    // candidate whose transcript cwd is KNOWN to be a different workspace — that
+    // is polluted history (a brief cross-workspace `claude --resume` glance, or a
+    // stale/mis-attributed head), and resuming it drops a stranger's conversation
+    // into this pane. That is the "restart resumed the wrong session" bug. Only
+    // rescue candidates whose cwd could not be read at all (legit-but-unreadable,
+    // e.g. a summary-only transcript); otherwise resume nothing and leave a clean
+    // shell — the user can pick the right one via "Resume Other Session…".
+    const unknownCwd = candidates.filter(c => !c.cwd);
+    if (unknownCwd.length === 0) return undefined;
+    pool = unknownCwd;
+  }
 
-  // Within the pool, pick the largest transcript. Bytes beats lines because
-  // we already read stat.size cheaply during gather.
-  pool.sort((a, b) => b.byteSize - a.byteSize);
+  // Keep HISTORY ORDER — the conversation actually running in this pane (the
+  // live tracker id, which gatherResumeCandidates puts first) or, failing that,
+  // the most recently recorded one for this pane. Do NOT sort by size: a larger
+  // sibling conversation in the same folder must not be resumed instead of the
+  // one the pane is actually on. The substantial-bytes filter above already
+  // drops tiny "open then Esc" glances.
   return { sessionId: pool[0].sessionId, transcriptPath: pool[0].transcriptPath };
 }
 
@@ -197,13 +216,15 @@ export function registerCommands(
   registry: AgentRegistry,
 ): void {
   ctx.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(CONVERSATION_SCHEME, conversationDocProvider),
+  );
+  ctx.subscriptions.push(
     vscode.commands.registerCommand(COMMAND.newPersistent, () => cmdNewPersistent(index)),
     vscode.commands.registerCommand(COMMAND.newPersistentInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri)),
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
     vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem) => cmdKill(index, item)),
     vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
     vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
-    vscode.commands.registerCommand(COMMAND.preview, (item?: SessionTreeItem) => cmdPreview(item)),
     vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, item)),
     vscode.commands.registerCommand(COMMAND.refreshSidebar, () => refreshSidebar()),
     vscode.commands.registerCommand(COMMAND.revealSidebar,
@@ -214,7 +235,6 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.reloadTmuxConfig, () => cmdReloadTmuxConfig()),
     vscode.commands.registerCommand(COMMAND.setIcon, (item?: SessionTreeItem) => cmdSetIcon(index, item)),
     vscode.commands.registerCommand(COMMAND.setColor, (item?: SessionTreeItem) => cmdSetColor(index, item)),
-    vscode.commands.registerCommand(COMMAND.mirror, (item?: SessionTreeItem) => cmdMirror(index, item)),
     vscode.commands.registerCommand(COMMAND.restoreFromIndex, () => cmdRestoreFromIndex(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.testNotification, () => cmdTestNotification()),
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
@@ -231,6 +251,9 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
+    vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem) => cmdSetSessionLocked(index, item, true)),
+    vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem) => cmdSetSessionLocked(index, item, false)),
+    vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
     vscode.commands.registerCommand(COMMAND.nameSession, (arg?: SessionTreeItem | { sessionId: string; current?: string }) => cmdNameSession(index, registry, claudeTracker, arg)),
@@ -243,6 +266,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.moveGroupToMaster, (item?: GroupTreeItem) => cmdMoveGroupToMaster(index, item)),
     vscode.commands.registerCommand(COMMAND.renameGroup, (item?: GroupTreeItem) => cmdRenameGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.deleteGroup, (item?: GroupTreeItem) => cmdDeleteGroup(index, item)),
+    vscode.commands.registerCommand(COMMAND.setGroupColor, (item?: GroupTreeItem) => cmdSetGroupColor(index, item)),
     vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem) => cmdMoveSessionToGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry)),
@@ -284,6 +308,26 @@ async function cmdSetAllAlerts(value?: boolean): Promise<void> {
  *     newest transcript via the resume context;
  *   - { transcriptPath, title } (from the archive picker's eye button).
  */
+// Read-only virtual documents for rendered conversation transcripts, so
+// "View Conversation" opens a Markdown preview with a meaningful tab title
+// ("Preview <conversation>") instead of "Untitled-N", and never prompts to save.
+const CONVERSATION_SCHEME = 'ts-conversation';
+
+class ConversationDocProvider implements vscode.TextDocumentContentProvider {
+  private readonly docs = new Map<string, string>();
+  private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
+  readonly onDidChange = this._onDidChange.event;
+  provideTextDocumentContent(uri: vscode.Uri): string {
+    return this.docs.get(uri.toString()) ?? '_No content._';
+  }
+  set(uri: vscode.Uri, content: string): void {
+    this.docs.set(uri.toString(), content);
+    this._onDidChange.fire(uri);
+  }
+}
+
+const conversationDocProvider = new ConversationDocProvider();
+
 async function cmdViewConversation(
   index: SessionIndex,
   registry: AgentRegistry,
@@ -302,10 +346,14 @@ async function cmdViewConversation(
       resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
     const cwd = index.getSessionMeta(session.workspaceHash, session.name)?.folderPath
       || session.workspacePath || '';
-    const sid = history[0];
-    if (sid) {
-      transcriptPath = provider.resolveTranscriptPath(sid, cwd, undefined);
-      title = index.getSessionName(sid) || session.label || session.name;
+    // Walk the history (live/running first, then most-recently-recorded for this
+    // pane), with the same cwd + transcript-on-disk filters as resume, so a
+    // stopped session — or one whose head id was pruned — still resolves to the
+    // right transcript on disk.
+    const resolved = resolveResumeFromHistory(provider, history, cwd, session.workspacePath);
+    if (resolved) {
+      transcriptPath = resolved.transcriptPath;
+      title = index.getSessionName(resolved.sessionId) || session.label || session.name;
     }
   }
 
@@ -316,8 +364,14 @@ async function cmdViewConversation(
 
   try {
     const md = transcriptToMarkdown(transcriptPath, { title });
-    const doc = await vscode.workspace.openTextDocument({ content: md, language: 'markdown' });
-    await vscode.commands.executeCommand('markdown.showPreview', doc.uri);
+    // Read-only virtual doc → preview tab reads "Preview <conversation>" (not
+    // "Untitled-N") and never prompts to save. The .md path drives markdown mode.
+    const safe = (title || 'Conversation').replace(/[\\/:*?"<>|]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Conversation';
+    const base = transcriptPath.split('/').pop() || '';
+    const sid = /^([0-9a-fA-F]{8})/.exec(base)?.[1] ?? '';
+    const uri = vscode.Uri.from({ scheme: CONVERSATION_SCHEME, path: `/${safe}${sid ? ` (${sid})` : ''}.md` });
+    conversationDocProvider.set(uri, md);
+    await vscode.commands.executeCommand('markdown.showPreview', uri);
   } catch (e) {
     // Fall back to the raw file so the user still sees something.
     vscode.window.showWarningMessage(`Render failed (${String(e).slice(0, 120)}); opening raw transcript.`);
@@ -423,6 +477,40 @@ async function cmdSetSessionMuted(
   refreshSidebar();
   vscode.window.showInformationMessage(
     `${item.session.label || name}: notifications ${muted ? 'muted' : 'unmuted'}.`,
+  );
+}
+
+/** Toggle the per-session Kill lock. When locked, the sidebar hides the Kill
+ *  action (a 🔒 hint appears on the row) and cmdKill refuses, guarding an
+ *  important session from an accidental Kill click. Restart/Stop stay available. */
+async function cmdSetSessionLocked(
+  index: SessionIndex,
+  item: SessionTreeItem | undefined,
+  locked: boolean,
+): Promise<void> {
+  if (!item) {
+    vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
+    return;
+  }
+  const name = item.session.name;
+  const parsed = parseSessionName(name, getConfig().sessionPrefix);
+  if (!parsed) return;
+  index.setSessionLocked(parsed.hash, name, locked);
+  refreshSidebar();
+  vscode.window.setStatusBarMessage(
+    `${item.session.label || name}: ${locked ? '🔒 locked — protected from Kill' : '🔓 unlocked'}`,
+    2500,
+  );
+}
+
+/** Inline padlock button on a locked row. It is a deliberate no-op on the lock
+ *  state: clicking the padlock does NOT unlock (that would make an accidental
+ *  click undo the protection). It only reminds the user to unlock via right-click,
+ *  keeping the lock "sticky". */
+async function cmdLockedHint(item?: SessionTreeItem): Promise<void> {
+  const label = item?.session.label || item?.session.name || 'This session';
+  vscode.window.showInformationMessage(
+    `🔒 "${label}" is locked. Right-click → Unlock (Allow Kill) to remove the lock.`,
   );
 }
 
@@ -760,7 +848,10 @@ async function cmdRestart(
       // closed the tab manually. Verify liveness before firing into the void.
       if (vscode.window.terminals.includes(term)) {
         try {
-          term.sendText(buildResumeCommand(resumeProvider, claudeSessionId, claudeTranscriptPath, restartCwd));
+          term.sendText(buildResumeCommand(
+            resumeProvider, claudeSessionId, claudeTranscriptPath, restartCwd,
+            index.getResumeFlags(parsed.hash, name, resumeProvider.id),
+          ));
         } catch (e) { console.error('[terminal-sessions] sendText failed:', e); }
       }
     }
@@ -896,7 +987,10 @@ async function cmdStart(
       await sleep(SHELL_INIT_DELAY_MS);
       if (vscode.window.terminals.includes(term)) {
         try {
-          term.sendText(buildResumeCommand(startProvider, claudeSessionId, claudeTranscriptPath, startCwd));
+          term.sendText(buildResumeCommand(
+            startProvider, claudeSessionId, claudeTranscriptPath, startCwd,
+            index.getResumeFlags(parsed.hash, name, startProvider.id),
+          ));
         } catch (e) { console.error('[terminal-sessions] sendText failed:', e); }
       }
     }
@@ -1136,6 +1230,7 @@ async function cmdReattachAll(
     label: string;
     transcriptPath?: string;
     cwd: string;
+    flags: string[];
   }> = [];
 
   for (const { session: s, ghost, softReconnect } of toReattach) {
@@ -1171,6 +1266,7 @@ async function cmdReattachAll(
             label: s.label || s.name,
             transcriptPath: reattachResume.transcriptPath,
             cwd,
+            flags: index.getResumeFlags(s.workspaceHash, s.name, rProvider.id),
           });
         }
       }
@@ -1191,7 +1287,7 @@ async function cmdReattachAll(
     for (const r of resumes) {
       if (!vscode.window.terminals.includes(r.term)) continue;
       try {
-        r.term.sendText(buildResumeCommand(r.provider, r.sessionId, r.transcriptPath, r.cwd));
+        r.term.sendText(buildResumeCommand(r.provider, r.sessionId, r.transcriptPath, r.cwd, r.flags));
         resumed++;
       } catch (e) {
         console.error('[terminal-sessions] reattach resume sendText failed:', r.label, e);
@@ -1300,6 +1396,52 @@ async function cmdMoveGroupToMaster(index: SessionIndex, item?: GroupTreeItem): 
     vscode.window.showWarningMessage('Couldn\'t move the group there (cycle or invalid target).');
     return;
   }
+  refreshSidebar();
+}
+
+// Richer, extension-registered palette for group/master icons (see
+// package.json contributes.colors → terminalSessions.color.*). Unlike the ANSI
+// session palette these are fixed, vivid hues, and because each is a registered
+// theme color we can show a *colored* dot in the picker via QuickPickItem.iconPath.
+const GROUP_COLOR_CHOICES: { label: string; id: string }[] = [
+  { label: 'Red',    id: 'terminalSessions.color.red' },
+  { label: 'Orange', id: 'terminalSessions.color.orange' },
+  { label: 'Amber',  id: 'terminalSessions.color.amber' },
+  { label: 'Yellow', id: 'terminalSessions.color.yellow' },
+  { label: 'Lime',   id: 'terminalSessions.color.lime' },
+  { label: 'Green',  id: 'terminalSessions.color.green' },
+  { label: 'Teal',   id: 'terminalSessions.color.teal' },
+  { label: 'Cyan',   id: 'terminalSessions.color.cyan' },
+  { label: 'Sky',    id: 'terminalSessions.color.sky' },
+  { label: 'Blue',   id: 'terminalSessions.color.blue' },
+  { label: 'Indigo', id: 'terminalSessions.color.indigo' },
+  { label: 'Purple', id: 'terminalSessions.color.purple' },
+  { label: 'Pink',   id: 'terminalSessions.color.pink' },
+  { label: 'Gray',   id: 'terminalSessions.color.gray' },
+];
+
+async function cmdSetGroupColor(index: SessionIndex, item?: GroupTreeItem): Promise<void> {
+  if (!item) {
+    vscode.window.showInformationMessage('Right-click a group in the sidebar to set its color.');
+    return;
+  }
+  interface ColorPick extends vscode.QuickPickItem { colorId: string }
+  const picks: ColorPick[] = [
+    { label: 'Default (no color)', iconPath: new vscode.ThemeIcon('close'), colorId: '' },
+    ...GROUP_COLOR_CHOICES.map(c => ({
+      label: c.label,
+      // A ThemeIcon carrying a ThemeColor renders a *colored* swatch in the
+      // QuickPick (the inline `$(icon)` label syntax can't be colored).
+      iconPath: new vscode.ThemeIcon('circle-large-filled', new vscode.ThemeColor(c.id)),
+      colorId: c.id,
+    })),
+  ];
+  const kindLabel = item.kind === 'master' ? 'master group' : 'group';
+  const pick = await vscode.window.showQuickPick<ColorPick>(picks, {
+    placeHolder: `Pick a color for "${item.groupName}" (${kindLabel})`,
+  });
+  if (!pick) return;
+  index.setGroupColor(item.workspaceHash, item.groupId, pick.colorId || undefined);
   refreshSidebar();
 }
 
@@ -1839,7 +1981,8 @@ async function cmdKill(index: SessionIndex, item?: SessionTreeItem): Promise<voi
   if (!name) {
     const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
     interface Pick extends vscode.QuickPickItem { sessionName: string }
-    const picks: Pick[] = all.map(s => ({
+    // Locked sessions are protected from Kill — keep them out of the picker.
+    const picks: Pick[] = all.filter(s => !s.locked).map(s => ({
       label: s.label || s.name,
       description: s.workspaceLabel,
       sessionName: s.name,
@@ -1850,6 +1993,14 @@ async function cmdKill(index: SessionIndex, item?: SessionTreeItem): Promise<voi
   }
   const parsedForLabel = parseSessionName(name, cfg.sessionPrefix);
   const label = parsedForLabel ? index.getSessionLabel(parsedForLabel.hash, name) : undefined;
+  // Backstop: a locked session must be unlocked first. The sidebar hides Kill on
+  // locked rows, but the command palette or a stale tree item could still land here.
+  if (parsedForLabel && index.isSessionLocked(parsedForLabel.hash, name)) {
+    vscode.window.showWarningMessage(
+      `🔒 "${label || name}" is locked. Right-click → Unlock it first to kill.`,
+    );
+    return;
+  }
   const displayName = label ? `"${label}" (${name})` : name;
   const confirm = await vscode.window.showWarningMessage(
     `Kill session ${displayName}? All processes inside will terminate.`,
@@ -1868,13 +2019,20 @@ async function cmdKillWorkspace(index: SessionIndex): Promise<void> {
   if (!ws) return;
   const cfg = getConfig();
   const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
-  const mine = all.filter(s => s.workspaceHash === ws.hash);
+  // Locked sessions are protected from bulk Kill — skip them and report how many.
+  const mine = all.filter(s => s.workspaceHash === ws.hash && !s.locked);
+  const lockedCount = all.filter(s => s.workspaceHash === ws.hash && s.locked).length;
   if (mine.length === 0) {
-    vscode.window.showInformationMessage('No sessions to kill in this workspace.');
+    vscode.window.showInformationMessage(
+      lockedCount > 0
+        ? `No sessions to kill — ${lockedCount} locked 🔒 session(s) skipped.`
+        : 'No sessions to kill in this workspace.',
+    );
     return;
   }
   const confirm = await vscode.window.showWarningMessage(
-    `Kill all ${mine.length} sessions for "${ws.label}"?`,
+    `Kill all ${mine.length} sessions for "${ws.label}"?` +
+      (lockedCount > 0 ? `\n\n${lockedCount} locked 🔒 session(s) will be skipped.` : ''),
     { modal: true }, 'Kill All',
   );
   if (confirm !== 'Kill All') return;
@@ -1895,7 +2053,8 @@ async function cmdKillStale(index: SessionIndex): Promise<void> {
   }
   const cutoff = Date.now() - cfg.pruneAfterDays * 86400_000;
   const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
-  const stale = all.filter(s => !s.attached && s.lastAttached.getTime() < cutoff);
+  // Locked sessions are protected — never auto-prune one, however stale.
+  const stale = all.filter(s => !s.attached && !s.locked && s.lastAttached.getTime() < cutoff);
   if (stale.length === 0) {
     vscode.window.showInformationMessage('No stale sessions.');
     return;
@@ -1912,16 +2071,6 @@ async function cmdKillStale(index: SessionIndex): Promise<void> {
   refreshSidebar();
 }
 
-async function cmdPreview(item?: SessionTreeItem): Promise<void> {
-  const tmuxPath = await requireTmux();
-  if (!tmuxPath || !item) return;
-  const content = await tmux.capturePane(tmuxPath, item.session.name, 200);
-  const header = item.session.label
-    ? `# Preview — ${item.session.label} (${item.session.name})\n# Workspace: ${item.session.workspaceLabel}\n# Last attached: ${item.session.lastAttached.toLocaleString()}\n\n`
-    : `# Preview — ${item.session.name}\n# Workspace: ${item.session.workspaceLabel}\n\n`;
-  const doc = await vscode.workspace.openTextDocument({ content: header + content, language: 'log' });
-  await vscode.window.showTextDocument(doc, { preview: true });
-}
 
 async function cmdRename(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
   if (!item) return;
@@ -1968,7 +2117,7 @@ async function cmdSetDefaultProfile(): Promise<void> {
   );
 }
 
-// ── Icon / color / mirror commands ───────────────────────────────────────
+// ── Icon / color commands ────────────────────────────────────────────────
 
 const ICON_CHOICES: { label: string; id: string; desc: string }[] = [
   { label: '$(terminal-bash) terminal', id: 'terminal-bash', desc: 'Default' },
@@ -2040,24 +2189,3 @@ async function cmdSetColor(index: SessionIndex, item?: SessionTreeItem): Promise
   );
 }
 
-async function cmdMirror(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
-  const tmuxPath = await requireTmux();
-  if (!tmuxPath) return;
-  const cfg = getConfig();
-  let name = item?.session.name;
-  if (!name) {
-    const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
-    interface Pick extends vscode.QuickPickItem { sessionName: string }
-    const picks: Pick[] = all.map(s => ({
-      label: s.label || `#${s.tabId}`,
-      description: `${s.workspaceLabel} · ${s.attached ? 'attached' : 'detached'}`,
-      sessionName: s.name,
-    }));
-    const pick = await vscode.window.showQuickPick<Pick>(picks, { placeHolder: 'Mirror which session in a new tab?' });
-    if (!pick) return;
-    name = pick.sessionName;
-  }
-  await openTerminalForSession(name, undefined, index, true);
-  vscode.window.showInformationMessage('Mirror opened. Drag the new terminal tab to split side-by-side.');
-  refreshSidebar();
-}

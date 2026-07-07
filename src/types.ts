@@ -23,8 +23,12 @@ export interface SessionInfo {
   sortOrder?: number;
   attached: boolean;
   muted?: boolean;  // when true, notifications are suppressed for this session
+  locked?: boolean;  // when true, the session is protected from Kill (padlock shown; unlock to remove)
   stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
   groupId?: string;  // when set, session lives inside a custom group at workspace level
+  // Actual cwd the tmux session was started in. Set for subfolder sessions
+  // (right-click → New Persistent in Folder); differs from the workspace root.
+  folderPath?: string;
 }
 
 export interface WorkspaceIndex {
@@ -50,6 +54,9 @@ export interface WorkspaceEntry {
 export interface GroupLabel {
   name: string;
   sortOrder?: number;
+  // Optional theme color id (e.g. "terminal.ansiBlue") tinting the group/master
+  // icon in the sidebar. Set via right-click → Change Group Color.
+  color?: string;
   // 'group' (default) holds sessions only. 'master' holds other groups/masters
   // only (a "group of groups"), never sessions directly.
   kind?: 'group' | 'master';
@@ -67,6 +74,10 @@ export interface SessionLabel {
   lastActiveAt?: string;
   sortOrder?: number;
   muted?: boolean;   // when true, suppress Claude Stop/Waiting notifications for this session
+  // When true, this session is protected from Kill: the destructive Kill action is
+  // hidden in the sidebar and refused by the command, guarding against accidental
+  // removal. Toggled via right-click Lock/Unlock. A 🔒 hint is shown on the row.
+  locked?: boolean;
   // Original cwd the session was created in. Differs from the workspace root
   // when the session was started from a subfolder (right-click → New Persistent
   // in Folder). Persisted so Restart re-creates tmux in the SAME folder, not
@@ -89,6 +100,12 @@ export interface SessionLabel {
   // fields above, which are still mirrored for back-compat with older index
   // files and code paths that read only `claudeSessionHistory`.
   agentSessions?: AgentSessionRef[];
+  // "Character" launch flags observed on the live agent process, per agent
+  // (yolo / --model / sandbox / …), so Restart and post-reboot restore relaunch
+  // the conversation the way it was originally started. Refreshed each time we
+  // see the live process; ephemeral path flags (claude-pick's temp --mcp-config)
+  // are filtered out at relaunch time, not here.
+  resumeFlags?: Partial<Record<AgentId, string[]>>;
   // When set, this session lives inside the named group at workspace level.
   // Cleared (or undefined) means the session sits at the workspace root,
   // siblings with the groups, ordered by sortOrder among them.

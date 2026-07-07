@@ -4,6 +4,90 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.18.5] — 2026-06-27
+
+### Fixed
+- **Clicking a session in the sidebar now puts the cursor in the terminal.** A TreeItem click (and the sidebar refresh that follows) could leave keyboard focus on the tree, so you had to click inside the terminal before you could type. Focus is now re-asserted on the terminal after the click settles. (Combined with the 0.18.4 copy-mode auto-exit.)
+
+## [0.18.4] — 2026-06-27
+
+### Fixed
+- **Switching to a terminal is ready to type immediately.** If a pane was left in copy-mode (e.g. you scrolled up to read), clicking it in the sidebar used to focus the terminal but keystrokes went nowhere until you clicked inside it — because tmux was still in copy-mode. Attaching/showing a session now auto-exits copy-mode for that pane, so you can type right away.
+
+## [0.18.3] — 2026-06-27
+
+### Fixed
+- **The copy-mode fix now reaches existing users too.** New installs get the updated tmux.conf automatically; existing users are re-prompted to update (the "Update tmux.conf" offer was previously suppressed for anyone who had dismissed an older version, and only mentioned the old OSC 52 change). Accepting now also reloads the running tmux server, so live sessions get the new bindings without a manual "Reload tmux Config".
+
+## [0.18.2] — 2026-06-27
+
+### Fixed
+- **Never get stuck in copy-mode unable to type.** Drag-selecting still keeps your scroll position (copy stays in place, so you can re-select), but copy-mode now has easy exits so the terminal no longer feels "left in select mode": scrolling back down to the bottom auto-exits copy-mode, and a single left click drops you back to the live prompt (a drag still selects, since it ends with MouseDragEnd, not MouseUp). `Enter`/`q`/`Esc` still exit too. tmux conf bumped to v8.
+
+## [0.18.1] — 2026-06-27
+
+### Changed
+- **Richer group color palette + colored swatches in the picker.** Group/master colors now use a dedicated, extension-registered 14-color palette (Red, Orange, Amber, Yellow, Lime, Green, Teal, Cyan, Sky, Blue, Indigo, Purple, Pink, Gray) instead of the 12 ANSI terminal colors. Each color is a registered theme color, so the picker shows an actual **colored dot** next to its name (via `QuickPickItem.iconPath`), and the same hue tints the group icon. Light/dark/high-contrast variants included.
+
+## [0.18.0] — 2026-06-27
+
+### Changed
+- **Clearer group hierarchy icons.** The three levels used to be near-identical folder/shelf glyphs (`folder` / `library` / `folder-library`). Now each level has a distinct silhouette: the workspace is `root-folder-opened`, a master ("group of groups") is `layers` (stacked), and a normal group is a plain `folder` — so the tree reads at a glance.
+
+### Added
+- **Change Group Color.** Right-click any group or master → **Change Group Color...** to tint its icon with a theme color (same palette as session colors). Clear it by picking "Default". Persisted per group.
+
+## [0.17.0] — 2026-06-27
+
+### Added
+- **Grok (xAI CLI) support.** The sidebar now tracks `grok` sessions alongside Claude, Codex, and Antigravity: live working/tool/idle state, context-window %, model, last user/assistant messages, browse/resume from the picker, Stop→Start and post-reboot auto-resume (`grok -r <id>`, cd-to-recorded-cwd), and launch-flag preservation (`--always-approve` yolo, `--model`, `--sandbox`, …). Auto-enables when `grok` is found on PATH (or set `terminalSessions.enabledAgents` explicitly).
+  - **No hooks required.** Grok's lifecycle hooks are project-scoped and trust-gated, so instead of installing a global hook the extension discovers live Grok sessions by polling `~/.grok/active_sessions.json` and matching each session's pid to a tmux pane's process tree, then tails the session's ACP `updates.jsonl` for status/tokens/messages. Nothing is written into your projects and no per-folder trust prompts are triggered.
+
+## [0.16.0] — 2026-06-27
+
+### Added
+- **Resume relaunches with the flags the session was started with.** When a tracked agent is live, the extension reads its process launch flags and persists the "character" ones per session (per agent). On Restart, Start-after-Stop when the tmux session has died, post-reboot restore, and reattach, those flags are re-applied — so a **yolo** (`--dangerously-skip-permissions`) session comes back yolo, a `--model` choice is preserved, etc. Works for **Claude, Codex, and Antigravity (`agy`)**, each with its own allowlist (Codex: `--full-auto`/`--sandbox`/`--ask-for-approval`/…; agy mirrors Claude). Detection is by the live process flags, so it's independent of how you launched (alias, manual flag, wrapper).
+  - **MCP stays correct for everyone.** Path-valued flags (e.g. `--mcp-config`) are re-applied only if the file still exists at relaunch. For users with the `claude-pick` resume wrapper, its ephemeral temp config has already been deleted, so it's dropped and claude-pick repopulates MCP from its own sticky memory; for users who pass a real, permanent `--mcp-config`, it still exists and is preserved. No claude-pick knowledge is baked into the extension. Sessions launched plainly (no flags) resume exactly as before.
+
+### Changed
+- **Sidebar title no longer says "SESSIONS".** The single view inside the Terminal Sessions container was named "Sessions", so the header read "TERMINAL SESSIONS: SESSIONS". The redundant view name is dropped — it now reads just "TERMINAL SESSIONS".
+
+## [0.15.7] — 2026-06-27
+
+### Changed
+- **View Conversation opens a named, read-only tab.** It used to render into an in-memory untitled document, so the preview tab read "Preview Untitled-N" and closing it could prompt you to save. It now uses a read-only virtual document, so the tab reads "Preview &lt;conversation&gt;" and never asks to save.
+
+## [0.15.6] — 2026-06-27
+
+### Changed
+- **"View Conversation" replaces "Preview Scrollback."** The old preview captured the live tmux pane (`capture-pane`), so it couldn't show a Claude conversation rendered in the alternate screen and was useless for stopped sessions. The session's inline button is now **View Conversation**, which reads the agent's transcript `.jsonl` directly and renders it as Markdown — it works on **stopped** sessions too and shows the real conversation regardless of renderer. It now also walks the pane's history (same cwd + on-disk filters as resume), so it resolves the right transcript even when the head id was pruned.
+
+### Removed
+- **"Preview Scrollback" command.** Superseded by View Conversation.
+
+## [0.15.5] — 2026-06-27
+
+### Changed
+- **Restart / Start now resume the conversation the pane was actually on, not the largest one in the folder.** `resolveResumeFromHistory` used to pick the *largest* transcript among the folder's conversations (a size tie-break), so if a pane had briefly touched a bigger sibling conversation it could come back on the wrong one. It now keeps history order — the live/running conversation first, then the most-recently-recorded one for that pane — while still dropping tiny "open then Esc" glances. (If a pane's recorded history is already tangled from resuming the same conversation across multiple panes, resume the right one once manually to re-anchor it.)
+
+### Removed
+- **"Open Mirror" command.** Removed the session right-click "Open Mirror (attach to same session)" action — attaching the same tmux session in a second tab added clutter without practical benefit. Use a tmux split (`Ctrl+A` then the `q` menu) for two views of one session.
+
+## [0.15.4] — 2026-06-27
+
+### Changed
+- **Drag-selecting in copy-mode no longer snaps you back to the prompt.** The mouse drag-select copy binding now uses `copy-pipe` instead of `copy-pipe-and-cancel`: after you scroll up into the conversation, select, and copy, tmux stays in copy-mode at the same scroll position **and clears the selection** (so your next drag starts clean) instead of cancelling and jumping to the bottom. Press `Enter`/`q`/`Esc` to leave copy-mode when done. Reload the managed tmux.conf (or restart the session) to pick it up.
+
+## [0.15.3] — 2026-06-27
+
+### Added
+- **`terminalSessions.claudeNoFlicker` setting (`auto` | `on` | `off`, default `auto`).** The managed tmux.conf used to always set `CLAUDE_CODE_NO_FLICKER=1`, rendering Claude in alt-screen fullscreen — clean scrollback, but the conversation isn't in tmux's buffer so you can't drag-select/copy it (and on Cursor, Claude's own OSC 52 copy mangles non-ASCII). The new default `auto` picks the right mode **per editor**: **off on Cursor** (classic renderer, so the conversation lands in scrollback and copies cleanly via pbcopy/xclip) and **on in VS Code** (clean alt-screen; VS Code decodes OSC 52 correctly, so copy still works). Force it with `on` (always clean, no copy from the live view) or `off` (always copyable, some flicker on heavy redraws). Changing it regenerates and reloads tmux.conf (and unsets the env on the live server when off); restart any running Claude session to apply. Because the template now respects the setting, a tmux.conf regeneration no longer clobbers your choice. This means **Cursor installs now default to a copyable Claude conversation out of the box.**
+
+## [0.15.1] — 2026-06-27
+
+### Fixed
+- **The "Resume All" prompt on workspace open no longer offers paused sessions.** It previously listed every session not currently attached to a terminal tab, which included sessions you had explicitly **Stop**ped (paused). The prompt now offers only sessions that are still alive in tmux but have no open tab — exactly the ones a reload should bring back. Paused sessions stay paused until you start them yourself. (`auto` mode honors the same filter.)
+
 ## [0.15.0] — 2026-06-20
 
 ### Added

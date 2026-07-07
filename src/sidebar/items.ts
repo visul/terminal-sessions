@@ -24,11 +24,16 @@ export class GroupTreeItem extends vscode.TreeItem {
     // For masters: the direct child groups/masters (used for the count +
     // recursive session tally). Empty for normal groups.
     public readonly childGroupCount: number = 0,
+    // Optional theme color id tinting the icon (right-click → Change Group Color).
+    public readonly color?: string,
   ) {
     super(groupName, vscode.TreeItemCollapsibleState.Collapsed);
+    const tint = color ? new vscode.ThemeColor(color) : undefined;
     if (kind === 'master') {
       this.contextValue = 'masterGroup';
-      this.iconPath = new vscode.ThemeIcon('library');
+      // `layers` (stacked) reads as a "group of groups" — distinct from the
+      // plain `folder` used for normal groups.
+      this.iconPath = new vscode.ThemeIcon('layers', tint);
       const n = childGroupCount;
       this.description = `${n} group${n === 1 ? '' : 's'}`;
       // sessions here is the RECURSIVE tally of all sessions under this master.
@@ -45,12 +50,11 @@ export class GroupTreeItem extends vscode.TreeItem {
       return;
     }
     this.contextValue = 'group';
-    this.iconPath = new vscode.ThemeIcon('folder-library');
+    this.iconPath = new vscode.ThemeIcon('folder', tint);
     const stopped = sessions.filter(s => s.stopped).length;
     const active = sessions.filter(s => !s.stopped && s.attached).length;
     const detached = sessions.filter(s => !s.stopped && !s.attached).length;
-    const stoppedSuffix = stopped > 0 ? ` · ${stopped}⏸` : '';
-    this.description = `${active}▶ ${detached}⇄${stoppedSuffix}`;
+    this.description = formatGroupCounts(active, detached, stopped);
     this.tooltip = new vscode.MarkdownString(
       [
         `**${groupName}**  _(group)_`,
@@ -79,9 +83,10 @@ export class WorkspaceTreeItem extends vscode.TreeItem {
     const stopped = countSrc.filter(s => s.stopped).length;
     const active = countSrc.filter(s => !s.stopped && s.attached).length;
     const detached = countSrc.filter(s => !s.stopped && !s.attached).length;
-    const stoppedSuffix = stopped > 0 ? ` · ${stopped}⏸` : '';
-    this.description = `${active}▶ ${detached}⇄${stoppedSuffix}`;
-    this.iconPath = new vscode.ThemeIcon('folder');
+    this.description = formatGroupCounts(active, detached, stopped);
+    // `root-folder-opened` clearly marks the workspace root, distinct from the
+    // `layers` master and plain `folder` groups beneath it.
+    this.iconPath = new vscode.ThemeIcon('root-folder-opened');
     this.tooltip = new vscode.MarkdownString(
       [
         `**${label}**`,
@@ -100,6 +105,20 @@ const STATE_ICONS: Record<ClaudeSnapshot['state'], string> = {
   waiting: 'warning',
   idle: 'check',
 };
+
+/** Compact folder/workspace count badge: stopped `⏸` first, then the live
+ *  sessions with the currently-running ones last — detached `⇄`, then working
+ *  `▶`. Zero counts are omitted so only real numbers show (`1⏸`, `2⏸ · 1▶`,
+ *  `2⏸ · 1⇄ 2▶`); all-zero yields `''`. The ` · ` keeps the stopped/live divide
+ *  whenever both sides are present. */
+function formatGroupCounts(active: number, detached: number, stopped: number): string {
+  const stoppedSeg = stopped > 0 ? `${stopped}⏸` : '';
+  const live = [
+    detached > 0 ? `${detached}⇄` : '',
+    active > 0 ? `${active}▶` : '',
+  ].filter(Boolean).join(' ');
+  return [stoppedSeg, live].filter(Boolean).join(' · ');
+}
 
 function formatElapsed(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
@@ -147,6 +166,7 @@ function agentLabel(agent: ClaudeSnapshot['agent']): string {
   switch (agent) {
     case 'codex': return 'Codex';
     case 'agy': return 'Antigravity';
+    case 'grok': return 'Grok';
     default: return '';
   }
 }
@@ -178,13 +198,13 @@ export class SessionTreeItem extends vscode.TreeItem {
     // Stopped session: muted icon + greyed label via FileDecorationProvider,
     // single-click row to start, no Claude details (process is dead).
     if (session.stopped) {
-      this.contextValue = 'session.stopped';
+      this.contextValue = session.locked ? 'session.stopped.locked' : 'session.stopped';
       this.iconPath = new vscode.ThemeIcon(
         'debug-stop',
         new vscode.ThemeColor('disabledForeground'),
       );
       const ageHint = humanAge(session.lastAttached);
-      this.description = `stopped · idle ${ageHint}`;
+      this.description = `stopped · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`;
       this.collapsibleState = vscode.TreeItemCollapsibleState.None;
       this.resourceUri = vscode.Uri.parse(
         `${STOPPED_URI_SCHEME}:${encodeURIComponent(session.name)}`,
@@ -194,8 +214,11 @@ export class SessionTreeItem extends vscode.TreeItem {
         `**${displayHeader}** _(stopped)_`,
         `ID: \`${session.name}\``,
         `Workspace: \`${session.workspacePath || session.workspaceLabel}\``,
-        `Created: ${session.createdAt.toLocaleString()}`,
       ];
+      if (session.folderPath && session.folderPath !== session.workspacePath) {
+        parts.push(`Folder (session cwd): \`${session.folderPath}\``);
+      }
+      parts.push(`Created: ${session.createdAt.toLocaleString()}`);
       if (claude?.sessionId) {
         parts.push(`Last Claude session: \`${claude.sessionId.slice(0, 8)}…\` (will auto-resume on Start)`);
       }
@@ -208,13 +231,18 @@ export class SessionTreeItem extends vscode.TreeItem {
       };
       return;
     }
-    // contextValue drives view/item/context menus. Shapes like "session" and
-    // "session.muted" are matched by existing menus via =~ /^session/.
-    this.contextValue = session.muted ? 'session.muted' : 'session';
+    // contextValue drives view/item/context menus. Flags are appended in a fixed
+    // order (muted, then locked) so menu `when` regexes can match any combination:
+    // "session", "session.muted", "session.locked", "session.muted.locked".
+    let cv = 'session';
+    if (session.muted) cv += '.muted';
+    if (session.locked) cv += '.locked';
+    this.contextValue = cv;
 
     // Attached state is now encoded in the icon (filled vs outline) instead
     // of a trailing " · attached" text, which was just noise on every row.
     const mutedHint = session.muted ? ' · 🔕' : '';
+    const lockHint = session.locked ? ' · 🔒' : '';
     const aLabel = claude ? agentLabel(claude.agent) : '';
     const claudeDesc = claude ? claudeStateDescription(claude) : undefined;
     // Prefix the agent name for non-Claude rows so "Codex working 12s" vs
@@ -224,8 +252,8 @@ export class SessionTreeItem extends vscode.TreeItem {
       : undefined;
     const ageHint = humanAge(session.lastAttached);
     this.description = stateDesc
-      ? `${stateDesc}${mutedHint}`
-      : `${ageHint}${mutedHint}`;
+      ? `${stateDesc}${mutedHint}${lockHint}`
+      : `${ageHint}${mutedHint}${lockHint}`;
 
     const customized = Boolean(session.icon || session.color || session.label);
     const claudeIcon = claude ? STATE_ICONS[claude.state] : '';
@@ -258,14 +286,23 @@ export class SessionTreeItem extends vscode.TreeItem {
       `**${displayHeader}**${customized ? '  _(customized)_' : ''}`,
       `ID: \`${session.name}\``,
       `Workspace: \`${session.workspacePath || session.workspaceLabel}\``,
+    ];
+    // Show the actual start folder for subfolder sessions — the cwd the tmux
+    // session (and any agent) runs in, distinct from the VS Code workspace root.
+    if (session.folderPath && session.folderPath !== session.workspacePath) {
+      parts.push(`Folder (session cwd): \`${session.folderPath}\``);
+    }
+    parts.push(
       `Created: ${session.createdAt.toLocaleString()}`,
       `Last attached: ${session.lastAttached.toLocaleString()}`,
       `State: ${session.attached ? 'Attached (live)' : 'Detached'}`,
-    ];
+    );
+    if (session.locked) parts.push(`🔒 **Locked** — protected from Kill (right-click → Unlock to remove)`);
     if (session.icon) parts.push(`Icon: \`${session.icon}\``);
     if (session.color) parts.push(`Color: \`${session.color}\``);
     if (claude && claude.state !== 'none') {
       parts.push(`${aLabel || 'Claude'}: ${claudeDesc || claude.state}`);
+      if (claude.sessionId) parts.push(`Conversation ID: \`${claude.sessionId}\``);
       if (claude.model) parts.push(`Model: \`${claude.model}\``);
       if (claude.messageCount) parts.push(`Turns: ${claude.messageCount}`);
       if (claude.cost !== undefined) {

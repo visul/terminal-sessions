@@ -9,6 +9,15 @@ import {
   isJsonSettingsHookInstalled,
 } from '../hooks';
 import { reduceAgyTranscriptLine, readAgyTranscriptSummary } from './transcript';
+import { FlagSpec, captureFlags, withFlags } from '../launch-flags';
+
+// agy mirrors Claude's launch surface (same `--dangerously-skip-permissions`
+// yolo flag, per the user's `agyd` alias). MCP lives in agy's own config, not
+// on the command line, so nothing MCP-ish is captured here.
+const AGY_FLAGS: FlagSpec = {
+  bool: ['--dangerously-skip-permissions'],
+  value: { '--model': {}, '--add-dir': { path: true } },
+};
 
 // ───────────────────────── Antigravity (`agy`) provider ─────────────────────────
 //
@@ -186,14 +195,25 @@ export const agyProvider: AgentProvider = {
     return 1_000_000;
   },
 
-  buildResumeCommand(sessionId: string, terminalCwd: string, transcriptPath?: string): string {
+  processNames: ['agy'],
+
+  captureResumeFlags(argv: readonly string[]): string[] {
+    return captureFlags(argv, AGY_FLAGS);
+  },
+
+  buildResumeCommand(
+    sessionId: string,
+    terminalCwd: string,
+    transcriptPath?: string,
+    extraFlags?: readonly string[],
+  ): string {
     void transcriptPath;
     const recorded = recordedCwdForConv(sessionId);
-    if (recorded && recorded !== terminalCwd) {
+    const base = recorded && recorded !== terminalCwd
       // agy is cwd-sensitive; cd back to the recorded workspace before resuming.
-      return `cd "${recorded.replace(/"/g, '\\"')}" && agy --conversation ${sessionId}`;
-    }
-    return `agy --conversation ${sessionId}`;
+      ? `cd "${recorded.replace(/"/g, '\\"')}" && agy --conversation ${sessionId}`
+      : `agy --conversation ${sessionId}`;
+    return withFlags(base, extraFlags, AGY_FLAGS);
   },
 
   listSessions(cwd?: string): AgentSessionSummary[] {

@@ -1,8 +1,8 @@
 {
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
-  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, and Antigravity: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.15.0",
+  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
+  "version": "0.20.14",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -52,10 +52,15 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["claude", "codex", "agy"]
+            "enum": [
+              "claude",
+              "codex",
+              "agy",
+              "grok"
+            ]
           },
           "default": [],
-          "markdownDescription": "Which AI CLIs to track in the sidebar (status, context %, auto-resume, notifications). Leave empty to auto-detect: Claude is always on; Codex and Antigravity (`agy`) turn on when their CLI is found on PATH. Set explicitly to override, e.g. `[\"claude\", \"codex\"]`."
+          "markdownDescription": "Which AI CLIs to track in the sidebar (status, context %, auto-resume, notifications). Leave empty to auto-detect: Claude is always on; Codex, Antigravity (`agy`) and Grok turn on when their CLI is found on PATH. Set explicitly to override, e.g. `[\"claude\", \"codex\"]`."
         },
         "terminalSessions.autoRestore": {
           "type": "string",
@@ -135,7 +140,10 @@
         },
         "terminalSessions.waitingAlertStyle": {
           "type": "string",
-          "enum": ["banner", "alert"],
+          "enum": [
+            "banner",
+            "alert"
+          ],
           "enumDescriptions": [
             "Banner notification that auto-dismisses after a few seconds (system default).",
             "Persistent modal alert dialog in the macOS foreground with a `Show terminal` button. Blocks until you dismiss — use only if you miss the banners."
@@ -146,8 +154,20 @@
         "terminalSessions.notificationSoundWaiting": {
           "type": "string",
           "enum": [
-            "Basso", "Blow", "Bottle", "Frog", "Funk", "Glass", "Hero",
-            "Morse", "Ping", "Pop", "Purr", "Sosumi", "Submarine", "Tink"
+            "Basso",
+            "Blow",
+            "Bottle",
+            "Frog",
+            "Funk",
+            "Glass",
+            "Hero",
+            "Morse",
+            "Ping",
+            "Pop",
+            "Purr",
+            "Sosumi",
+            "Submarine",
+            "Tink"
           ],
           "default": "Sosumi",
           "description": "Sound for `Claude needs approval` waiting notifications. Defaults to Sosumi so it is distinct from the `done` sound."
@@ -171,7 +191,12 @@
         },
         "terminalSessions.claudeSidebarDetails": {
           "type": "string",
-          "enum": ["auto", "always", "collapsed", "off"],
+          "enum": [
+            "auto",
+            "always",
+            "collapsed",
+            "off"
+          ],
           "enumDescriptions": [
             "Expand Claude details (last message, tool, model, tokens) only while Claude is actively working or needs input.",
             "Always show Claude details as nested rows under every session that has a Claude history.",
@@ -186,9 +211,29 @@
           "default": true,
           "description": "Show subagents that have already finished (Task tool_result received) in the sidebar. On by default so short-running agents don't flicker in and out; flip to false if the tree gets too busy in sessions with many completed agents."
         },
+        "terminalSessions.claudeNoFlicker": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "enumDescriptions": [
+            "Default: on everywhere. Claude renders in clean alt-screen so the mouse wheel scrolls the conversation natively (smooth); you can still drag-select/copy the visible text (tmux pipes the selection through pbcopy/xclip, correct UTF-8).",
+            "Always set CLAUDE_CODE_NO_FLICKER=1: same as auto — clean alt-screen + native wheel scroll, drag-copy of the visible screen via pbcopy/xclip.",
+            "Never set it: classic renderer, the whole conversation lands in tmux scrollback (selectable), but the wheel drops into tmux copy-mode instead of scrolling Claude; some flicker on heavy redraws."
+          ],
+          "default": "auto",
+          "markdownDescription": "Controls `CLAUDE_CODE_NO_FLICKER` in the managed tmux.conf. **`auto`** (default) now sets it **on everywhere**: Claude renders in clean alt-screen so the mouse wheel scrolls the conversation natively, and you can still drag-select/copy the visible text — tmux pipes the selection through pbcopy/xclip (correct UTF-8), so copy no longer depends on Claude's OSC 52. **`on`** = same as auto. **`off`** = classic renderer; the whole conversation is in tmux scrollback (selectable) but the wheel goes to tmux copy-mode instead of scrolling Claude. Changing this regenerates and reloads tmux.conf; restart any running Claude session (sidebar → Restart) to apply."
+        },
         "terminalSessions.sidebarSortMode": {
           "type": "string",
-          "enum": ["custom", "mru", "created", "alphabetical"],
+          "enum": [
+            "custom",
+            "mru",
+            "created",
+            "alphabetical"
+          ],
           "enumDescriptions": [
             "User-defined order — drag sessions in the sidebar to rearrange; persisted across restarts.",
             "Most recently focused session first.",
@@ -200,7 +245,11 @@
         },
         "terminalSessions.sidebarFilterMode": {
           "type": "string",
-          "enum": ["all", "running", "stopped"],
+          "enum": [
+            "all",
+            "running",
+            "stopped"
+          ],
           "enumDescriptions": [
             "Show every session (running + stopped).",
             "Hide stopped sessions.",
@@ -278,6 +327,10 @@
         "title": "Delete Group"
       },
       {
+        "command": "terminalSessions.setGroupColor",
+        "title": "Change Group Color..."
+      },
+      {
         "command": "terminalSessions.moveSessionToGroup",
         "title": "Move to Group..."
       },
@@ -299,11 +352,6 @@
       {
         "command": "terminalSessions.revealSidebar",
         "title": "Terminal Sessions: Reveal Sidebar"
-      },
-      {
-        "command": "terminalSessions.preview",
-        "title": "Preview Scrollback",
-        "icon": "$(eye)"
       },
       {
         "command": "terminalSessions.viewConversation",
@@ -345,11 +393,6 @@
         "command": "terminalSessions.setColor",
         "title": "Change Color...",
         "icon": "$(paintcan)"
-      },
-      {
-        "command": "terminalSessions.mirror",
-        "title": "Open Mirror (attach to same session)",
-        "icon": "$(split-horizontal)"
       },
       {
         "command": "terminalSessions.restoreFromIndex",
@@ -426,6 +469,21 @@
         "icon": "$(bell)"
       },
       {
+        "command": "terminalSessions.lockSession",
+        "title": "Lock (Protect from Kill)",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "terminalSessions.unlockSession",
+        "title": "Unlock (Allow Kill)",
+        "icon": "$(unlock)"
+      },
+      {
+        "command": "terminalSessions.lockedHint",
+        "title": "Locked (right-click to Unlock)",
+        "icon": "$(lock)"
+      },
+      {
         "command": "terminalSessions.openSubagentTranscript",
         "title": "Open Subagent Transcript",
         "icon": "$(file-code)"
@@ -458,12 +516,12 @@
       },
       {
         "command": "terminalSessions.copySessionId",
-        "title": "Copy Last Session ID",
+        "title": "Copy Last Conversation ID",
         "icon": "$(copy)"
       },
       {
         "command": "terminalSessions.copySessionPath",
-        "title": "Copy Last Session Path",
+        "title": "Copy Last Conversation Path",
         "icon": "$(file-code)"
       },
       {
@@ -524,7 +582,7 @@
         {
           "command": "terminalSessions.pickSortMode",
           "when": "view == terminalSessions.sessions",
-          "group": "navigation@1"
+          "group": "1_view@1"
         },
         {
           "command": "terminalSessions.pickFilterMode",
@@ -535,11 +593,6 @@
           "command": "terminalSessions.newPersistent",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@2"
-        },
-        {
-          "command": "terminalSessions.refreshSidebar",
-          "when": "view == terminalSessions.sessions",
-          "group": "navigation@3"
         },
         {
           "command": "terminalSessions.reattachAll",
@@ -574,38 +627,38 @@
       ],
       "view/item/context": [
         {
-          "command": "terminalSessions.preview",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "command": "terminalSessions.viewConversation",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
           "group": "inline@1"
         },
         {
-          "command": "terminalSessions.mirror",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
-          "group": "inline@2"
-        },
-        {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
           "group": "inline@3"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
           "group": "inline@4"
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?$/",
+          "group": "inline@5"
+        },
+        {
+          "command": "terminalSessions.lockedHint",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?\\.locked$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
           "group": "danger@0"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
           "group": "danger@0"
         },
         {
@@ -684,6 +737,11 @@
           "group": "edit@1"
         },
         {
+          "command": "terminalSessions.setGroupColor",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^(group|masterGroup)$/",
+          "group": "edit@2"
+        },
+        {
           "command": "terminalSessions.deleteGroup",
           "when": "view == terminalSessions.sessions && viewItem =~ /^(group|masterGroup)$/",
           "group": "danger@1"
@@ -699,29 +757,29 @@
           "group": "edit@3"
         },
         {
-          "command": "terminalSessions.mirror",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
-          "group": "open@1"
-        },
-        {
-          "command": "terminalSessions.preview",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session($|\\.muted$)/",
-          "group": "open@2"
-        },
-        {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|\\.muted)?$/",
           "group": "danger@1"
         },
         {
           "command": "terminalSessions.muteSession",
-          "when": "view == terminalSessions.sessions && viewItem == session",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.locked)?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.unmuteSession",
-          "when": "view == terminalSessions.sessions && viewItem == session.muted",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.muted(\\.locked)?$/",
           "group": "edit@4"
+        },
+        {
+          "command": "terminalSessions.lockSession",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|\\.muted)?$/",
+          "group": "danger@0.5"
+        },
+        {
+          "command": "terminalSessions.unlockSession",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.locked$/",
+          "group": "danger@0.5"
         },
         {
           "command": "terminalSessions.openSubagentTranscript",
@@ -734,8 +792,13 @@
           "group": "open@1"
         },
         {
+          "command": "terminalSessions.viewConversation",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.stopped(\\.locked)?$/",
+          "group": "inline@0"
+        },
+        {
           "command": "terminalSessions.start",
-          "when": "view == terminalSessions.sessions && viewItem == session.stopped",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.stopped(\\.locked)?$/",
           "group": "inline@1"
         },
         {
@@ -744,8 +807,13 @@
           "group": "inline@2"
         },
         {
+          "command": "terminalSessions.lockedHint",
+          "when": "view == terminalSessions.sessions && viewItem == session.stopped.locked",
+          "group": "inline@2"
+        },
+        {
           "command": "terminalSessions.start",
-          "when": "view == terminalSessions.sessions && viewItem == session.stopped",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.stopped(\\.locked)?$/",
           "group": "open@0"
         }
       ]
@@ -763,7 +831,7 @@
       "terminalSessionsContainer": [
         {
           "id": "terminalSessions.sessions",
-          "name": "Sessions",
+          "name": "",
           "icon": "media/icon.svg"
         }
       ]
@@ -781,22 +849,164 @@
       {
         "id": "terminalSessions.workingIcon",
         "description": "Icon color when Claude is actively generating a response.",
-        "defaults": { "dark": "#E2C08D", "light": "#B8860B", "highContrast": "#FFE082" }
+        "defaults": {
+          "dark": "#E2C08D",
+          "light": "#B8860B",
+          "highContrast": "#FFE082"
+        }
       },
       {
         "id": "terminalSessions.toolIcon",
         "description": "Icon color when Claude is executing a tool (Bash, Edit, etc.).",
-        "defaults": { "dark": "#75BEFF", "light": "#007ACC", "highContrast": "#75BEFF" }
+        "defaults": {
+          "dark": "#75BEFF",
+          "light": "#007ACC",
+          "highContrast": "#75BEFF"
+        }
       },
       {
         "id": "terminalSessions.waitingIcon",
         "description": "Icon color when Claude is waiting for user permission / input.",
-        "defaults": { "dark": "#FF9E2D", "light": "#D97706", "highContrast": "#FFB74D" }
+        "defaults": {
+          "dark": "#FF9E2D",
+          "light": "#D97706",
+          "highContrast": "#FFB74D"
+        }
       },
       {
         "id": "terminalSessions.idleIcon",
         "description": "Icon color when Claude finished responding and is idle.",
-        "defaults": { "dark": "#73C991", "light": "#389E0D", "highContrast": "#81C784" }
+        "defaults": {
+          "dark": "#73C991",
+          "light": "#389E0D",
+          "highContrast": "#81C784"
+        }
+      },
+      {
+        "id": "terminalSessions.color.red",
+        "description": "Group color: Red.",
+        "defaults": {
+          "dark": "#f14c4c",
+          "light": "#d11a1a",
+          "highContrast": "#f14c4c"
+        }
+      },
+      {
+        "id": "terminalSessions.color.orange",
+        "description": "Group color: Orange.",
+        "defaults": {
+          "dark": "#e0823d",
+          "light": "#c9621a",
+          "highContrast": "#e0823d"
+        }
+      },
+      {
+        "id": "terminalSessions.color.amber",
+        "description": "Group color: Amber.",
+        "defaults": {
+          "dark": "#e2c08d",
+          "light": "#b8860b",
+          "highContrast": "#e2c08d"
+        }
+      },
+      {
+        "id": "terminalSessions.color.yellow",
+        "description": "Group color: Yellow.",
+        "defaults": {
+          "dark": "#e5d35b",
+          "light": "#a8910a",
+          "highContrast": "#e5d35b"
+        }
+      },
+      {
+        "id": "terminalSessions.color.lime",
+        "description": "Group color: Lime.",
+        "defaults": {
+          "dark": "#a6d169",
+          "light": "#6a9a1f",
+          "highContrast": "#a6d169"
+        }
+      },
+      {
+        "id": "terminalSessions.color.green",
+        "description": "Group color: Green.",
+        "defaults": {
+          "dark": "#3fc463",
+          "light": "#1a8f3c",
+          "highContrast": "#3fc463"
+        }
+      },
+      {
+        "id": "terminalSessions.color.teal",
+        "description": "Group color: Teal.",
+        "defaults": {
+          "dark": "#2dd4bf",
+          "light": "#0f9488",
+          "highContrast": "#2dd4bf"
+        }
+      },
+      {
+        "id": "terminalSessions.color.cyan",
+        "description": "Group color: Cyan.",
+        "defaults": {
+          "dark": "#29b8db",
+          "light": "#0e7c99",
+          "highContrast": "#29b8db"
+        }
+      },
+      {
+        "id": "terminalSessions.color.sky",
+        "description": "Group color: Sky.",
+        "defaults": {
+          "dark": "#56b6ff",
+          "light": "#1f7fd4",
+          "highContrast": "#56b6ff"
+        }
+      },
+      {
+        "id": "terminalSessions.color.blue",
+        "description": "Group color: Blue.",
+        "defaults": {
+          "dark": "#3794ff",
+          "light": "#1a6fd4",
+          "highContrast": "#3794ff"
+        }
+      },
+      {
+        "id": "terminalSessions.color.indigo",
+        "description": "Group color: Indigo.",
+        "defaults": {
+          "dark": "#7c83ff",
+          "light": "#4b52d4",
+          "highContrast": "#7c83ff"
+        }
+      },
+      {
+        "id": "terminalSessions.color.purple",
+        "description": "Group color: Purple.",
+        "defaults": {
+          "dark": "#b180d7",
+          "light": "#8a4fc0",
+          "highContrast": "#b180d7"
+        }
+      },
+      {
+        "id": "terminalSessions.color.pink",
+        "description": "Group color: Pink.",
+        "defaults": {
+          "dark": "#f06595",
+          "light": "#d6336c",
+          "highContrast": "#f06595"
+        }
+      },
+      {
+        "id": "terminalSessions.color.gray",
+        "description": "Group color: Gray.",
+        "defaults": {
+          "dark": "#9aa0a6",
+          "light": "#6a7178",
+          "highContrast": "#9aa0a6"
+        }
       }
     ]
   },

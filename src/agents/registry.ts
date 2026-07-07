@@ -3,10 +3,11 @@ import { AgentId, AgentProvider } from './types';
 import { claudeProvider } from './claude';
 import { codexProvider } from './codex/provider';
 import { agyProvider } from './agy/provider';
+import { grokProvider } from './grok/provider';
 
-// Every provider the extension knows about. Claude is provider #1; Codex and
-// Antigravity follow. Order is the default display order in pickers.
-const ALL: AgentProvider[] = [claudeProvider, codexProvider, agyProvider];
+// Every provider the extension knows about. Claude is provider #1; Codex,
+// Antigravity and Grok follow. Order is the default display order in pickers.
+const ALL: AgentProvider[] = [claudeProvider, codexProvider, agyProvider, grokProvider];
 
 export class AgentRegistry {
   private byId = new Map<AgentId, AgentProvider>();

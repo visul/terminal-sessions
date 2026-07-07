@@ -19,7 +19,8 @@ export async function maybePromptResume(index: SessionIndex): Promise<void> {
   const cutoff = Date.now() - cfg.autoRestoreMaxAgeHours * 3600_000;
   const mine = all.filter(s =>
     s.workspaceHash === ws.hash &&
-    !s.attached &&
+    !s.attached &&        // no terminal tab currently open for it
+    !s.stopped &&         // still alive in tmux — never offer paused (Stop) sessions
     s.lastAttached.getTime() >= cutoff,
   );
   if (mine.length === 0) return;

@@ -15,11 +15,20 @@ import { resolveTmuxNameForTerminalLive } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import { getConfig } from './config';
 import { registerRevealPath } from './reveal-path';
+import { registerClipboardBridge } from './clipboard-bridge';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
 
 export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
+  // Bake the user's NO_FLICKER preference into tmux.conf generation up front,
+  // before any session (and thus ensureConf) can write the file.
+  const tmuxMod = await import('./tmux');
+  tmuxMod.setNoFlicker(getConfig().claudeNoFlicker);
+  // Remote-SSH/WSL/Container: force tmux copy over OSC 52 (a local clipboard tool on
+  // the remote can't reach the user's local clipboard). Set before ensureConf runs.
+  tmuxMod.setRemoteHost(!!vscode.env.remoteName);
+
   const index = new SessionIndex();
   const registry = new AgentRegistry();
   const claudeTracker = new ClaudeTracker(ctx, registry, index);
@@ -32,6 +41,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push(registerPersistentProfile(index));
   registerCommands(ctx, index, claudeTracker, searchIndex, registry);
   registerRevealPath(ctx);
+  // Remote-SSH only: mirror tmux copies to the local clipboard with correct UTF-8
+  // (bypasses the OSC 52 path Cursor mangles). No-op on local hosts.
+  registerClipboardBridge(ctx);
   registerSidebar(ctx, index, claudeTracker);
 
   // Prompt once to install hooks for the enabled agents (remembers declination).
@@ -71,6 +83,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.sidebarSortMode') ||
         e.affectsConfiguration('terminalSessions.claudeSidebarDetails')
       ) refreshSidebar();
+      if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {
+        void applyNoFlickerChange();
+      }
     }),
   );
 
@@ -100,6 +115,25 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   ctx.subscriptions.push({ dispose: () => clearTimeout(resumeTimer) });
 }
 
+// Regenerate + reload tmux.conf so a flipped terminalSessions.claudeNoFlicker
+// takes effect on the live server (and unsets the env when turned off). Already-
+// running Claude processes still need a Restart to pick up the renderer change.
+async function applyNoFlickerChange(): Promise<void> {
+  const { setNoFlicker, setRemoteHost, regenerateConf, detectTmuxPath, reloadConfig } = await import('./tmux');
+  const cfg = getConfig();
+  setNoFlicker(cfg.claudeNoFlicker);
+  setRemoteHost(!!vscode.env.remoteName);
+  regenerateConf();
+  const tmuxPath = await detectTmuxPath(cfg.tmuxPath);
+  if (tmuxPath) {
+    try { await reloadConfig(tmuxPath); } catch { /* no server running yet */ }
+  }
+  vscode.window.showInformationMessage(
+    `Claude no-flicker ${cfg.claudeNoFlicker ? 'enabled' : 'disabled'}. `
+    + 'Restart any running Claude session (sidebar → Restart) to apply the renderer change.',
+  );
+}
+
 async function maybePromptInstallClaudeHook(
   ctx: vscode.ExtensionContext,
   registry: AgentRegistry,
@@ -127,23 +161,28 @@ async function maybePromptInstallClaudeHook(
 }
 
 async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void> {
-  const { isConfOutOfDate, regenerateConf } = await import('./tmux');
+  const { isConfOutOfDate, regenerateConf, detectTmuxPath, reloadConfig } = await import('./tmux');
   if (!isConfOutOfDate()) return;
-  const KEY = 'tmuxConfUpgradeDismissed-v5';
+  // Bump this key whenever the conf gains a fix worth re-prompting dismissed
+  // users for (here: copy-mode no longer gets "stuck", v8).
+  const KEY = 'tmuxConfUpgradeDismissed-v8';
   if (ctx.globalState.get(KEY)) return;
   setTimeout(async () => {
     const choice = await vscode.window.showInformationMessage(
-      'Your Terminal Sessions tmux.conf can be updated. The new version copies via '
-      + 'pbcopy/xclip instead of OSC 52, which fixes mangled non-ASCII text '
-      + '(e.g. ș → È™) when pasting terminal selections into other apps. '
-      + 'Update now? A backup is saved next to the current file.',
+      'Your Terminal Sessions tmux.conf can be updated with the latest copy/scroll '
+      + 'improvements (e.g. copy-mode no longer gets "stuck" — scroll back down or '
+      + 'click to return to the prompt). Update now? A backup is saved next to the '
+      + 'current file and it applies to live sessions immediately.',
       'Update', 'Not now', "Don't ask again",
     );
     if (choice === 'Update') {
       const backup = regenerateConf();
+      // Apply to the running tmux server too, so existing sessions get the new
+      // bindings without a manual "Reload tmux Config".
+      const tmuxPath = await detectTmuxPath(getConfig().tmuxPath);
+      if (tmuxPath) { try { await reloadConfig(tmuxPath); } catch { /* no server yet */ } }
       const msg = backup
-        ? `tmux.conf updated. Previous version backed up at ${backup}. `
-          + 'Run "Terminal Sessions: Reload tmux Config" to apply to live sessions.'
+        ? `tmux.conf updated and reloaded. Previous version backed up at ${backup}.`
         : 'Could not update tmux.conf (permissions?). Check ~/.terminal-sessions/tmux.conf.';
       vscode.window.showInformationMessage(msg);
     } else if (choice === "Don't ask again") {
