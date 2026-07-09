@@ -86,7 +86,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Stop / Start a session** — pause a session (kills the tmux session but keeps the row, with its label, icon, color, and agent history) and start it again later, instead of killing it outright. Stopped rows get an inline `$(play)`
 - **Groups & master groups** — organize sessions under named groups, and groups under master groups, via right-click `New Group…` / `New Master Group…` / `Move to Group…`, with drag-and-drop and per-group rename/delete. Purely organizational; the underlying tmux sessions are untouched
 - **Re-attach All Ghost Terminals** — one click (`$(debug-restart)` in the title bar) revives the orange/disconnected tabs you get after a Cursor restart, in sidebar order
-- **Reveal Session Folder** — right-click → open the session's working directory in the OS file manager (Finder/Explorer), or jump to its row from the terminal tab via `Reveal Session in Sidebar`
+- **Reveal Session Folder** — right-click → open the session's working directory in the OS file manager (Finder/Explorer), or jump to its row from the terminal tab via `Reveal in Terminal Sessions View`
 - **Copy Last Conversation ID / Path** — right-click → put the most recent agent conversation's UUID, or the full path to its transcript `.jsonl`, on the clipboard (works for Claude, Codex, and Antigravity)
 
 ### Subagents in the sidebar (v0.12+)

@@ -72,6 +72,17 @@ class SessionsTreeProvider
   // equality, not just a fresh item with the same contents).
   private lastWorkspaceItems = new Map<string, WorkspaceTreeItem>();
   private lastSessionItems = new Map<string, SessionTreeItem>();
+  // Group/master items by `${workspaceHash}::${groupId}`, so getParent() can
+  // return the actual container instances that sit between a session and its
+  // workspace — the chain treeView.reveal() must expand.
+  private lastGroupItems = new Map<string, GroupTreeItem>();
+  // User-driven expansion state, tracked via the tree view's expand/collapse
+  // events, so the tab-focus highlight can tell whether a session is already
+  // on-screen. Workspaces render Expanded by default (recorded here only when
+  // the user folds one); groups/masters render Collapsed by default (recorded
+  // only when the user opens one).
+  private collapsedWorkspaceIds = new Set<string>();
+  private expandedContainerIds = new Set<string>();
 
   constructor(
     private index: SessionIndex,
@@ -82,16 +93,66 @@ class SessionsTreeProvider
 
   getTreeItem(el: vscode.TreeItem): vscode.TreeItem { return el; }
 
-  /** Required for treeView.reveal() to work on nested items. */
+  /** Required for treeView.reveal() to expand + scroll to nested items. Returns
+   *  the FULL ancestor chain (session → group → master… → workspace), one hop
+   *  per call, so VS Code knows every container it must expand. A session in a
+   *  group returns that group; a group nested in a master returns the master;
+   *  the top-most container returns the workspace. Falls back to the workspace
+   *  when the session is ungrouped (or its group is stale), matching how the
+   *  tree renders it. */
   getParent(el: vscode.TreeItem): vscode.TreeItem | undefined {
     if (el instanceof SessionTreeItem) {
+      const gid = el.session.groupId;
+      if (gid) {
+        const g = this.lastGroupItems.get(`${el.session.workspaceHash}::${gid}`);
+        if (g) return g;
+      }
       return this.lastWorkspaceItems.get(el.session.workspaceHash);
+    }
+    if (el instanceof GroupTreeItem) {
+      const parentId = this.index.getGroups(el.workspaceHash)[el.groupId]?.parentGroupId;
+      if (parentId) {
+        const pg = this.lastGroupItems.get(`${el.workspaceHash}::${parentId}`);
+        if (pg) return pg;
+      }
+      return this.lastWorkspaceItems.get(el.workspaceHash);
     }
     return undefined;
   }
 
   getLastSessionItem(name: string): SessionTreeItem | undefined {
     return this.lastSessionItems.get(name);
+  }
+
+  /** Record a container's open/closed state from the tree view's
+   *  expand/collapse events (see registerSidebar). */
+  noteExpanded(el: vscode.TreeItem, expanded: boolean): void {
+    const id = el.id;
+    if (!id) return;
+    if (el instanceof WorkspaceTreeItem) {
+      if (expanded) this.collapsedWorkspaceIds.delete(id);
+      else this.collapsedWorkspaceIds.add(id);
+    } else if (el instanceof GroupTreeItem) {
+      if (expanded) this.expandedContainerIds.add(id);
+      else this.expandedContainerIds.delete(id);
+    }
+  }
+
+  /** True when every ancestor container of the session is currently open, so
+   *  its row is already on-screen and needs no scroll/expand to be seen. Used
+   *  by the tab-focus highlight, which must never expand a hidden branch. */
+  isSessionVisible(session: SessionInfo): boolean {
+    if (this.collapsedWorkspaceIds.has(`ws:${session.workspaceHash}`)) return false;
+    const groups = this.index.getGroups(session.workspaceHash);
+    let gid = session.groupId;
+    let guard = 0;
+    while (gid && guard++ < 100) {
+      const g = groups[gid];
+      if (!g) break; // stale groupId → session renders ungrouped under the workspace
+      if (!this.expandedContainerIds.has(`grp:${session.workspaceHash}:${gid}`)) return false;
+      gid = g.parentGroupId;
+    }
+    return true;
   }
 
   /**
@@ -142,15 +203,20 @@ class SessionsTreeProvider
       containerRows.push({
         sortOrder: g.sortOrder ?? Number.MAX_SAFE_INTEGER,
         name: g.name.toLowerCase(),
-        build: () => new GroupTreeItem(
-          hash,
-          gid,
-          g.name,
-          isMaster ? 'master' : 'group',
-          isMaster ? visibleSessions : sortSessions(visibleSessions, cfg.sidebarSortMode),
-          childCount,
-          g.color,
-        ),
+        build: () => {
+          const item = new GroupTreeItem(
+            hash,
+            gid,
+            g.name,
+            isMaster ? 'master' : 'group',
+            isMaster ? visibleSessions : sortSessions(visibleSessions, cfg.sidebarSortMode),
+            childCount,
+            g.color,
+          );
+          // Cache so getParent() can hand reveal() this exact container.
+          this.lastGroupItems.set(`${hash}::${gid}`, item);
+          return item;
+        },
       });
     }
 
@@ -218,6 +284,7 @@ class SessionsTreeProvider
       if (filtered.length === 0) {
         this.lastWorkspaceItems.clear();
         this.lastSessionItems.clear();
+        this.lastGroupItems.clear();
         if (sessions.length > 0) {
           // Filter-induced empty state — distinguish from truly-empty
           const label = cfg.sidebarFilterMode === 'stopped'
@@ -237,6 +304,9 @@ class SessionsTreeProvider
       const allByWorkspace = groupByWorkspace(sessions);
       const out: vscode.TreeItem[] = [];
       this.lastWorkspaceItems.clear();
+      // Groups are rebuilt lazily per workspace on expand; drop stale entries so
+      // getParent() never hands reveal() a container from a deleted/renamed group.
+      this.lastGroupItems.clear();
       for (const [hash, group] of grouped) {
         const ordered = sortSessions(group, cfg.sidebarSortMode);
         const wsPath = ordered[0].workspacePath;
@@ -592,6 +662,12 @@ export function registerSidebar(
     vscode.window.registerFileDecorationProvider(new StoppedSessionDecorationProvider()),
   );
   treeViewRef = treeView;
+  // Track which containers the user has open so the tab-focus highlight can
+  // skip sessions that aren't currently on-screen (it must never expand them).
+  ctx.subscriptions.push(
+    treeView.onDidExpandElement(e => provider?.noteExpanded(e.element, true)),
+    treeView.onDidCollapseElement(e => provider?.noteExpanded(e.element, false)),
+  );
   updateTreeViewDescription();
   ctx.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(e => {
@@ -650,10 +726,31 @@ let treeViewRef: vscode.TreeView<vscode.TreeItem> | undefined;
 
 /** Select and scroll to a session in the sidebar by tmux session name.
  *  `focus` true also moves keyboard focus to the tree (for the explicit
- *  "Reveal Session in Sidebar" command); the auto-highlight on tab focus
- *  leaves it false so it never steals focus from the terminal. */
-export async function revealSessionInSidebar(sessionName: string, focus = false): Promise<void> {
+ *  "Reveal in Terminal Sessions View" command); the auto-highlight on tab focus
+ *  leaves it false so it never steals focus from the terminal.
+ *  `expand` true (the explicit command) builds the collapsed branch and lets
+ *  reveal() open every ancestor group/master. `expand` false (tab focus) only
+ *  highlights the session when it is ALREADY visible — it never expands a
+ *  hidden branch, so switching terminal tabs won't reorganize the sidebar. */
+export async function revealSessionInSidebar(
+  sessionName: string,
+  focus = false,
+  expand = true,
+): Promise<void> {
   if (!provider || !treeViewRef) return;
+
+  if (!expand) {
+    // Tab-focus highlight: select only when the session is on-screen already.
+    // reveal() always expands ancestors, so we gate on isSessionVisible() and
+    // bail out otherwise — no walk, no expansion, no scroll to a hidden row.
+    const item = provider.getLastSessionItem(sessionName);
+    if (!item || !provider.isSessionVisible(item.session)) return;
+    try {
+      await treeViewRef.reveal(item, { select: true, focus, expand: false });
+    } catch { /* stale item — ignore */ }
+    return;
+  }
+
   let item = provider.getLastSessionItem(sessionName);
   if (!item) {
     // Not yet rendered — happens when the session lives in a collapsed group or

@@ -74,8 +74,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         index.setSessionLastActive(parsed.hash, name);
         if (getConfig().sidebarSortMode === 'mru') refreshSidebar();
         // Highlight the matching session in our sidebar so it's easy to locate
-        // when you have many terminal tabs open.
-        void revealSessionInSidebar(name);
+        // when you have many terminal tabs open — but ONLY if it's already
+        // visible. Never expand a collapsed group/master or scroll to a hidden
+        // row on a plain tab switch; that jump is reserved for the explicit
+        // right-click "Reveal in Terminal Sessions View" command (expand=true).
+        void revealSessionInSidebar(name, false, false);
       })();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {

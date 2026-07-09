@@ -4,6 +4,15 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.16] — 2026-07-09
+
+### Fixed
+- **"Reveal in Terminal Sessions View" now opens collapsed groups.** Right-clicking a terminal tab → reveal expands the session's parent group and master group and scrolls to it, wherever it's buried. Previously it only worked when the row was already visible, because the tree reported the workspace — not the enclosing group/master — as a session's parent, and its rows carried no stable identity. Every workspace / group / session row now has a stable id and reports its full ancestor chain, so `reveal()` can expand into a hidden branch.
+
+### Changed
+- **Renamed the terminal reveal command** from "Reveal Session in Sidebar" to **"Reveal in Terminal Sessions View"**.
+- **Plain tab focus no longer jumps the sidebar.** Switching terminal tabs highlights the active session only when it is already on-screen; it never expands a collapsed group or scrolls to a hidden row. That deliberate jump is now exclusive to the right-click **Reveal in Terminal Sessions View** command.
+
 ## [0.20.15] — 2026-07-07
 
 ### Changed

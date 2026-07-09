@@ -28,6 +28,10 @@ export class GroupTreeItem extends vscode.TreeItem {
     public readonly color?: string,
   ) {
     super(groupName, vscode.TreeItemCollapsibleState.Collapsed);
+    // Stable id (unique across the tree) so treeView.reveal() matches this node
+    // by id even when getChildren rebuilds a fresh instance — required for
+    // expanding a collapsed group/master to bring a nested session into view.
+    this.id = `grp:${workspaceHash}:${groupId}`;
     const tint = color ? new vscode.ThemeColor(color) : undefined;
     if (kind === 'master') {
       this.contextValue = 'masterGroup';
@@ -75,6 +79,7 @@ export class WorkspaceTreeItem extends vscode.TreeItem {
     allSessions?: SessionInfo[],
   ) {
     super(label, vscode.TreeItemCollapsibleState.Expanded);
+    this.id = `ws:${workspaceHash}`;
     this.allSessions = allSessions ?? sessions;
     this.contextValue = 'workspace';
     // Counts always reflect the whole workspace (pre-filter), so the stopped
@@ -195,6 +200,10 @@ export class SessionTreeItem extends vscode.TreeItem {
         : vscode.TreeItemCollapsibleState.Collapsed;
     }
     super(label, collapsible);
+    // Stable id (unique across the tree) so treeView.reveal() can locate and
+    // scroll to this session by id regardless of which fresh instance a
+    // getChildren pass produced.
+    this.id = `ses:${session.workspaceHash}:${session.name}`;
     // Stopped session: muted icon + greyed label via FileDecorationProvider,
     // single-click row to start, no Claude details (process is dead).
     if (session.stopped) {
