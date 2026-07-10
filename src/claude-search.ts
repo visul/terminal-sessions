@@ -16,6 +16,7 @@ export interface SessionIndexEntry {
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
 const INDEX_PATH = path.join(os.homedir(), '.terminal-sessions', 'search-index.json');
 const HEAD_SCAN_BYTES = 256 * 1024;  // scan first 256 KB for first user prompt
+const EXTENDED_SCAN_BYTES = 2 * 1024 * 1024;  // 2nd-pass window when the first prompt is past the head
 const TAIL_SCAN_BYTES = 128 * 1024;  // last 128 KB for last user prompt
 const MAX_PREVIEW = 200;
 const SLASH_CMD_RE = /^(<command-name>|<command-message>|<command-args>|<local-command-[^>]+>|\/)/;
@@ -23,6 +24,7 @@ const SLASH_CMD_RE = /^(<command-name>|<command-message>|<command-args>|<local-c
 export class ClaudeSearchIndex {
   private entries = new Map<string, SessionIndexEntry>();  // key: transcriptPath
   private loaded = false;
+  private refreshing?: Promise<number>;
 
   async load(): Promise<void> {
     try {
@@ -44,32 +46,50 @@ export class ClaudeSearchIndex {
   }
 
   /** Walk ~/.claude/projects/, index any .jsonl file we haven't seen or
-   *  whose mtime has advanced. Returns the number of entries added/updated. */
+   *  whose mtime has advanced. Returns the number of entries added/updated.
+   *  Yields to the event loop every few files so a large projects tree doesn't
+   *  freeze the extension host, and de-dupes concurrent calls so it stays safe
+   *  to invoke repeatedly (activation + manual refresh). */
   async refresh(): Promise<number> {
+    if (this.refreshing) return this.refreshing;
+    this.refreshing = this.walk();
+    try { return await this.refreshing; }
+    finally { this.refreshing = undefined; }
+  }
+
+  private async walk(): Promise<number> {
     if (!this.loaded) await this.load();
     let changed = 0;
+    let processed = 0;
     let projectDirs: string[] = [];
-    try { projectDirs = fs.readdirSync(PROJECTS_ROOT); }
+    try { projectDirs = await fs.promises.readdir(PROJECTS_ROOT); }
     catch { return 0; }
     const live = new Set<string>();
     for (const dir of projectDirs) {
       const full = path.join(PROJECTS_ROOT, dir);
       let files: string[] = [];
-      try { files = fs.readdirSync(full).filter(f => f.endsWith('.jsonl')); }
+      try { files = (await fs.promises.readdir(full)).filter(f => f.endsWith('.jsonl')); }
       catch { continue; }
       for (const f of files) {
         const fpath = path.join(full, f);
         live.add(fpath);
         let stat: fs.Stats;
-        try { stat = fs.statSync(fpath); }
+        try { stat = await fs.promises.stat(fpath); }
         catch { continue; }
         const existing = this.entries.get(fpath);
-        if (existing && existing.lastModified >= stat.mtimeMs && existing.turns > 0) continue;
+        // Skip re-scan when our entry already reflects this mtime. (The old
+        // extra `turns > 0` guard forced a wasteful re-read of every 0-turn /
+        // promptless file on each refresh — an unchanged file yields identical
+        // results, and promptless-but-large files now get a sentinel entry.)
+        if (existing && existing.lastModified >= stat.mtimeMs) continue;
         const entry = readTranscriptSummary(fpath, stat.mtimeMs, f.replace(/\.jsonl$/, ''));
         if (entry) {
           this.entries.set(fpath, entry);
           changed++;
         }
+        // Yield to the event loop periodically so activation doesn't stall the
+        // host while walking a large ~/.claude/projects.
+        if (++processed % 25 === 0) await new Promise(r => setImmediate(r));
       }
     }
     // Drop entries for files that were deleted
@@ -139,6 +159,25 @@ function readTranscriptSummary(
     }
   }
 
+  // The first human prompt can lie past the head window — a huge leading record
+  // (pasted context) or a long run of sidechain/meta records before the first
+  // real turn. Extend the scan once before giving up so the session still gets a
+  // real title instead of being dropped and re-scanned on every refresh.
+  if (!firstPrompt && size > HEAD_SCAN_BYTES) {
+    const extBuf = readRange(fpath, 0, Math.min(EXTENDED_SCAN_BYTES, size));
+    if (extBuf) {
+      const lines = extBuf.toString('utf8').split('\n');
+      for (const line of lines) {
+        if (!line) continue;
+        const data = safeParse(line);
+        if (!data) continue;
+        if (!cwd && typeof data.cwd === 'string') cwd = data.cwd;
+        const prompt = extractUserPrompt(data);
+        if (prompt) { firstPrompt = prompt; break; }
+      }
+    }
+  }
+
   // Read tail window (and count assistant turns via full line count — cheap)
   if (size > HEAD_SCAN_BYTES) {
     const start = Math.max(0, size - TAIL_SCAN_BYTES);
@@ -174,7 +213,26 @@ function readTranscriptSummary(
     turns = Math.round(size / 1200);
   }
 
-  if (!firstPrompt) return undefined;
+  if (!firstPrompt) {
+    // No human prompt in either scan window. For a large file this is the
+    // "prompt buried past the window" case the picker was missing and
+    // re-reading every refresh — store a sentinel (titled by its last prompt or
+    // id) keyed on mtime so it's indexed once and the mtime guard skips it next
+    // time. A small promptless file is a pure sidechain/summary transcript; keep
+    // excluding it (cheap to re-scan, and it shouldn't clutter the picker).
+    if (size <= HEAD_SCAN_BYTES) return undefined;
+    const fallback = lastPrompt || `session ${sessionId.slice(0, 8)}`;
+    return {
+      sessionId,
+      transcriptPath: fpath,
+      cwd,
+      title: fallback.slice(0, 80),
+      firstPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
+      lastPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
+      turns,
+      lastModified,
+    };
+  }
   const title = firstPrompt.slice(0, 80);
   return {
     sessionId,
@@ -205,6 +263,9 @@ function safeParse(line: string): Record<string, unknown> | undefined {
 
 function extractUserPrompt(data: Record<string, unknown>): string {
   if (data.type !== 'user') return '';
+  // Skip sidechain (subagent) turns and meta records (command caveats, hook /
+  // system-reminder injections) — neither is a human-typed prompt.
+  if (data.isSidechain === true || data.isMeta === true) return '';
   const msg = data.message as { role?: string; content?: unknown } | undefined;
   if (!msg || msg.role !== 'user') return '';
   let text = '';

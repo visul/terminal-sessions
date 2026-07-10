@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.16",
+  "version": "0.20.17",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -311,10 +311,6 @@
         "icon": "$(library)"
       },
       {
-        "command": "terminalSessions.newGroupInMaster",
-        "title": "New Group Inside"
-      },
-      {
         "command": "terminalSessions.moveGroupToMaster",
         "title": "Move to Master Group..."
       },
@@ -531,6 +527,29 @@
       }
     ],
     "menus": {
+      "commandPalette": [
+        { "command": "terminalSessions.kill", "when": "false" },
+        { "command": "terminalSessions.rename", "when": "false" },
+        { "command": "terminalSessions.setIcon", "when": "false" },
+        { "command": "terminalSessions.setColor", "when": "false" },
+        { "command": "terminalSessions.muteSession", "when": "false" },
+        { "command": "terminalSessions.unmuteSession", "when": "false" },
+        { "command": "terminalSessions.lockSession", "when": "false" },
+        { "command": "terminalSessions.unlockSession", "when": "false" },
+        { "command": "terminalSessions.lockedHint", "when": "false" },
+        { "command": "terminalSessions.moveSessionToGroup", "when": "false" },
+        { "command": "terminalSessions.moveGroupToMaster", "when": "false" },
+        { "command": "terminalSessions.renameGroup", "when": "false" },
+        { "command": "terminalSessions.deleteGroup", "when": "false" },
+        { "command": "terminalSessions.setGroupColor", "when": "false" },
+        { "command": "terminalSessions.nameSession", "when": "false" },
+        { "command": "terminalSessions.viewConversation", "when": "false" },
+        { "command": "terminalSessions.openSubagentTranscript", "when": "false" },
+        { "command": "terminalSessions.copySessionId", "when": "false" },
+        { "command": "terminalSessions.copySessionPath", "when": "false" },
+        { "command": "terminalSessions.revealSessionFolder", "when": "false" },
+        { "command": "terminalSessions.revealSessionFolderFinder", "when": "false" }
+      ],
       "explorer/context": [
         {
           "command": "terminalSessions.newPersistentInFolder",

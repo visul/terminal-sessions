@@ -25,6 +25,7 @@ import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { posixQuote } from '../shell-escape';
 
 /** Declarative description of which launch flags a provider re-applies on resume. */
 export interface FlagSpec {
@@ -64,9 +65,30 @@ export function captureFlags(argv: readonly string[], spec: FlagSpec): string[] 
       out.push(name);
       continue;
     }
-    if (spec.value[name]) {
-      if (inlineVal !== undefined) out.push(name, inlineVal);
-      else if (i + 1 < argv.length) out.push(name, argv[++i]);
+    const vspec = spec.value[name];
+    if (vspec) {
+      let val: string | undefined;
+      if (inlineVal !== undefined) val = inlineVal;
+      else if (i + 1 < argv.length) val = argv[++i];
+      if (val === undefined) continue;
+      // `ps` collapses the argv into one space-joined string (see readAgentArgv),
+      // so a path value that originally contained spaces —
+      // `--add-dir "/path with spaces"` — arrives split across several tokens.
+      // Best-effort recovery for path-valued flags: greedily absorb following
+      // non-flag tokens until the joined value exists on disk. The common
+      // no-spaces case is untouched (the first token is used as-is); a value we
+      // can't reconstruct stays truncated and is dropped by materializeFlags'
+      // existence check rather than resumed corrupted.
+      if (vspec.path && looksLikePath(val) && !fs.existsSync(expandHome(val))) {
+        let joined = val;
+        let j = i;
+        while (j + 1 < argv.length && !argv[j + 1].startsWith('-')) {
+          joined += ' ' + argv[j + 1];
+          j++;
+          if (fs.existsSync(expandHome(joined))) { val = joined; i = j; break; }
+        }
+      }
+      out.push(name, val);
       continue;
     }
   }
@@ -125,10 +147,13 @@ export function materializeFlags(flags: readonly string[], spec: FlagSpec): stri
   return final;
 }
 
-/** Quote a token for the shell only when it contains whitespace (flag names
- *  never do; this only affects path/value tokens). */
+/** Single-quote every token before it is appended to a resume command string.
+ *  Whitespace-only quoting left values like `/x/$(id)` bare, so a captured flag
+ *  value carrying shell metacharacters could be expanded when the command runs.
+ *  POSIX single-quoting neutralizes all of them; a plain flag name such as
+ *  `--model` becomes `'--model'`, which the shell strips back to `--model`. */
 function shQuote(t: string): string {
-  return /\s/.test(t) ? `"${t.replace(/"/g, '\\"')}"` : t;
+  return posixQuote(t);
 }
 
 /** Append the surviving launch flags to a resume command string. */
@@ -209,6 +234,12 @@ export function readAgentArgv(
     seen.add(pid);
     const self = t.byPid.get(pid);
     if (self) {
+      // `ps -o command=` returns the command line as a single space-joined
+      // string with the original argv boundaries lost, so a flag value that
+      // contained spaces splits into several tokens here and can't be perfectly
+      // reconstructed. captureFlags recovers path-valued flags on a best-effort
+      // basis (re-joining until the path exists); other space-bearing values
+      // are dropped rather than restored corrupted.
       const argv = self.cmd.split(/\s+/);
       if (want.has(path.basename(argv[0] || ''))) return argv;
     }

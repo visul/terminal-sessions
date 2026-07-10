@@ -203,14 +203,17 @@ export const codexProvider: AgentProvider = {
     //    No cwd in the index, so these are only included when no cwd filter is
     //    set (otherwise we can't tell if they belong to this folder).
     if (!cwd) {
+      // Resolve on-disk paths for index entries with a SINGLE readdir pass over
+      // the 30 day-dirs, instead of re-scanning all 30 per entry (that was
+      // hundreds of entries × 30 readdirs on every picker open).
+      const rolloutById = rolloutPathsBySessionId(30);
       for (const entry of readSessionIndex()) {
         if (seen.has(entry.id)) continue;
         seen.add(entry.id);
-        const tp = scanRecentDirsFor(entry.id, 30); // wider lookback, best effort
         out.push({
           agent: 'codex',
           sessionId: entry.id,
-          transcriptPath: tp,
+          transcriptPath: rolloutById.get(entry.id),
           firstUserMessage: entry.thread_name,
           mtimeMs: entry.updated_at ? Date.parse(entry.updated_at) || undefined : undefined,
         });
@@ -264,6 +267,22 @@ function scanRecentDirsFor(sessionId: string, days: number): string | undefined 
     }
   }
   return undefined;
+}
+
+/** Map session-id → rollout path across the last `days` day-dirs in one readdir
+ *  pass, so a batch of id lookups doesn't re-scan every dir per id. Newest days
+ *  are scanned first, so the first (newest) match for an id wins. */
+function rolloutPathsBySessionId(days: number): Map<string, string> {
+  const map = new Map<string, string>();
+  for (let back = 0; back < days; back++) {
+    const dir = sessionDayDir(back);
+    for (const name of safeReaddir(dir)) {
+      if (!name.endsWith('.jsonl')) continue;
+      const id = sessionIdFromRolloutName(name);
+      if (id && !map.has(id)) map.set(id, path.join(dir, name));
+    }
+  }
+  return map;
 }
 
 /** Collect rollout files from the last `days` day-dirs, newest day first,

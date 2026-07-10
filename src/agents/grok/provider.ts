@@ -4,6 +4,7 @@ import * as path from 'path';
 import { AgentProvider, AgentSessionSummary, TranscriptTailState } from '../types';
 import { commandOnPath } from '../detect';
 import { FlagSpec, captureFlags, withFlags } from '../launch-flags';
+import { posixQuote } from '../../shell-escape';
 import {
   reduceGrokTranscriptLine,
   readGrokTranscriptSummary,
@@ -145,9 +146,11 @@ export const grokProvider: AgentProvider = {
     extraFlags?: readonly string[],
   ): string {
     const recorded = transcriptPath ? readGrokTranscriptCwd(transcriptPath) : undefined;
+    // Single-quote the recorded cwd and session id (posixQuote) so a path or id
+    // carrying shell metacharacters isn't expanded when the resume command runs.
     const base = recorded && recorded !== terminalCwd
-      ? `cd "${recorded.replace(/"/g, '\\"')}" && grok -r ${sessionId}`
-      : `grok -r ${sessionId}`;
+      ? `cd ${posixQuote(recorded)} && grok -r ${posixQuote(sessionId)}`
+      : `grok -r ${posixQuote(sessionId)}`;
     return withFlags(base, extraFlags, GROK_FLAGS);
   },
 

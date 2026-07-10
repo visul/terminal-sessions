@@ -27,14 +27,30 @@ function entryIsOurs(entry: unknown, isOurs: (c: string) => boolean): boolean {
   return !!e.hooks?.some(h => typeof h.command === 'string' && isOurs(h.command));
 }
 
+/** Write settings.json atomically. The agent (Claude/agy) may be reading or
+ *  rewriting the same file from a running session; a plain writeFileSync
+ *  truncates in place and can be observed half-written or clobber a concurrent
+ *  write. Writing to a sibling temp file and renaming over the original is
+ *  atomic on the same filesystem, so a concurrent reader sees either the old or
+ *  the new file whole, never a truncated one. */
+function writeSettingsAtomic(settingsPath: string, contents: string): void {
+  const tmp = `${settingsPath}.tmp`;
+  fs.writeFileSync(tmp, contents);
+  fs.renameSync(tmp, settingsPath);
+}
+
 /** Install our forwarder hook for every event. Idempotent: existing entries of
  *  ours are replaced with fresh ones. Returns true on success. */
 export async function installJsonSettingsHook(spec: JsonHookSpec): Promise<boolean> {
   try { fs.mkdirSync(path.dirname(spec.settingsPath), { recursive: true }); } catch { /* noop */ }
 
   let settings: Record<string, unknown> = {};
+  let original: string | undefined;
   if (fs.existsSync(spec.settingsPath)) {
-    try { settings = JSON.parse(fs.readFileSync(spec.settingsPath, 'utf8')); }
+    try {
+      original = fs.readFileSync(spec.settingsPath, 'utf8');
+      settings = JSON.parse(original);
+    }
     catch {
       vscode.window.showErrorMessage(
         `Could not parse ${spec.settingsPath}. Fix it manually then try again.`,
@@ -54,7 +70,12 @@ export async function installJsonSettingsHook(spec: JsonHookSpec): Promise<boole
   }
 
   try {
-    fs.writeFileSync(spec.settingsPath, JSON.stringify(settings, null, 2));
+    // Keep a one-shot backup of the pre-modification file so a bad merge can be
+    // recovered by hand (best effort; never blocks the install).
+    if (original !== undefined) {
+      try { fs.writeFileSync(`${spec.settingsPath}.bak`, original); } catch { /* noop */ }
+    }
+    writeSettingsAtomic(spec.settingsPath, JSON.stringify(settings, null, 2));
     return true;
   } catch (e) {
     vscode.window.showErrorMessage(`Could not write ${spec.settingsPath}: ${String(e).slice(0, 100)}`);
@@ -82,7 +103,7 @@ export async function uninstallJsonSettingsHook(
   if (Object.keys(hooks).length === 0) delete settings.hooks;
 
   try {
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    writeSettingsAtomic(settingsPath, JSON.stringify(settings, null, 2));
     return true;
   } catch {
     return false;

@@ -4,6 +4,33 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.17] — 2026-07-10
+
+Codebase-wide audit remediation: a multi-agent review surfaced 71 confirmed defects; all are fixed here. No feature or config changes — behavior only becomes more correct.
+
+### Fixed — data safety
+- **Multi-window `index.json` no longer clobbers your data.** Every window kept a stale in-memory copy and rewrote the whole file on any change, so clicking a terminal in one window could erase groups/labels/history created in another. Each mutation now re-reads the file (cheap mtime check) and writes atomically (temp + rename); a corrupt file is preserved as `index.json.corrupt.<ts>` instead of silently resetting to empty. Same treatment for `claude-map.json`.
+- **"Clean Up Sessions" no longer moves valid Codex/Antigravity/Grok conversations.** It classified every non-Claude transcript as "empty" (a Claude-format parser) and could bulk-move real rollouts out of `~/.codex/sessions`. Cleanup is now Claude-only, and the soft-delete refuses any path outside `~/.claude/projects`.
+- **"Move to Group…" no longer makes a session vanish.** Picking a master group wrote a groupId nothing renders. Masters are hidden from the picker, rejected in the index, and a session already pointing at a master falls back to the workspace root.
+
+### Fixed — security
+- **Resume commands can no longer execute code from a directory path.** `cd "<cwd>" && <agent> --resume` only escaped double quotes, so a recorded cwd (or captured flag value) containing `$(…)`/backticks would run on Restart/Resume. All interpolated values are now POSIX single-quoted via a shared helper (claude/codex/grok/agy + launch flags + tmux copy-mode exit).
+
+### Fixed — agent tracking & correctness
+- Stuck "tool" state after Esc or a long turn (age-out now keys off when the tool started; Esc-interrupt clears it). Brand-new sessions no longer flash "idle" before the first transcript write.
+- Stale "done"/"needs approval" notifications no longer fire for events replayed from the log at startup.
+- Transcript reads no longer drop a JSONL record that straddles two polls (partial-line carry, UTF-8-safe); event logs are read as a bounded tail and rotated, and backfill scans both logs.
+- Antigravity sessions surface their model and context %; the Codex context meter no longer exceeds 100% (uses last-turn tokens, not the session cumulative).
+- Terminal↔session resolution no longer returns an arbitrary cross-workspace match; new-terminal ids no longer collide with live tmux sessions; a custom `sessionPrefix` with regex characters no longer breaks the sidebar.
+
+### Fixed — performance
+- The sidebar refresh storm is gone: agent-event bursts are coalesced (~1 refresh/300ms), `tmux list-sessions` runs once per refresh instead of once per visible row, the badge counts only live sessions, and expanding a detail/subagent row no longer spawns tmux.
+- Large transcripts open without freezing the extension host (tail-only parse); the search-index refresh yields instead of blocking activation; tmux-missing hosts stop spawning `which tmux` every 5s.
+
+### Fixed — UX & housekeeping
+- Reveal works after a session moves groups; the archive picker stays open when using its View/Name buttons; "Reveal in Finder" no longer misfires when the selection equals the clipboard or destroys a non-text clipboard; in-place tab renames no longer accrete `#<tabId>` suffixes.
+- Removed dead code (legacy hook functions, an unused command); context-only commands no longer appear as silent no-ops in the Command Palette.
+
 ## [0.20.16] — 2026-07-09
 
 ### Fixed

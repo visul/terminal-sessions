@@ -4,6 +4,7 @@ import * as path from 'path';
 import { AgentProvider, AgentSessionSummary, TranscriptTailState } from './types';
 import { commandOnPath } from './detect';
 import { FlagSpec, captureFlags, withFlags } from './launch-flags';
+import { posixQuote } from '../shell-escape';
 import {
   installJsonSettingsHook,
   uninstallJsonSettingsHook,
@@ -149,8 +150,11 @@ export const claudeProvider: AgentProvider = {
     const base = recordedCwd && recordedCwd !== terminalCwd
       // `claude --resume` only finds the conversation when invoked from the same
       // project slug it was launched in, so cd back to the recorded cwd first.
-      ? `cd "${recordedCwd.replace(/"/g, '\\"')}" && claude --resume ${sessionId}`
-      : `claude --resume ${sessionId}`;
+      // Both values are single-quoted (posixQuote) so a recorded path or session
+      // id carrying shell metacharacters can't be expanded when the command is
+      // typed into the terminal.
+      ? `cd ${posixQuote(recordedCwd)} && claude --resume ${posixQuote(sessionId)}`
+      : `claude --resume ${posixQuote(sessionId)}`;
     return withFlags(base, extraFlags, CLAUDE_FLAGS);
   },
 

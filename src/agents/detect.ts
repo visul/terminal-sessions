@@ -12,7 +12,9 @@ export function commandOnPath(cmd: string): boolean {
   if (hit !== undefined) return hit;
   let ok = false;
   try {
-    execFileSync('/bin/sh', ['-lc', `command -v ${cmd}`], { stdio: 'ignore' });
+    // Cap the login-shell probe: a slow/blocking shell profile must not hang
+    // extension activation. On timeout execFileSync throws → treated as absent.
+    execFileSync('/bin/sh', ['-lc', `command -v ${cmd}`], { stdio: 'ignore', timeout: 3000 });
     ok = true;
   } catch { ok = false; }
   cache.set(cmd, ok);

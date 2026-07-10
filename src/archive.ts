@@ -72,6 +72,14 @@ export function softDeleteSession(
 ): { ok: boolean; dest?: string; error?: string } {
   try {
     const projectsRoot = path.join(os.homedir(), '.claude', 'projects');
+    // Defense in depth: the .bak slug scheme only makes sense for the
+    // ~/.claude/projects layout. Refuse anything outside it so a mis-routed
+    // non-Claude transcript (e.g. ~/.codex/sessions/YYYY/MM/…) can never be moved
+    // and have its date-path destroyed.
+    const resolved = path.resolve(transcriptPath);
+    if (resolved !== projectsRoot && !resolved.startsWith(projectsRoot + path.sep)) {
+      return { ok: false, error: 'refused: path outside ~/.claude/projects' };
+    }
     const slug = path.basename(path.dirname(transcriptPath));
     const id = path.basename(transcriptPath, '.jsonl');
 

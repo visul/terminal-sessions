@@ -29,7 +29,13 @@ export function sessionName(prefix: string, hash: string, tabId: number): string
 }
 
 export function parseSessionName(name: string, prefix: string): { hash: string; tabId: number } | undefined {
-  const re = new RegExp(`^${prefix}-([0-9a-f]{6,16})-(\\d+)$`);
+  // Escape regex metacharacters in the user-configurable prefix. Unescaped, a
+  // value like "dev+" or "c++" either never matches (sessions orphaned from their
+  // workspace: broken sidebar/MRU/restore) or throws on every terminal focus
+  // ("(" → invalid RegExp). The literal prefix is still used verbatim elsewhere
+  // (sessionName/tmux -s), so only the pattern needs escaping.
+  const esc = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`^${esc}-([0-9a-f]{6,16})-(\\d+)$`);
   const m = name.match(re);
   if (!m) return undefined;
   return { hash: m[1], tabId: parseInt(m[2], 10) };

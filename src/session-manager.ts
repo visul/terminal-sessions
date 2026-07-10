@@ -9,6 +9,9 @@ import { parseSessionName } from './workspace-id';
 export class SessionIndex {
   private indexPath: string;
   private data: WorkspaceIndex;
+  /** mtime of index.json as of our last load/save. Lets reloadIfChanged() cheaply
+   *  detect that another VS Code window wrote the file since we last touched it. */
+  private lastMtimeMs = 0;
 
   constructor() {
     const dir = path.join(os.homedir(), '.terminal-sessions');
@@ -17,24 +20,81 @@ export class SessionIndex {
     this.data = this.load();
   }
 
-  private load(): WorkspaceIndex {
+  /** Read + parse index.json from disk. Returns a fresh empty index when the file
+   *  is absent (first run). On a parse/shape failure the corrupt file is preserved
+   *  as index.json.corrupt.<ts> (so the user can recover groups/labels by hand)
+   *  before falling back to empty — never silently discarded. Returns null only
+   *  when the file exists but can't be read (permissions/IO), so callers keep the
+   *  in-memory copy rather than wiping it. */
+  private readFromDisk(): WorkspaceIndex | null {
+    let raw: string;
     try {
-      const raw = fs.readFileSync(this.indexPath, 'utf8');
+      raw = fs.readFileSync(this.indexPath, 'utf8');
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') return { version: 1, workspaces: {} };
+      console.error('[terminal-sessions] cannot read index:', e);
+      return null;
+    }
+    try {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.version === 1) return parsed;
-    } catch { /* fall through */ }
-    return { version: 1, workspaces: {} };
+      throw new Error('unexpected index shape');
+    } catch (e) {
+      try {
+        const bak = `${this.indexPath}.corrupt.${Date.now()}`;
+        fs.writeFileSync(bak, raw);
+        console.error(`[terminal-sessions] index.json unparseable (${e}); backed up to ${bak}, starting empty`);
+      } catch { /* best effort */ }
+      return { version: 1, workspaces: {} };
+    }
+  }
+
+  private load(): WorkspaceIndex {
+    const data = this.readFromDisk() ?? { version: 1, workspaces: {} };
+    try { this.lastMtimeMs = fs.statSync(this.indexPath).mtimeMs; } catch { this.lastMtimeMs = 0; }
+    return data;
+  }
+
+  /** Re-read index.json when another VS Code window has written it since our last
+   *  load/save. Called at the top of every mutator so a change is always applied
+   *  on top of the freshest on-disk snapshot — otherwise a stale in-memory copy
+   *  would clobber a concurrent window's groups/labels/history on the next save
+   *  (index.json is machine-global but each window holds its own copy). The mtime
+   *  check makes the common single-window case a single stat with no re-read. */
+  private reloadIfChanged(): void {
+    let mtime = 0;
+    try { mtime = fs.statSync(this.indexPath).mtimeMs; } catch { return; }
+    if (mtime === this.lastMtimeMs) return;
+    const fresh = this.readFromDisk();
+    if (!fresh) return;
+    this.data = fresh;
+    this.lastMtimeMs = mtime;
+  }
+
+  /** Public hook so the sidebar can pull in another window's edits on its refresh
+   *  tick (getters otherwise read this window's last-known snapshot). Cheap: one
+   *  stat unless the file actually changed. */
+  syncFromDisk(): void {
+    this.reloadIfChanged();
   }
 
   private save(): void {
+    const tmp = `${this.indexPath}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(this.indexPath, JSON.stringify(this.data, null, 2));
+      // Atomic replace: write a sibling temp file then rename over the target, so a
+      // crash mid-write can never leave a truncated index.json (which load() would
+      // treat as corrupt and back up).
+      fs.writeFileSync(tmp, JSON.stringify(this.data, null, 2));
+      fs.renameSync(tmp, this.indexPath);
+      try { this.lastMtimeMs = fs.statSync(this.indexPath).mtimeMs; } catch { /* keep prior */ }
     } catch (e) {
       console.error('[terminal-sessions] failed to save index:', e);
+      try { fs.unlinkSync(tmp); } catch { /* nothing to clean */ }
     }
   }
 
   recordWorkspace(hash: string, wsPath: string, label: string): void {
+    this.reloadIfChanged();
     const existing = this.data.workspaces[hash];
     // CRITICAL: spread `existing` FIRST and only override the volatile fields
     // (path/label/lastSeen). Earlier we rebuilt the object listing only
@@ -51,6 +111,7 @@ export class SessionIndex {
   }
 
   recordSession(hash: string, sessionName: string, label?: string, folderPath?: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return;
     const existing = ws.sessions[sessionName];
@@ -64,6 +125,7 @@ export class SessionIndex {
   }
 
   setSessionFolderPath(hash: string, sessionName: string, folderPath: string | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (folderPath) ws.sessions[sessionName].folderPath = folderPath;
@@ -72,6 +134,7 @@ export class SessionIndex {
   }
 
   setSessionLabel(hash: string, sessionName: string, label: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     ws.sessions[sessionName].label = label;
@@ -79,6 +142,7 @@ export class SessionIndex {
   }
 
   setSessionIcon(hash: string, sessionName: string, icon: string | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (icon) ws.sessions[sessionName].icon = icon;
@@ -87,6 +151,7 @@ export class SessionIndex {
   }
 
   setSessionColor(hash: string, sessionName: string, color: string | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (color) ws.sessions[sessionName].color = color;
@@ -95,6 +160,7 @@ export class SessionIndex {
   }
 
   setSessionLastActive(hash: string, sessionName: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     ws.sessions[sessionName].lastActiveAt = new Date().toISOString();
@@ -102,6 +168,7 @@ export class SessionIndex {
   }
 
   setSessionMuted(hash: string, sessionName: string, muted: boolean): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (muted) ws.sessions[sessionName].muted = true;
@@ -114,6 +181,7 @@ export class SessionIndex {
   }
 
   setSessionLocked(hash: string, sessionName: string, locked: boolean): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (locked) ws.sessions[sessionName].locked = true;
@@ -126,6 +194,7 @@ export class SessionIndex {
   }
 
   setSessionStopped(hash: string, sessionName: string, stopped: boolean): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (stopped) ws.sessions[sessionName].stopped = true;
@@ -134,6 +203,7 @@ export class SessionIndex {
   }
 
   setLastClaudeSessionId(hash: string, sessionName: string, sessionId: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (ws.sessions[sessionName].lastClaudeSessionId === sessionId) return;
@@ -158,13 +228,18 @@ export class SessionIndex {
    * `lastClaudeSessionId` fields so older code paths keep working.
    */
   recordAgentSession(hash: string, sessionName: string, agent: AgentId, sessionId: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     const s = ws.sessions[sessionName];
     const list = s.agentSessions ?? [];
     if (list[0]?.agent === agent && list[0]?.id === sessionId) {
-      // already at the front for this agent — but still ensure legacy mirror
+      // Already at the front for this agent. Skip the whole-file rewrite unless
+      // the legacy Claude mirror is somehow out of sync — a tool-heavy Claude
+      // turn fires this per hook event, and re-serializing an unchanged index
+      // (twice, with saveMap) on every event is pure churn on a hot file.
       if (agent !== 'claude') return;
+      if (s.claudeSessionHistory?.[0] === sessionId && s.lastClaudeSessionId === sessionId) return;
     }
     const filtered = list.filter(e => !(e.agent === agent && e.id === sessionId));
     filtered.unshift({ agent, id: sessionId, ts: Date.now() });
@@ -198,6 +273,7 @@ export class SessionIndex {
    *  so Restart / post-reboot restore can relaunch the conversation the way it was
    *  started. Stores `[]` too (clears stale), and skips the write when unchanged. */
   recordResumeFlags(hash: string, sessionName: string, agent: AgentId, flags: string[]): void {
+    this.reloadIfChanged();
     const s = this.data.workspaces[hash]?.sessions[sessionName];
     if (!s) return;
     const map = s.resumeFlags ?? {};
@@ -221,6 +297,7 @@ export class SessionIndex {
   }
 
   setSessionSortOrder(hash: string, sessionName: string, order: number | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
     if (order === undefined) delete ws.sessions[sessionName].sortOrder;
@@ -229,6 +306,7 @@ export class SessionIndex {
   }
 
   clearWorkspaceSortOrder(hash: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return;
     for (const name of Object.keys(ws.sessions)) {
@@ -238,6 +316,7 @@ export class SessionIndex {
   }
 
   removeSession(hash: string, sessionName: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return;
     delete ws.sessions[sessionName];
@@ -264,6 +343,7 @@ export class SessionIndex {
    *  session id. Stored in the sidecar `sessionNames` map; never touches
    *  ~/.claude. */
   setSessionName(sessionId: string, name: string | undefined): void {
+    this.reloadIfChanged();
     if (!sessionId) return;
     if (!this.data.sessionNames) this.data.sessionNames = {};
     const trimmed = name?.trim();
@@ -315,6 +395,7 @@ export class SessionIndex {
     kind: 'group' | 'master' = 'group',
     parentGroupId?: string,
   ): string | undefined {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return undefined;
     if (!ws.groups) ws.groups = {};
@@ -338,6 +419,7 @@ export class SessionIndex {
   }
 
   renameGroup(hash: string, groupId: string, name: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.groups?.[groupId]) return;
     ws.groups[groupId].name = name.trim();
@@ -346,6 +428,7 @@ export class SessionIndex {
 
   /** Set (or clear, when color is undefined) the icon tint for a group/master. */
   setGroupColor(hash: string, groupId: string, color: string | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.groups?.[groupId]) return;
     if (color) ws.groups[groupId].color = color;
@@ -361,6 +444,7 @@ export class SessionIndex {
    *     deleted — the user loses only the one container they asked to remove.
    */
   deleteGroup(hash: string, groupId: string): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     const target = ws?.groups?.[groupId];
     if (!ws || !target) return;
@@ -394,6 +478,7 @@ export class SessionIndex {
    * descendant. Rejects parents that aren't masters.
    */
   setGroupParent(hash: string, groupId: string, parentGroupId: string | undefined): boolean {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     const g = ws?.groups?.[groupId];
     if (!ws || !ws.groups || !g) return false;
@@ -425,15 +510,22 @@ export class SessionIndex {
   }
 
   setSessionGroup(hash: string, sessionName: string, groupId: string | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
-    if (groupId !== undefined && !ws.groups?.[groupId]) return; // unknown group
+    if (groupId !== undefined) {
+      const g = ws.groups?.[groupId];
+      if (!g) return;                    // unknown group
+      if (g.kind === 'master') return;   // masters hold only groups, not sessions —
+      // assigning one here would make the session render nowhere (matches the DnD guard).
+    }
     if (groupId === undefined) delete ws.sessions[sessionName].groupId;
     else ws.sessions[sessionName].groupId = groupId;
     this.save();
   }
 
   setGroupSortOrder(hash: string, groupId: string, order: number | undefined): void {
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.groups?.[groupId]) return;
     if (order === undefined) delete ws.groups[groupId].sortOrder;
@@ -481,6 +573,9 @@ export async function enrichSessions(
   prefix: string,
   index: SessionIndex,
 ): Promise<SessionInfo[]> {
+  // Pick up any edits another VS Code window made to index.json since our last
+  // touch, so cross-window group/label/stop changes show up on the next refresh.
+  index.syncFromDisk();
   const rows = await tmux.listSessions(tmuxPath, prefix);
   const out: SessionInfo[] = [];
   const liveNames = new Set<string>();

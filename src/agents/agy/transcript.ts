@@ -1,4 +1,6 @@
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { TranscriptTailState } from '../types';
 
 // ───────────────────────── Antigravity (agy) transcript ─────────────────────────
@@ -39,6 +41,28 @@ interface AgyToolCall {
 /** Default context window for Gemini-class models when statusLine hasn't yet
  *  reported a real number. */
 const AGY_DEFAULT_CONTEXT_LIMIT = 1_000_000;
+
+// agy's active model is a global setting (settings.json → "model", a display
+// string like "Gemini 3.5 Flash (High)"), not embedded per-conversation in the
+// transcript. Read it — lightly cached — so agy rows carry a model label
+// instead of blank. Token/context usage is genuinely absent from the transcript
+// (it exists only in the statusLine payload the tracker receives), so the
+// reducer cannot populate currentContextTokens and deliberately leaves it be.
+const AGY_SETTINGS_PATH = path.join(os.homedir(), '.gemini', 'antigravity-cli', 'settings.json');
+const MODEL_CACHE_TTL_MS = 15_000;
+let modelCache: { value: string | undefined; at: number } | undefined;
+
+function readConfiguredModel(): string | undefined {
+  const now = Date.now();
+  if (modelCache && now - modelCache.at < MODEL_CACHE_TTL_MS) return modelCache.value;
+  let value: string | undefined;
+  try {
+    const o = JSON.parse(fs.readFileSync(AGY_SETTINGS_PATH, 'utf8')) as { model?: unknown };
+    if (typeof o.model === 'string' && o.model.trim()) value = o.model.trim();
+  } catch { /* settings unreadable → leave undefined */ }
+  modelCache = { value, at: now };
+  return value;
+}
 
 const PREVIEW_MAX = 120;
 
@@ -140,6 +164,14 @@ export function reduceAgyTranscriptLine(state: TranscriptTailState, line: string
   }
 
   let changed = false;
+
+  // Surface the configured model so agy rows aren't blank. It's a global
+  // setting, so this also reflects a mid-session model switch within the TTL.
+  const model = readConfiguredModel();
+  if (model && snap.model !== model) {
+    snap.model = model;
+    changed = true;
+  }
 
   // ── user prompt ────────────────────────────────────────────────────────
   if (source === 'USER_EXPLICIT' && type === 'USER_INPUT') {
