@@ -467,11 +467,17 @@ const COMMON_PATHS = [
 ];
 
 let _cachedPath: string | undefined;
+// When tmux is genuinely absent, remember the miss for a short while so a 5s
+// status-bar poll (and the tracker poll) don't spawn a `which tmux` subprocess
+// every tick forever on a tmux-less host. Reset by clearTmuxPathCache().
+let _missUntil = 0;
+const MISS_TTL_MS = 60_000;
 
-export function clearTmuxPathCache(): void { _cachedPath = undefined; }
+export function clearTmuxPathCache(): void { _cachedPath = undefined; _missUntil = 0; }
 
 export async function detectTmuxPath(configured: string): Promise<string | undefined> {
   if (_cachedPath) return _cachedPath;
+  if (_missUntil && Date.now() < _missUntil) return undefined;
   if (configured && fs.existsSync(configured)) {
     _cachedPath = configured;
     return configured;
@@ -484,6 +490,7 @@ export async function detectTmuxPath(configured: string): Promise<string | undef
     const p = stdout.trim();
     if (p && fs.existsSync(p)) { _cachedPath = p; return p; }
   } catch { /* not found */ }
+  _missUntil = Date.now() + MISS_TTL_MS;
   return undefined;
 }
 
@@ -546,7 +553,13 @@ export async function renameSession(tmux: string, oldName: string, newName: stri
  */
 export async function exitCopyMode(tmux: string, session: string): Promise<void> {
   try {
-    await execFileP(tmux, ['if-shell', '-F', '-t', session, '#{pane_in_mode}', `send-keys -t ${session} -X cancel`]);
+    // Two argv-safe calls instead of an `if-shell` whose command string re-parses
+    // the session name: a name containing whitespace (custom sessionPrefix) would
+    // otherwise resolve to the wrong target and inject stray keystrokes.
+    const { stdout } = await execFileP(tmux, ['display-message', '-p', '-t', session, '#{pane_in_mode}']);
+    if (stdout.trim() === '1') {
+      await execFileP(tmux, ['send-keys', '-t', session, '-X', 'cancel']);
+    }
   } catch { /* not in a mode, or no server */ }
 }
 

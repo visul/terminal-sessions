@@ -58,23 +58,41 @@ async function revealUsingSelection(target: RevealTarget): Promise<void> {
 
 /**
  * Read the current terminal selection by routing it through the clipboard.
- * VS Code does not expose terminal selection directly in stable API, so we:
- *   - back up the clipboard
- *   - run copySelection
- *   - read the new clipboard contents
- *   - restore the original clipboard
- * Returns undefined when nothing is selected (clipboard unchanged).
+ * VS Code does not expose terminal selection directly in stable API, so we run
+ * the built-in copySelection and inspect what it wrote. Two clipboard hazards:
+ *   - False "nothing selected": copySelection leaves the clipboard untouched when
+ *     nothing is selected, so a plain before/after compare can't distinguish that
+ *     from a selection that happens to equal the existing clipboard text. When the
+ *     clipboard already holds text we seed a random sentinel first; an unchanged
+ *     sentinel afterwards unambiguously means nothing was selected.
+ *   - Clobbering a non-text clipboard (a screenshot): it reads as an empty string,
+ *     and any writeText — the sentinel or the restore — would wipe it. So when the
+ *     backup is empty we skip the sentinel (fall back to empty-vs-nonempty, since a
+ *     real path can't equal '') and skip the restore, leaving the image intact when
+ *     nothing was selected.
+ * Returns undefined when nothing is selected.
  */
 async function readTerminalSelection(): Promise<string | undefined> {
   const backup = await vscode.env.clipboard.readText();
+  const hasTextBackup = backup.length > 0;
+  // Only seed a sentinel when there is text to both protect the compare and be
+  // restored afterwards; an empty backup may be a non-text payload we must not
+  // overwrite, and empty-vs-nonempty already tells selection from no-selection.
+  const sentinel = hasTextBackup
+    ? `ts-reveal-sentinel:${Math.random().toString(36).slice(2)}:${Date.now()}`
+    : '';
+  if (hasTextBackup) await vscode.env.clipboard.writeText(sentinel);
   await vscode.commands.executeCommand('workbench.action.terminal.copySelection');
   // Give VS Code a tick to populate the clipboard. Empirically <5ms is enough,
-  // but we use a microtask + small timeout to be safe across machines.
+  // but we use a small timeout to be safe across machines.
   await new Promise(resolve => setTimeout(resolve, 20));
   const after = await vscode.env.clipboard.readText();
-  // Restore previous clipboard so we don't trash whatever the user had copied.
-  await vscode.env.clipboard.writeText(backup);
-  if (after === backup) return undefined;
+  const nothingSelected = hasTextBackup ? after === sentinel : after.length === 0;
+  // Restore the previous clipboard so we don't trash what the user had copied.
+  // Never write an empty backup back: it can't restore a non-text payload, only
+  // destroy it — leave whatever is there instead.
+  if (hasTextBackup) await vscode.env.clipboard.writeText(backup);
+  if (nothingSelected) return undefined;
   const trimmed = after.trim();
   return trimmed.length > 0 ? trimmed : undefined;
 }

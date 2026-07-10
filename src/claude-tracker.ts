@@ -12,13 +12,11 @@ import type { SessionIndex } from './session-manager';
 import type { AgentId, AgentProvider } from './agents/types';
 import type { AgentRegistry } from './agents/registry';
 
-const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 import { notify, macosAlert, armToastAction } from './notifications';
 import { getConfig } from './config';
 import {
   TranscriptTailer,
   TranscriptSnapshot,
-  transcriptPathFor,
   SubagentSnapshot,
 } from './claude-transcript';
 
@@ -92,6 +90,11 @@ interface ClaudeEvent {
    *  both spamming "done" notifications and overwriting the lead's tracked id. */
   agentId?: string;
   agentType?: string;
+  /** Antigravity statusLine extras (forwarded by media/agent-hook.sh). agy's live
+   *  context usage + model never appear in its transcript, only here. */
+  agentState?: string;
+  contextWindow?: Record<string, unknown>;
+  model?: string;
 }
 
 /** Returns true when a Notification event is the harmless "Claude is waiting
@@ -120,6 +123,16 @@ const AGENT_HOOK_DEST = path.join(ROOT, 'agent-hook.sh');
 const LOG_PATHS = [AGENT_LOG_PATH, LOG_PATH];
 
 const NOTIFY_COOLDOWN_MS = 5_000;
+// Hook events older than this when we see them are historical — replayed from the
+// log at activation (the user quit with an agent running and we're catching up).
+// Their state transitions still apply, but firing a "done"/"needs approval" alert
+// for something resolved hours ago is just noise (and a focus-stealing modal).
+const NOTIFY_STALE_MS = 60_000;
+// Rotate an event log once it grows past this so activation's tail read (and the
+// append-only file itself) stay bounded. One prior generation is kept as <log>.1.
+const LOG_ROTATE_CAP = 16 * 1024 * 1024;
+// How much of each log's tail backfill scans to recover recent session ids/cwds.
+const BACKFILL_TAIL_BYTES = 8 * 1024 * 1024;
 // Sessions with no activity for this long are treated as 'idle' regardless of
 // their last observed tool-use state (handles crashes / missed Stop events).
 const STALE_TOOL_MS = 30 * 60 * 1000;
@@ -134,16 +147,6 @@ const STALE_WORKING_MS = 2 * 60 * 1000;
 // ~/.grok/active_sessions.json and matching each session's pid to a tmux pane.
 const GROK_POLL_MS = 5_000;
 
-const HOOK_EVENTS = [
-  'SessionStart',
-  'UserPromptSubmit',
-  'PreToolUse',
-  'PostToolUse',
-  'Notification',
-  'Stop',
-  'SessionEnd',
-] as const;
-
 export class ClaudeTracker {
   private map = new Map<string, ClaudeMapping>();        // tmuxSession → mapping
   private snapshots = new Map<string, ClaudeSnapshot>(); // tmuxSession → snapshot
@@ -152,6 +155,7 @@ export class ClaudeTracker {
   private logOffsets = new Map<string, number>();   // logPath → byte offset
   private flagCapTried = new Set<string>();          // tmuxSession we've read launch flags for
   private grokTimer?: ReturnType<typeof setInterval>;
+  private grokPolling = false;   // re-entrancy guard: a slow poll must not stack
   private watchers: fs.FSWatcher[] = [];
   private transcript = new TranscriptTailer();
   private _onChange = new vscode.EventEmitter<void>();
@@ -183,6 +187,7 @@ export class ClaudeTracker {
     this.loadOffsets();
     this.backfillIndexFromLog();
     this.processNewEvents();
+    this.rotateLogsIfHuge();
     this.watch();
     // Best-effort: seed transcript tailers for sessions we already know about
     for (const [tmux, map] of this.map) {
@@ -223,12 +228,35 @@ export class ClaudeTracker {
    * were "working".
    */
   forgetSession(tmuxSession: string): void {
+    const mapped = this.map.get(tmuxSession);
     this.map.delete(tmuxSession);
     this.snapshots.delete(tmuxSession);
     this.lastWaitingNotifyPerSession.delete(tmuxSession);
     this.flagCapTried.delete(tmuxSession);
+    // Stop tailing the transcript so a killed session stops doing 3s stat/parse
+    // work (and holding an fs.watch) forever — but only when no OTHER tmux still
+    // owns the same sessionId (ownership can transfer via resume in another tab).
+    if (mapped?.sessionId) {
+      const stillOwned = [...this.map.values()].some(m => m.sessionId === mapped.sessionId);
+      if (!stillOwned) this.transcript.stopOne(mapped.sessionId);
+    }
     this.saveMap();
     this._onChange.fire();
+  }
+
+  /** Waiting/working counts for the activity-bar badge, computed only over the
+   *  tracker's live snapshot map (the only sessions that can be waiting/working)
+   *  instead of statSync-ing every session ever recorded in the index. */
+  attentionCounts(): { waiting: number; working: number } {
+    let waiting = 0;
+    let working = 0;
+    for (const name of this.snapshots.keys()) {
+      const snap = this.getSnapshot(name);
+      if (!snap) continue;
+      if (snap.state === 'waiting') waiting++;
+      else if (snap.state === 'working' || snap.state === 'tool') working++;
+    }
+    return { waiting, working };
   }
 
   /**
@@ -258,9 +286,14 @@ export class ClaudeTracker {
     }
 
     // Age-out stale 'tool' state with a long timeout — legitimate tools
-    // (builds, long tests) can run for many minutes.
-    if (snap.state === 'tool' && snap.lastPromptAt) {
-      if (Date.now() - snap.lastPromptAt.getTime() > STALE_TOOL_MS) {
+    // (builds, long tests) can run for many minutes. Key off when the TOOL
+    // started (toolSince), not the prompt: a long agentic turn can run many
+    // tools well past STALE_TOOL_MS after its single prompt, and a tool state
+    // rebuilt after a window reload may have no lastPromptAt at all. A missing
+    // timestamp is treated as stale rather than immortal.
+    if (snap.state === 'tool') {
+      const since = snap.toolSince ?? snap.lastPromptAt;
+      if (!since || Date.now() - since.getTime() > STALE_TOOL_MS) {
         snap.state = 'idle';
       }
     }
@@ -283,8 +316,17 @@ export class ClaudeTracker {
     // hasn't been touched in 90 seconds, the Stop hook was probably missed
     // (Esc cancellation, network drop, etc.) and we shouldn't keep claiming
     // it's working. Long-thinking turns producing output keep mtime fresh.
-    if (snap.state === 'working' && sinceWriteMs > 90_000) {
-      snap.state = 'idle';
+    // Only apply the mtime rule once the transcript actually EXISTS — a
+    // brand-new session sits at working after UserPromptSubmit before Claude
+    // writes its first line (mtime 0 → sinceWriteMs Infinity), and we must not
+    // flash it to idle in that gap. Before the file exists, fall back to prompt
+    // age (STALE_WORKING_MS) so a truly abandoned prompt still clears.
+    if (snap.state === 'working') {
+      if (transcriptMtimeMs > 0) {
+        if (sinceWriteMs > 90_000) snap.state = 'idle';
+      } else if (snap.lastPromptAt && Date.now() - snap.lastPromptAt.getTime() > STALE_WORKING_MS) {
+        snap.state = 'idle';
+      }
     }
 
     if (snap.sessionId) {
@@ -300,10 +342,15 @@ export class ClaudeTracker {
         snap.tokens = t.tokens;
         snap.cost = t.cost;
         snap.costByModel = t.costByModel;
-        snap.contextTokens = t.currentContextTokens;
-        snap.contextLimit = t.currentContextLimit;
-        snap.contextPct = t.currentContextLimit > 0
-          ? t.currentContextTokens / t.currentContextLimit : 0;
+        // Prefer transcript-derived context, but only when it actually reports a
+        // number. agy carries no context in its transcript (it arrives via the
+        // statusLine event and is stored on the snapshot in handleLine), so an
+        // unconditional assignment here would clobber that with the transcript's 0.
+        if (t.currentContextLimit > 0 && t.currentContextTokens > 0) {
+          snap.contextTokens = t.currentContextTokens;
+          snap.contextLimit = t.currentContextLimit;
+          snap.contextPct = t.currentContextTokens / t.currentContextLimit;
+        }
 
         // Transcript is authoritative for working/idle — hooks may not fire
         // for sessions that started before our hook was installed (Claude Code
@@ -332,6 +379,17 @@ export class ClaudeTracker {
         const waitingIsStale = snap.state === 'waiting'
           && (waitingSinceMs === 0 || ta > waitingSinceMs || tu > waitingSinceMs);
         if (waitingIsStale) snap.waitingSince = undefined;
+
+        // Esc during a tool call writes the interrupt marker but fires no
+        // PostToolUse/Stop hook, so 'tool' would otherwise stick until the
+        // 30-min age-out. Clear it when the interrupt (as the latest user line)
+        // is newer than the tool started.
+        if (snap.state === 'tool' && interruptMarker && tu > (snap.toolSince?.getTime() ?? 0)) {
+          snap.state = 'idle';
+          snap.toolName = undefined;
+          snap.toolInput = undefined;
+          snap.toolSince = undefined;
+        }
 
         if (snap.state !== 'tool' && (snap.state !== 'waiting' || waitingIsStale)) {
           if (interruptMarker) {
@@ -514,8 +572,14 @@ export class ClaudeTracker {
     // recent cwd afterwards.
     type Sighting = { ts: number; sessionId: string; cwd: string };
     const sightings = new Map<string, Sighting[]>();
-    try {
-      const raw = fs.readFileSync(LOG_PATH, 'utf8');
+    // Scan BOTH logs (unified agent-events.log + legacy claude-events.log) —
+    // reading only the legacy one silently no-ops recovery on migrated/new
+    // installs where every hook event lives in agent-events.log. Read only a
+    // bounded tail of each so a multi-month, tens-of-MB log doesn't block the
+    // extension host on every activation (recent ids/cwds are near the end).
+    for (const lp of LOG_PATHS) {
+      const raw = this.readTail(lp, BACKFILL_TAIL_BYTES);
+      if (!raw) continue;
       for (const line of raw.split('\n')) {
         if (!line) continue;
         // Cheap pre-filter — skip lines that don't mention any touched tmux.
@@ -532,9 +596,6 @@ export class ClaudeTracker {
         list.push({ ts: e.ts, sessionId: e.sessionId || '', cwd: e.cwd || '' });
         sightings.set(e.tmuxSession, list);
       }
-    } catch (err) {
-      console.error('[terminal-sessions] backfillIndexFromLog:', err);
-      return;
     }
     let filledHistory = 0;
     let filledFolder = 0;
@@ -578,10 +639,53 @@ export class ClaudeTracker {
   }
 
   private saveMap(): void {
+    const tmp = `${MAP_PATH}.${process.pid}.tmp`;
     try {
-      fs.writeFileSync(MAP_PATH, JSON.stringify(Object.fromEntries(this.map), null, 2));
+      // Atomic replace so a crash mid-write can't leave a truncated map that
+      // loadMap() would silently drop (losing every session→conversation link).
+      fs.writeFileSync(tmp, JSON.stringify(Object.fromEntries(this.map), null, 2));
+      fs.renameSync(tmp, MAP_PATH);
     } catch (e) {
       console.error('[terminal-sessions] claude-tracker saveMap:', e);
+      try { fs.unlinkSync(tmp); } catch { /* nothing to clean */ }
+    }
+  }
+
+  /** Read at most `maxBytes` from the end of a log, dropping the partial first
+   *  line so the caller always gets whole JSON lines. Keeps activation off the
+   *  path of reading an unbounded append-only log in full. */
+  private readTail(logPath: string, maxBytes: number): string {
+    try {
+      const st = fs.statSync(logPath);
+      const start = Math.max(0, st.size - maxBytes);
+      const len = st.size - start;
+      if (len <= 0) return '';
+      const fd = fs.openSync(logPath, 'r');
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, start);
+      fs.closeSync(fd);
+      let text = buf.toString('utf8');
+      if (start > 0) {
+        const nl = text.indexOf('\n');
+        if (nl >= 0) text = text.slice(nl + 1);
+      }
+      return text;
+    } catch { return ''; }
+  }
+
+  /** Cap the append-only event logs: once one passes LOG_ROTATE_CAP, move it to
+   *  <log>.1 (one generation kept for manual inspection) and start fresh, resetting
+   *  its byte offset. Runs after backfill + processNewEvents, so nothing pending is
+   *  lost, and before watch() so the fresh files are the ones watched. */
+  private rotateLogsIfHuge(): void {
+    for (const lp of LOG_PATHS) {
+      try {
+        if (fs.statSync(lp).size < LOG_ROTATE_CAP) continue;
+        try { fs.renameSync(lp, `${lp}.1`); } catch { continue; }
+        fs.writeFileSync(lp, '');
+        this.logOffsets.set(lp, 0);
+        this.saveOffset(lp);
+      } catch { /* ENOENT or busy — skip */ }
     }
   }
 
@@ -728,6 +832,29 @@ export class ClaudeTracker {
       }
     }
 
+    // Antigravity statusLine event: not a lifecycle transition, it carries the
+    // live context usage + model that never land in agy's transcript. Map them
+    // onto the snapshot so agy rows show a real context % / model instead of 0% /
+    // blank, then stop (no state change, no flag capture for a status ping).
+    // Field names are read defensively — an unexpected shape simply leaves the
+    // context untouched (no regression) rather than showing wrong numbers.
+    if (e.event === 'statusline') {
+      const num = (v: unknown): number => (typeof v === 'number' && isFinite(v) ? v : NaN);
+      if (e.model && !snap.model) snap.model = e.model;
+      const cw = e.contextWindow;
+      if (cw && typeof cw === 'object') {
+        const used = num(cw.used ?? cw.used_tokens ?? cw.tokens ?? cw.current);
+        const size = num(cw.size ?? cw.max ?? cw.limit ?? cw.total ?? cw.max_tokens);
+        if (size > 0 && used >= 0) {
+          snap.contextTokens = used;
+          snap.contextLimit = size;
+          snap.contextPct = used / size;
+        }
+      }
+      this.snapshots.set(e.tmuxSession, snap);
+      return true;
+    }
+
     switch (e.event) {
       case 'SessionStart':
         snap.state = 'idle';
@@ -837,6 +964,20 @@ export class ClaudeTracker {
 
   private async pollGrokSessions(): Promise<void> {
     if (!this.index) return;
+    // Re-entrancy guard: on a loaded box a poll can take longer than GROK_POLL_MS
+    // (many panes → many tmux + a full `ps`), and without this every tick would
+    // start another overlapping poll, stacking subprocess churn indefinitely.
+    if (this.grokPolling) return;
+    this.grokPolling = true;
+    try {
+      await this.pollGrokSessionsInner();
+    } finally {
+      this.grokPolling = false;
+    }
+  }
+
+  private async pollGrokSessionsInner(): Promise<void> {
+    if (!this.index) return;
     const grok = this.registry.getProvider('grok');
     if (!grok) return;
     const active = readGrokActiveSessions();
@@ -847,7 +988,13 @@ export class ClaudeTracker {
     const trackedGrokIds = new Set(
       [...this.map.values()].filter(m => m.agent === 'grok').map(m => m.sessionId),
     );
-    const pending = active.filter(a => !trackedGrokIds.has(a.session_id));
+    // Also drop entries whose pid is dead (a crashed grok leaves a stale record in
+    // active_sessions.json). Without this, an unmatchable stale entry keeps the
+    // full tmux + `ps` enumeration running every 5s forever with no benefit.
+    const pending = active.filter(a => !trackedGrokIds.has(a.session_id)).filter(a => {
+      try { process.kill(a.pid, 0); return true; }
+      catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
+    });
     if (!pending.length) return;
 
     const cfg = getConfig();
@@ -900,6 +1047,9 @@ export class ClaudeTracker {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
     if (this.isSessionMuted(e.tmuxSession)) return;
+    // Historical event replayed from the log at activation — apply state, skip
+    // the stale "done" popup.
+    if (Date.now() - tsMs > NOTIFY_STALE_MS) return;
 
     // Skip sub-second Stops (Claude often fires on very quick turns)
     const prev = this.snapshots.get(e.tmuxSession);
@@ -920,10 +1070,13 @@ export class ClaudeTracker {
     });
   }
 
-  private triggerWaitingNotify(e: ClaudeEvent, _tsMs: number, provider: AgentProvider): void {
+  private triggerWaitingNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeWaiting) return;
     if (this.isSessionMuted(e.tmuxSession)) return;
+    // Historical event replayed from the log at activation — apply state, skip
+    // the stale (and focus-stealing) "needs approval" alert.
+    if (Date.now() - tsMs > NOTIFY_STALE_MS) return;
 
     // Cooldown per-session so a rapid toggle doesn't spam multiple alerts.
     const last = this.lastWaitingNotifyPerSession.get(e.tmuxSession) || 0;
@@ -984,103 +1137,4 @@ export class ClaudeTracker {
       });
     }
   }
-}
-
-/**
- * Install our hooks into ~/.claude/settings.json. Idempotent: replaces any
- * existing terminal-sessions hook entries with fresh ones covering every
- * event listed in HOOK_EVENTS.
- */
-export async function installClaudeHook(scriptPath: string): Promise<boolean> {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  try { fs.mkdirSync(path.dirname(settingsPath), { recursive: true }); } catch { /* noop */ }
-
-  let settings: Record<string, unknown> = {};
-  if (fs.existsSync(settingsPath)) {
-    try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); }
-    catch {
-      vscode.window.showErrorMessage(
-        `Could not parse ~/.claude/settings.json. Fix it manually then try again.`,
-      );
-      return false;
-    }
-  }
-
-  const hooks = (settings.hooks as Record<string, unknown> | undefined) || {};
-  settings.hooks = hooks;
-
-  const isOursEntry = (entry: unknown): boolean => {
-    const anyE = entry as { hooks?: Array<{ command?: string }> };
-    return !!anyE.hooks?.some(h => typeof h.command === 'string' && h.command.includes('claude-hook.sh'));
-  };
-
-  const buildEntry = (event: string) => ({
-    hooks: [{ type: 'command' as const, command: `"${scriptPath}" ${event}` }],
-  });
-
-  for (const event of HOOK_EVENTS) {
-    const existing = (hooks[event] as unknown[]) || [];
-    const pruned = existing.filter(e => !isOursEntry(e));
-    pruned.push(buildEntry(event));
-    hooks[event] = pruned;
-  }
-
-  try {
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    return true;
-  } catch (e) {
-    vscode.window.showErrorMessage(`Could not write ~/.claude/settings.json: ${String(e).slice(0, 100)}`);
-    return false;
-  }
-}
-
-export async function uninstallClaudeHook(): Promise<boolean> {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  if (!fs.existsSync(settingsPath)) return true;
-  let settings: Record<string, unknown> = {};
-  try { settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')); }
-  catch { return false; }
-
-  const hooks = settings.hooks as Record<string, unknown[]> | undefined;
-  if (!hooks) return true;
-
-  for (const event of Object.keys(hooks)) {
-    const arr = (hooks[event] as unknown[]).filter(entry => {
-      const anyE = entry as { hooks?: Array<{ command?: string }> };
-      return !anyE.hooks?.some(h => typeof h.command === 'string' && h.command.includes('claude-hook.sh'));
-    });
-    if (arr.length === 0) delete hooks[event];
-    else hooks[event] = arr;
-  }
-  if (Object.keys(hooks).length === 0) delete settings.hooks;
-
-  try {
-    fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-export function isClaudeHookInstalled(): boolean {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  if (!fs.existsSync(settingsPath)) return false;
-  try {
-    const txt = fs.readFileSync(settingsPath, 'utf8');
-    return txt.includes('claude-hook.sh');
-  } catch { return false; }
-}
-
-/** True if settings.json has our hook, but only for the old minimal event set. */
-export function needsHookUpgrade(): boolean {
-  const settingsPath = path.join(os.homedir(), '.claude', 'settings.json');
-  if (!fs.existsSync(settingsPath)) return false;
-  try {
-    const raw = fs.readFileSync(settingsPath, 'utf8');
-    if (!raw.includes('claude-hook.sh')) return false;
-    for (const event of HOOK_EVENTS) {
-      if (!raw.includes(`${event}`)) return true;
-    }
-    return false;
-  } catch { return false; }
 }

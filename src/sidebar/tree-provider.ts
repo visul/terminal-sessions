@@ -84,12 +84,35 @@ class SessionsTreeProvider
   private collapsedWorkspaceIds = new Set<string>();
   private expandedContainerIds = new Set<string>();
 
+  // One enrichSessions() (a tmux subprocess) per refresh pass, shared across the
+  // root + every expanded container's getChildren call. VS Code fans getChildren
+  // out across all visible levels on a single refresh; without this each level
+  // spawned its own `tmux list-sessions`. Bumped by refresh() so the next pass
+  // re-enriches.
+  private refreshGen = 0;
+  private enrichGen = -1;
+  private enrichPromise: Promise<SessionInfo[]> | undefined;
+
   constructor(
     private index: SessionIndex,
     private claude: ClaudeTracker,
   ) {}
 
-  refresh(): void { this._onDidChange.fire(undefined); }
+  refresh(): void {
+    this.refreshGen++;
+    this._onDidChange.fire(undefined);
+  }
+
+  /** The live session list for the current refresh pass, computed once and reused
+   *  across every getChildren level. Caches the promise (not the value) so
+   *  concurrent child calls in the same pass don't each spawn tmux. */
+  private sessionsForThisPass(tmuxPath: string, prefix: string): Promise<SessionInfo[]> {
+    if (this.enrichGen !== this.refreshGen || !this.enrichPromise) {
+      this.enrichGen = this.refreshGen;
+      this.enrichPromise = enrichSessions(tmuxPath, prefix, this.index);
+    }
+    return this.enrichPromise;
+  }
 
   getTreeItem(el: vscode.TreeItem): vscode.TreeItem { return el; }
 
@@ -221,9 +244,15 @@ class SessionsTreeProvider
     }
 
     // Ungrouped sessions live only at the workspace root, never inside a master.
+    // A groupId pointing at a MASTER is treated as orphaned too: masters list only
+    // child groups (sessionsUnder recurses into groups, never sessions), so such a
+    // session would otherwise render nowhere and vanish from the sidebar. Falling
+    // it back to root keeps it reachable even if a stale index already has one.
     const groupIds = new Set(Object.keys(groups));
     const ungrouped = parentGroupId === undefined
-      ? allWsSessions.filter(s => (!s.groupId || !groupIds.has(s.groupId)) && passFilter(s))
+      ? allWsSessions.filter(s =>
+          (!s.groupId || !groupIds.has(s.groupId) || groups[s.groupId]?.kind === 'master')
+          && passFilter(s))
       : [];
 
     const buildSession = (s: SessionInfo): vscode.TreeItem => {
@@ -268,14 +297,24 @@ class SessionsTreeProvider
 
   async getChildren(el?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     const cfg = getConfig();
-    const tmuxPath = await tmux.detectTmuxPath(cfg.tmuxPath);
-    if (!tmuxPath) {
-      const item = new vscode.TreeItem('tmux not installed — run: brew install tmux',
-        vscode.TreeItemCollapsibleState.None);
-      item.iconPath = new vscode.ThemeIcon('alert');
-      return [item];
+    // Only the container levels (root, workspace, group) need the live session
+    // list; session-detail and subagent rows below don't. Skipping the tmux
+    // subprocess + enrichment for those leaf branches is what stops an expanded
+    // detail/subagent row from spawning `tmux list-sessions` on every refresh.
+    const needsSessions = el === undefined
+      || el instanceof WorkspaceTreeItem
+      || el instanceof GroupTreeItem;
+    let sessions: SessionInfo[] = [];
+    if (needsSessions) {
+      const tmuxPath = await tmux.detectTmuxPath(cfg.tmuxPath);
+      if (!tmuxPath) {
+        const item = new vscode.TreeItem('tmux not installed — run: brew install tmux',
+          vscode.TreeItemCollapsibleState.None);
+        item.iconPath = new vscode.ThemeIcon('alert');
+        return [item];
+      }
+      sessions = await this.sessionsForThisPass(tmuxPath, cfg.sessionPrefix);
     }
-    const sessions = await enrichSessions(tmuxPath, cfg.sessionPrefix, this.index);
     let filtered = sessions;
     if (cfg.sidebarFilterMode === 'running') filtered = sessions.filter(s => !s.stopped);
     else if (cfg.sidebarFilterMode === 'stopped') filtered = sessions.filter(s => s.stopped);
@@ -304,9 +343,12 @@ class SessionsTreeProvider
       const allByWorkspace = groupByWorkspace(sessions);
       const out: vscode.TreeItem[] = [];
       this.lastWorkspaceItems.clear();
-      // Groups are rebuilt lazily per workspace on expand; drop stale entries so
-      // getParent() never hands reveal() a container from a deleted/renamed group.
+      // Groups AND sessions are rebuilt lazily on expand; drop stale entries so
+      // getParent()/reveal() never get a container or session item from before a
+      // move (a session cached at root would fail reveal after it moves into a
+      // collapsed group — exactly the case reveal exists for).
       this.lastGroupItems.clear();
+      this.lastSessionItems.clear();
       for (const [hash, group] of grouped) {
         const ordered = sortSessions(group, cfg.sidebarSortMode);
         const wsPath = ordered[0].workspacePath;
@@ -683,16 +725,10 @@ export function registerSidebar(
   // Waiting is more urgent, so we show waiting count first; if none, show
   // working count; if neither, remove the badge.
   const updateBadge = (): void => {
-    let waiting = 0;
-    let working = 0;
-    for (const ws of Object.values(index.getAllWorkspaces())) {
-      for (const name of Object.keys(ws.sessions)) {
-        const snap = claude.getSnapshot(name);
-        if (!snap) continue;
-        if (snap.state === 'waiting') waiting++;
-        else if (snap.state === 'working' || snap.state === 'tool') working++;
-      }
-    }
+    // Count only sessions the tracker is actively watching (its in-memory
+    // snapshot map) instead of statSync-ing every session ever recorded in the
+    // index on every event — only live sessions can be waiting/working anyway.
+    const { waiting, working } = claude.attentionCounts();
     if (waiting > 0) {
       treeView.badge = {
         value: waiting,
@@ -708,15 +744,23 @@ export function registerSidebar(
     }
   };
 
-  ctx.subscriptions.push(claude.onChange(() => {
-    provider?.refresh();
-    updateBadge();
-  }));
-  const interval = setInterval(() => {
-    provider?.refresh();
-    updateBadge();
-  }, 10_000);
-  ctx.subscriptions.push({ dispose: () => clearInterval(interval) });
+  // Coalesce the agent-event stream: a working agent flushes its transcript many
+  // times per second, and each flush used to trigger a full-tree refresh (one
+  // tmux spawn per expanded node) + a badge recompute. Throttle to at most one
+  // refresh per REFRESH_COALESCE_MS so a burst of writes costs one refresh, not
+  // dozens — the sidebar still updates ~3×/sec while an agent streams.
+  const REFRESH_COALESCE_MS = 300;
+  let refreshPending = false;
+  let refreshTimer: NodeJS.Timeout | undefined;
+  const doRefresh = (): void => { provider?.refresh(); updateBadge(); };
+  const scheduleRefresh = (): void => {
+    if (refreshPending) return;
+    refreshPending = true;
+    refreshTimer = setTimeout(() => { refreshPending = false; doRefresh(); }, REFRESH_COALESCE_MS);
+  };
+  ctx.subscriptions.push(claude.onChange(scheduleRefresh));
+  const interval = setInterval(doRefresh, 10_000);
+  ctx.subscriptions.push({ dispose: () => { clearInterval(interval); if (refreshTimer) clearTimeout(refreshTimer); } });
   updateBadge();
 }
 

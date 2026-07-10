@@ -14,17 +14,42 @@ export function transcriptToMarkdown(
   opts?: { title?: string; maxRecords?: number },
 ): string {
   const maxRecords = opts?.maxRecords ?? 400;
-  let raw = '';
-  try { raw = fs.readFileSync(transcriptPath, 'utf8'); }
+  let stat: fs.Stats;
+  try { stat = fs.statSync(transcriptPath); }
   catch { return `# Conversation\n\n_Transcript not readable: ${transcriptPath}_\n`; }
 
-  const lines = raw.split('\n').filter(l => l.length > 0 && l[0] === '{');
-  const records: Array<Record<string, unknown>> = [];
-  for (const l of lines) { try { records.push(JSON.parse(l)); } catch { /* skip */ } }
+  // Only the last maxRecords records are ever shown, so reading (and splitting /
+  // JSON.parsing) an 80MB transcript in full would freeze the host for nothing.
+  // Read a bounded tail window and parse only that — a few MB comfortably holds
+  // maxRecords records; anything before the window is reported as elided.
+  const TAIL_WINDOW = 16 * 1024 * 1024;
+  const readStart = Math.max(0, stat.size - TAIL_WINDOW);
+  let raw = '';
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    const len = stat.size - readStart;
+    const buf = Buffer.alloc(len);
+    fs.readSync(fd, buf, 0, len, readStart);
+    fs.closeSync(fd);
+    raw = buf.toString('utf8');
+  } catch { return `# Conversation\n\n_Transcript not readable: ${transcriptPath}_\n`; }
 
-  // Keep the most recent maxRecords; note how many were elided.
-  const elided = Math.max(0, records.length - maxRecords);
-  const shown = elided > 0 ? records.slice(elided) : records;
+  // When we started mid-file the first line is a partial record — drop it.
+  const windowTruncated = readStart > 0;
+  if (windowTruncated) {
+    const nl = raw.indexOf('\n');
+    if (nl >= 0) raw = raw.slice(nl + 1);
+  }
+
+  const lines = raw.split('\n').filter(l => l.length > 0 && l[0] === '{');
+  // Cap to the most recent maxRecords lines, then JSON.parse only those.
+  const overflow = Math.max(0, lines.length - maxRecords);
+  const kept = overflow > 0 ? lines.slice(overflow) : lines;
+  const records: Array<Record<string, unknown>> = [];
+  for (const l of kept) { try { records.push(JSON.parse(l)); } catch { /* skip */ } }
+
+  const anyElided = overflow > 0 || windowTruncated;
+  const shown = records;
 
   let model: string | undefined;
   let cwd: string | undefined;
@@ -57,7 +82,12 @@ export function transcriptToMarkdown(
   const meta = [model && `model \`${model}\``, cwd && `cwd \`${cwd}\``, `${count} messages`]
     .filter(Boolean).join(' · ');
   if (meta) head.push(`\n_${meta}_\n`);
-  if (elided > 0) head.push(`\n> ${elided} earlier messages elided. Open the raw .jsonl for the full history.\n`);
+  if (anyElided) {
+    const note = windowTruncated
+      ? 'Earlier messages elided (large transcript).'
+      : `${overflow} earlier messages elided.`;
+    head.push(`\n> ${note} Open the raw .jsonl for the full history.\n`);
+  }
 
   return head.join('\n') + '\n' + parts.join('\n');
 }
@@ -103,5 +133,13 @@ function extractResult(content: unknown): string {
   return texts.join('\n') || '[tool result]';
 }
 
-function fence(s: string, lang = ''): string { return '```' + lang + '\n' + s + '\n```'; }
+function fence(s: string, lang = ''): string {
+  // Use more backticks than the longest backtick run inside the content so a
+  // triple-backtick in a tool result can't close the block early.
+  let longest = 0;
+  const runs = s.match(/`+/g);
+  if (runs) for (const r of runs) longest = Math.max(longest, r.length);
+  const ticks = '`'.repeat(Math.max(3, longest + 1));
+  return ticks + lang + '\n' + s + '\n' + ticks;
+}
 function blockquote(s: string): string { return s.split('\n').map(l => '> ' + l).join('\n'); }

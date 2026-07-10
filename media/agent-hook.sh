@@ -108,9 +108,16 @@ sys.stdout.write(json.dumps(out) + "\n")
 ' <<<"$STDIN_JSON" >> "$LOG" 2>/dev/null
 else
   # Fallback when python3 is missing — minimal payload, no tool/message info.
+  # Escape each interpolated value for a JSON string context (backslash FIRST, then
+  # double quote) so a cwd or tmux session name containing " or \ still emits valid
+  # JSON — otherwise the tracker silently drops the event on such hosts.
+  esc_agent=${AGENT//\\/\\\\}; esc_agent=${esc_agent//\"/\\\"}
+  esc_event=${EVENT//\\/\\\\}; esc_event=${esc_event//\"/\\\"}
+  esc_tmux=${TMUX_SESSION//\\/\\\\}; esc_tmux=${esc_tmux//\"/\\\"}
+  esc_cwd=${PWD:-}; esc_cwd=${esc_cwd//\\/\\\\}; esc_cwd=${esc_cwd//\"/\\\"}
   {
     printf '{"agent":"%s","event":"%s","ts":%d,"sessionId":"","tmuxSession":"%s","cwd":"%s","transcriptPath":"","toolName":"","toolInput":"","message":""}\n' \
-      "$AGENT" "$EVENT" "$(date +%s)" "$TMUX_SESSION" "${PWD:-}"
+      "$esc_agent" "$esc_event" "$(date +%s)" "$esc_tmux" "$esc_cwd"
   } >> "$LOG" 2>/dev/null
 fi
 

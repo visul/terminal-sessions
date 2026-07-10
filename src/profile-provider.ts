@@ -54,7 +54,7 @@ export function registerPersistentProfile(index: SessionIndex): vscode.Disposabl
       }
 
       index.recordWorkspace(ws.hash, ws.path, ws.label);
-      const tabId = index.getNextTabId(ws.hash, cfg.sessionPrefix);
+      const tabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, ws.hash);
       const name = sessionName(cfg.sessionPrefix, ws.hash, tabId);
       index.recordSession(ws.hash, name);
       const meta = index.getSessionMeta(ws.hash, name);
@@ -69,6 +69,32 @@ export function registerPersistentProfile(index: SessionIndex): vscode.Disposabl
       });
     },
   });
+}
+
+/**
+ * Next tab id that won't collide with a LIVE tmux session, even when the index is
+ * stale or empty (e.g. after a corrupt-index reset while tmux sessions are still
+ * alive). getNextTabId alone reads only the index; a reused id fed to
+ * `new-session -A -s` would silently attach a second client to the existing
+ * session (both panes mirror each other) instead of creating a fresh one.
+ */
+export async function nextSafeTabId(
+  index: SessionIndex,
+  tmuxPath: string,
+  prefix: string,
+  hash: string,
+): Promise<number> {
+  let tabId = index.getNextTabId(hash, prefix);
+  try {
+    const rows = await tmux.listSessions(tmuxPath, prefix);
+    let maxLive = 0;
+    for (const r of rows) {
+      const p = parseSessionName(r.name, prefix);
+      if (p && p.hash === hash && p.tabId > maxLive) maxLive = p.tabId;
+    }
+    if (maxLive + 1 > tabId) tabId = maxLive + 1;
+  } catch { /* tmux not listing — fall back to the index id */ }
+  return tabId;
 }
 
 export function sessionNameForTerminal(t: vscode.Terminal): string | undefined {
@@ -140,14 +166,28 @@ export function resolveSessionNameForTerminal(
     }
   }
   if (matches.length === 1) return matches[0];
-  if (matches.length > 1 && labelPart) {
-    // tabId is unique per workspace but not globally — disambiguate by label.
+  if (matches.length === 0) return undefined;
+  // tabId is unique per workspace but not globally. Disambiguate by the label
+  // part of the tab name, which is either the session's custom label or (when
+  // unlabeled) the workspace label — exactly what displayName() renders.
+  if (labelPart) {
     for (const sName of matches) {
       const parsed = parseSessionName(sName, prefix)!;
-      if (index.getSessionMeta(parsed.hash, sName)?.label === labelPart) return sName;
+      const meta = index.getSessionMeta(parsed.hash, sName);
+      const wsLabel = index.getWorkspace(parsed.hash)?.label;
+      if (meta?.label === labelPart || (!meta?.label && wsLabel === labelPart)) return sName;
     }
   }
-  return matches[0];
+  // Prefer the current window's own workspace before giving up.
+  const cur = currentWorkspace();
+  if (cur) {
+    const own = matches.find(sName => parseSessionName(sName, prefix)?.hash === cur.hash);
+    if (own) return own;
+  }
+  // Still ambiguous → do NOT guess a cross-workspace session. Returning an
+  // arbitrary match would reattach this terminal to a DIFFERENT project's tmux
+  // (and stamp MRU / reveal the wrong folder). Let the PID fallback resolve it.
+  return undefined;
 }
 
 /**
@@ -165,7 +205,13 @@ async function tmuxNameFromTerminalProcess(t: vscode.Terminal): Promise<string |
       encoding: 'utf8',
       timeout: 2000,
     });
-    const m = /attach-session\s+-t\s+(\S+)/.exec(out) || /\s-t\s+(\S+)/.exec(out);
+    // Match BOTH resume forms the extension emits: attach-session -t <name> and
+    // new-session -A -s <name> (the profile "+ New Persistent Terminal" path).
+    // Matching only -t left every profile-created, renamed, reloaded terminal
+    // unresolvable — the PID fallback would find nothing and the session looked
+    // dead to Reveal / Open Folder.
+    const m = /(?:new-session|attach-session)\b.*?\s-(?:t|s)\s+(\S+)/.exec(out)
+      || /\s-[ts]\s+(\S+)/.exec(out);
     return m ? m[1] : undefined;
   } catch {
     return undefined;

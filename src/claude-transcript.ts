@@ -74,6 +74,44 @@ export interface MsgInfo {
 // file (and the Claude reducer) reading the same.
 type TailState = TranscriptTailState;
 
+/** Cached parse of one background-agent jsonl, so scanBackgroundAgents can skip
+ *  re-reading files whose {mtime,size} haven't changed since the last 3s poll. */
+interface BgAgentCache {
+  mtimeMs: number;
+  size: number;
+  agentType?: string;
+  description?: string;
+  lastText: string;
+  lastToolName?: string;
+  lastToolInput?: string;
+  pendingToolId?: string;
+}
+
+/** Scratch the generic tailer/Claude reducer stashes on the shared
+ *  `TranscriptTailState.scratch` map. Defined here (not in agents/types.ts) so
+ *  the shared interface stays free of Claude-specific fields. */
+interface ClaudeTailScratch {
+  /** Trailing bytes of the last read that didn't end in a newline — a JSONL
+   *  record still mid-write. Prepended to the next read so a record split across
+   *  two polls isn't parsed as a fragment and permanently lost. */
+  remainder?: Buffer;
+  /** Per background-agent parse cache keyed by agentId. */
+  bgAgentStat?: Map<string, BgAgentCache>;
+}
+
+function tailScratchOf(state: TailState): ClaudeTailScratch {
+  if (!state.scratch) state.scratch = {};
+  const s = state.scratch as { tail?: ClaudeTailScratch };
+  if (!s.tail) s.tail = {};
+  return s.tail;
+}
+
+function bgStatCacheOf(state: TailState): Map<string, BgAgentCache> {
+  const scratch = tailScratchOf(state);
+  if (!scratch.bgAgentStat) scratch.bgAgentStat = new Map();
+  return scratch.bgAgentStat;
+}
+
 /**
  * Convert an absolute filesystem path to Claude Code's project-slug
  * convention used for `~/.claude/projects/<slug>/`. Claude replaces every
@@ -409,7 +447,12 @@ export class TranscriptTailer {
       }
       return;
     }
-    if (stat.size < state.offset) state.offset = 0;
+    const scratch = tailScratchOf(state);
+    if (stat.size < state.offset) {
+      // File truncated/rewritten — restart and drop any half-line we were holding.
+      state.offset = 0;
+      scratch.remainder = undefined;
+    }
     const bytes = stat.size - state.offset;
     let buf: Buffer;
     try {
@@ -420,17 +463,35 @@ export class TranscriptTailer {
     } catch { return; }
     const startOffset = state.offset;
     state.offset = stat.size;
-    const text = buf.toString('utf8');
-    // Track each line's byte offset in the file so new subagents can bookmark
-    // their firstOffset for "Open transcript at subagent" to jump precisely.
-    let cursor = startOffset;
+    // Prepend any partial line carried from the previous read (a JSONL record
+    // that straddled two polls). Splitting on raw newline BYTES before decoding
+    // guards against a multibyte UTF-8 char being cut across the toString
+    // boundary; only bytes up to the LAST newline are safely complete, so the
+    // trailing fragment is buffered for next time instead of parsed and lost.
+    const prev = scratch.remainder;
+    const combined = prev && prev.length ? Buffer.concat([prev, buf]) : buf;
+    // File byte offset where `combined` begins — the carried bytes sat just
+    // before startOffset. Used to bookmark each subagent's firstOffset so
+    // "Open transcript at subagent" jumps precisely.
+    let cursor = startOffset - (prev ? prev.length : 0);
     let changed = false;
-    for (const line of text.split('\n')) {
-      if (line.length === 0) { cursor += 1; continue; } // eaten newline
-      state.currentLineStart = cursor;
-      if (state.provider.reduceTranscriptLine(state, line)) changed = true;
-      cursor += Buffer.byteLength(line, 'utf8') + 1; // +1 for the \n
+    let lineStart = 0;
+    for (;;) {
+      const nl = combined.indexOf(0x0a, lineStart);
+      if (nl < 0) break; // no trailing newline yet → the rest is a partial line
+      const lineBuf = combined.subarray(lineStart, nl);
+      if (lineBuf.length > 0) {
+        state.currentLineStart = cursor;
+        if (state.provider.reduceTranscriptLine(state, lineBuf.toString('utf8'))) changed = true;
+      }
+      cursor += lineBuf.length + 1; // +1 for the \n
+      lineStart = nl + 1;
     }
+    // Carry whatever follows the last newline to the next read (copy out so we
+    // don't pin the whole `combined` buffer in memory).
+    scratch.remainder = lineStart < combined.length
+      ? Buffer.from(combined.subarray(lineStart))
+      : undefined;
 
     // Claude Code ≥ 2.1.119 spawns background agents via the `Agent` tool
     // with `run_in_background: true`. Each background agent writes its own
@@ -500,17 +561,28 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
       if (uuid) state.msgInfo.set(uuid, { belongsTo, spawnedTasks });
       // tool_result blocks can resolve a subagent's Task call, marking it done.
       updateSubagentsFromToolResults(msg.content, state, ts, belongsTo);
-      const preview = extractText(msg.content);
-      if (preview) {
+      const rawText = extractRawText(msg.content);
+      if (rawText) {
         if (belongsTo) {
           const sa = state.subagentMap.get(belongsTo);
-          if (sa) sa.lastMessage = preview;
+          if (sa) sa.lastMessage = compactPreview(rawText);
           return true;
         }
-        snap.lastUserMessage = preview;
-        if (ts) snap.lastUserMessageAt = ts;
-        snap.messageCount++;
-        return true;
+        // Meta records (isMeta:true — local-command caveats, hook /
+        // system-reminder injections) aren't real user turns, so they must not
+        // become the preview or inflate messageCount. And a slash-command turn
+        // records its text inside a `<local-command-*>` wrapper, so unwrap it on
+        // the FULL text (before truncation) to the typed message or command name.
+        if (evt.isMeta !== true) {
+          const u = unwrapLocalCommand(rawText);
+          const clean = u.text ?? u.commandName;
+          if (clean) {
+            snap.lastUserMessage = compactPreview(clean);
+            if (ts) snap.lastUserMessageAt = ts;
+            snap.messageCount++;
+            return true;
+          }
+        }
       }
       // tool_result — clear pending tool use (best effort, main thread only)
       if (!belongsTo) {
@@ -637,7 +709,12 @@ export function scanBackgroundAgents(state: TailState): boolean {
   let changed = false;
   const nowMs = Date.now();
   const DONE_AFTER_MS = 30_000; // no writes for 30s → agent is done
+  // A pending tool_use can legitimately run for minutes (a build, a test
+  // suite), so an agent with an unresolved tool gets a much longer idle budget
+  // before we call it done — otherwise long tools flip to "done" at 30s.
+  const TOOL_DONE_AFTER_MS = 600_000;
   const seen = new Set<string>();
+  const statCache = bgStatCacheOf(state);
 
   for (const entry of entries) {
     const m = /^agent-([0-9a-zA-Z]+)\.jsonl$/.exec(entry);
@@ -650,60 +727,87 @@ export function scanBackgroundAgents(state: TailState): boolean {
     let stat: fs.Stats;
     try { stat = fs.statSync(jsonlPath); } catch { continue; }
 
-    // Read meta once per agent (cheap, tiny files).
     let agentType: string | undefined;
     let description: string | undefined;
-    try {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      agentType = typeof meta.agentType === 'string' ? meta.agentType : undefined;
-      description = typeof meta.description === 'string' ? meta.description : undefined;
-    } catch { /* no meta yet — fall back to undefined */ }
-
-    // Walk the whole agent file to find the last text and outstanding tool.
-    // Background-agent jsonls are typically 50-200KB and read fast.
     let lastText = '';
     let lastToolName: string | undefined;
     let lastToolInput: string | undefined;
     let pendingToolId: string | undefined;
-    try {
-      const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n');
-      for (const line of lines) {
-        if (!line) continue;
-        let e: Record<string, unknown>;
-        try { e = JSON.parse(line); } catch { continue; }
-        const msg = (e.message as { role?: string; content?: unknown }) || {};
-        const content = msg.content;
-        if (Array.isArray(content)) {
-          for (const block of content) {
-            if (!block || typeof block !== 'object') continue;
-            const b = block as Record<string, unknown>;
-            if (b.type === 'text' && typeof b.text === 'string') {
-              const t = (b.text as string).trim();
-              if (t) lastText = t;
-            } else if (b.type === 'tool_use') {
-              const name = typeof b.name === 'string' ? (b.name as string) : '';
-              const id = typeof b.id === 'string' ? (b.id as string) : undefined;
-              const input = (b.input as Record<string, unknown>) || {};
-              let preview = '';
-              for (const k of ['command', 'file_path', 'pattern', 'description', 'query', 'url']) {
-                const v = input[k];
-                if (typeof v === 'string' && v) { preview = compactPreview(v); break; }
-              }
-              lastToolName = name;
-              lastToolInput = preview;
-              pendingToolId = id;
-            } else if (b.type === 'tool_result') {
-              if (pendingToolId && b.tool_use_id === pendingToolId) {
-                pendingToolId = undefined; // resolved
+
+    const cached = statCache.get(agentId);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      // Unchanged since the last poll — reuse the parsed fields and only
+      // re-evaluate the mtime/pending-tool state below. Avoids re-reading and
+      // re-JSON.parsing every background-agent jsonl on each 3s tick.
+      agentType = cached.agentType;
+      description = cached.description;
+      lastText = cached.lastText;
+      lastToolName = cached.lastToolName;
+      lastToolInput = cached.lastToolInput;
+      pendingToolId = cached.pendingToolId;
+    } else {
+      // Read meta once per change (cheap, tiny files).
+      try {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        agentType = typeof meta.agentType === 'string' ? meta.agentType : undefined;
+        description = typeof meta.description === 'string' ? meta.description : undefined;
+      } catch { /* no meta yet — fall back to undefined */ }
+
+      // Walk the whole agent file to find the last text and outstanding tool.
+      // Background-agent jsonls are typically 50-200KB and read fast.
+      try {
+        const lines = fs.readFileSync(jsonlPath, 'utf8').split('\n');
+        for (const line of lines) {
+          if (!line) continue;
+          let e: Record<string, unknown>;
+          try { e = JSON.parse(line); } catch { continue; }
+          const msg = (e.message as { role?: string; content?: unknown }) || {};
+          const content = msg.content;
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (!block || typeof block !== 'object') continue;
+              const b = block as Record<string, unknown>;
+              if (b.type === 'text' && typeof b.text === 'string') {
+                const t = (b.text as string).trim();
+                if (t) lastText = t;
+              } else if (b.type === 'tool_use') {
+                const name = typeof b.name === 'string' ? (b.name as string) : '';
+                const id = typeof b.id === 'string' ? (b.id as string) : undefined;
+                const input = (b.input as Record<string, unknown>) || {};
+                let preview = '';
+                for (const k of ['command', 'file_path', 'pattern', 'description', 'query', 'url']) {
+                  const v = input[k];
+                  if (typeof v === 'string' && v) { preview = compactPreview(v); break; }
+                }
+                lastToolName = name;
+                lastToolInput = preview;
+                pendingToolId = id;
+              } else if (b.type === 'tool_result') {
+                if (pendingToolId && b.tool_use_id === pendingToolId) {
+                  pendingToolId = undefined; // resolved
+                }
               }
             }
           }
         }
-      }
-    } catch { continue; }
+      } catch { continue; }
+
+      statCache.set(agentId, {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        agentType,
+        description,
+        lastText,
+        lastToolName,
+        lastToolInput,
+        pendingToolId,
+      });
+    }
 
     const ageMs = nowMs - stat.mtimeMs;
-    const isDone = ageMs > DONE_AFTER_MS;
+    // An unresolved tool_use keeps the agent "running" well past the idle
+    // threshold; only a completed last block (text / tool_result) expires at 30s.
+    const isDone = pendingToolId ? ageMs > TOOL_DONE_AFTER_MS : ageMs > DONE_AFTER_MS;
     const newState: SubagentState = isDone
       ? 'done'
       : pendingToolId
@@ -751,6 +855,7 @@ export function scanBackgroundAgents(state: TailState): boolean {
     // background-agent shape.
     if (/^a[0-9a-f]{16}$/i.test(id) && !seen.has(id)) {
       state.subagentMap.delete(id);
+      statCache.delete(id);
       changed = true;
     }
   }
@@ -871,8 +976,10 @@ function updateSubagentsFromToolResults(
   }
 }
 
-function extractText(content: unknown): string | undefined {
-  if (typeof content === 'string') return compactPreview(content);
+/** Join the raw text blocks of a message without collapsing/truncating, so a
+ *  caller can unwrap a `<local-command-*>` wrapper on the full text first. */
+function extractRawText(content: unknown): string | undefined {
+  if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return undefined;
   const texts: string[] = [];
   for (const block of content) {
@@ -881,7 +988,12 @@ function extractText(content: unknown): string | undefined {
     if (b.type === 'text' && typeof b.text === 'string') texts.push(b.text);
   }
   if (texts.length === 0) return undefined;
-  return compactPreview(texts.join(' '));
+  return texts.join(' ');
+}
+
+function extractText(content: unknown): string | undefined {
+  const raw = extractRawText(content);
+  return raw === undefined ? undefined : compactPreview(raw);
 }
 
 function compactPreview(s: string): string {

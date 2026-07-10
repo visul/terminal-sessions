@@ -149,7 +149,6 @@ export const COMMAND = {
   resumeFromArchive: 'terminalSessions.resumeFromArchive',
   cleanupSessions: 'terminalSessions.cleanupSessions',
   newMasterGroup: 'terminalSessions.newMasterGroup',
-  newGroupInMaster: 'terminalSessions.newGroupInMaster',
   moveGroupToMaster: 'terminalSessions.moveGroupToMaster',
   revealSessionFolder: 'terminalSessions.revealSessionFolder',
   revealSessionFolderFinder: 'terminalSessions.revealSessionFolderFinder',

@@ -10,6 +10,7 @@ import {
 } from '../hooks';
 import { reduceAgyTranscriptLine, readAgyTranscriptSummary } from './transcript';
 import { FlagSpec, captureFlags, withFlags } from '../launch-flags';
+import { posixQuote } from '../../shell-escape';
 
 // agy mirrors Claude's launch surface (same `--dangerously-skip-permissions`
 // yolo flag, per the user's `agyd` alias). MCP lives in agy's own config, not
@@ -51,6 +52,10 @@ const AGY_HOOK_EVENTS = [
 // Both the shared forwarder name and the marker we match on for our entries.
 const HOOK_MARKER = 'agent-hook.sh';
 
+// Side key under which a user's pre-existing statusLine is stashed before we
+// install ours, so uninstall can restore it instead of deleting theirs.
+const STATUSLINE_BACKUP_KEY = 'statusLine_pre_terminal_sessions';
+
 function isOurAgyHook(command: string): boolean {
   return command.includes(HOOK_MARKER);
 }
@@ -91,6 +96,15 @@ function installStatusLine(forwarderPath: string): boolean {
     if (!parsed) return false; // unparseable — installJsonSettingsHook already warned
     settings = parsed;
   }
+  // Preserve a user-configured statusLine: if one is present and isn't ours,
+  // stash it under a side key so uninstall can put it back. Capture only once —
+  // re-installing must not overwrite an earlier backup with our own entry.
+  const existing = settings.statusLine as { command?: unknown } | undefined;
+  if (existing && typeof existing === 'object'
+      && !(typeof existing.command === 'string' && isOurAgyHook(existing.command))
+      && settings[STATUSLINE_BACKUP_KEY] === undefined) {
+    settings[STATUSLINE_BACKUP_KEY] = existing;
+  }
   settings.statusLine = {
     type: 'command',
     command: `"${forwarderPath}" agy statusline`,
@@ -109,7 +123,15 @@ function uninstallStatusLine(): void {
   if (!settings) return;
   const sl = settings.statusLine as { command?: unknown } | undefined;
   if (sl && typeof sl === 'object' && typeof sl.command === 'string' && isOurAgyHook(sl.command)) {
-    delete settings.statusLine;
+    // Restore the user's previous statusLine if we stashed one on install;
+    // otherwise just drop ours.
+    const saved = settings[STATUSLINE_BACKUP_KEY];
+    if (saved !== undefined) {
+      settings.statusLine = saved;
+      delete settings[STATUSLINE_BACKUP_KEY];
+    } else {
+      delete settings.statusLine;
+    }
     try { fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2)); }
     catch { /* best effort */ }
   }
@@ -209,10 +231,12 @@ export const agyProvider: AgentProvider = {
   ): string {
     void transcriptPath;
     const recorded = recordedCwdForConv(sessionId);
+    // Single-quote the recorded cwd and conversation id (posixQuote) so a path or
+    // id carrying shell metacharacters isn't expanded when the resume command runs.
     const base = recorded && recorded !== terminalCwd
       // agy is cwd-sensitive; cd back to the recorded workspace before resuming.
-      ? `cd "${recorded.replace(/"/g, '\\"')}" && agy --conversation ${sessionId}`
-      : `agy --conversation ${sessionId}`;
+      ? `cd ${posixQuote(recorded)} && agy --conversation ${posixQuote(sessionId)}`
+      : `agy --conversation ${posixQuote(sessionId)}`;
     return withFlags(base, extraFlags, AGY_FLAGS);
   },
 
@@ -247,7 +271,11 @@ export const agyProvider: AgentProvider = {
       const tp = transcriptPathForConv(convId);
       if (!fs.existsSync(tp)) continue;
       const recordedCwd = cwdByConv.get(convId);
-      if (cwd && recordedCwd && recordedCwd !== cwd) continue; // cwd filter
+      // When a workspace filter is active, treat an unknown-cwd conversation as
+      // non-matching: agy keeps only the newest conversation per directory in
+      // cache/last_conversations.json, so older ones have no recorded cwd and
+      // would otherwise leak into every workspace (and resume with no cwd).
+      if (cwd && recordedCwd !== cwd) continue; // cwd filter
       const summary = readAgyTranscriptSummary(tp);
       out.push({
         agent: 'agy',

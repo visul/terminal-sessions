@@ -1,7 +1,5 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import { SessionIndex } from './session-manager';
 import * as tmux from './tmux';
 import { getConfig } from './config';
@@ -131,7 +129,15 @@ export async function maybeOfferRestore(
       // Honor per-session folderPath when set (subfolder sessions). Fall back
       // to the workspace root for plain workspace-level sessions.
       const cwd = c.meta.folderPath || wsEntry.path;
-      await tmux.createDetachedSession(tmuxPath, c.sessionName, cwd);
+      try {
+        await tmux.createDetachedSession(tmuxPath, c.sessionName, cwd);
+      } catch (createErr) {
+        // Reboot-restore race: a second window of the same workspace may have
+        // recreated this session between our listSessions check above and now.
+        // If it exists we adopt and attach it rather than reporting a spurious
+        // failure and attaching nothing.
+        if (!(await tmux.hasSession(tmuxPath, c.sessionName))) throw createErr;
+      }
       recreated++;
       const term = await openTerminalForSession(c.sessionName, cwd, index);
       if (term) attached++;
@@ -206,26 +212,4 @@ export async function maybeOfferRestore(
   vscode.window.showInformationMessage(summary);
   refreshSidebar();
   return { ran: true, recreated, attached };
-}
-
-/**
- * If Claude Code wrote a JSONL file for this workspace, suggest a resume command
- * with the most recent session id.
- */
-function claudeResumeHint(wsPath: string): string | undefined {
-  try {
-    const claudeDir = path.join(os.homedir(), '.claude', 'projects', wsPath.replace(/\//g, '-'));
-    if (!fs.existsSync(claudeDir)) return undefined;
-    const files = fs.readdirSync(claudeDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ name: f, mtime: fs.statSync(path.join(claudeDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    if (files.length === 0) return undefined;
-    const latest = files[0];
-    const sessionId = latest.name.replace(/\.jsonl$/, '');
-    const age = Math.floor((Date.now() - latest.mtime) / 60000);
-    return `Last Claude session: \`claude --resume ${sessionId}\` (${age}m ago)`;
-  } catch {
-    return undefined;
-  }
 }

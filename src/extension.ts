@@ -8,7 +8,7 @@ import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
 import { registerLongRunNotifier } from './long-run-notifier';
 import { maybeOfferRestore } from './restore';
-import { ClaudeTracker, isClaudeHookInstalled, needsHookUpgrade } from './claude-tracker';
+import { ClaudeTracker } from './claude-tracker';
 import { AgentRegistry } from './agents/registry';
 import { ClaudeSearchIndex } from './claude-search';
 import { resolveTmuxNameForTerminalLive } from './profile-provider';
@@ -88,6 +88,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       ) refreshSidebar();
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {
         void applyNoFlickerChange();
+      }
+      // Drop the cached tmux path so a corrected terminalSessions.tmuxPath takes
+      // effect immediately instead of only after a window reload.
+      if (e.affectsConfiguration('terminalSessions.tmuxPath')) {
+        void import('./tmux').then(m => m.clearTmuxPathCache());
       }
     }),
   );

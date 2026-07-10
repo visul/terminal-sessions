@@ -189,6 +189,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     const hasAnyClaudeData =
       hasActiveClaude || (claude !== undefined && (claude.model || claude.messageCount));
     let collapsible = vscode.TreeItemCollapsibleState.None;
+    let expansionSalt = '';
     if (hasAnyClaudeData && detailsMode !== 'off') {
       const shouldExpand = detailsMode === 'always'
         ? true
@@ -198,12 +199,20 @@ export class SessionTreeItem extends vscode.TreeItem {
       collapsible = shouldExpand
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
+      // In 'auto' mode the expansion is supposed to follow Claude's state, but VS
+      // Code persists expand/collapse keyed by TreeItem.id and ignores the
+      // recomputed collapsibleState on a rebuild with the same id. Salt the id
+      // with the desired state so an idle→working transition produces a "new"
+      // item that actually auto-expands (and re-collapses when idle again).
+      // 'collapsed'/'off' keep the plain id so the user's manual toggle sticks.
+      if (detailsMode === 'auto') expansionSalt = shouldExpand ? ':e1' : ':e0';
     }
     super(label, collapsible);
     // Stable id (unique across the tree) so treeView.reveal() can locate and
     // scroll to this session by id regardless of which fresh instance a
-    // getChildren pass produced.
-    this.id = `ses:${session.workspaceHash}:${session.name}`;
+    // getChildren pass produced. The optional expansion salt (auto mode) is the
+    // only thing that varies it, and only when the details' desired state flips.
+    this.id = `ses:${session.workspaceHash}:${session.name}${expansionSalt}`;
     // Stopped session: muted icon + greyed label via FileDecorationProvider,
     // single-click row to start, no Claude details (process is dead).
     if (session.stopped) {

@@ -253,8 +253,18 @@ export function reduceCodexTranscriptLine(state: TranscriptTailState, line: stri
       return false;
     }
 
-    // task_started, context_compacted, etc. — no snapshot fields to mutate
-    // (state is inferred from mtime by the tracker).
+    if (pt === 'task_started') {
+      // New turn boundary — reset the intra-turn preview dedup so a genuinely
+      // repeated prompt or answer next turn ("continue" twice) isn't swallowed
+      // as a duplicate of the previous turn's text. Both user-message forms are
+      // recorded AFTER task_started, so the same-turn dedup still works.
+      scratch.lastUserPreview = undefined;
+      scratch.lastAssistantPreview = undefined;
+      return false;
+    }
+
+    // context_compacted, etc. — no snapshot fields to mutate (state is inferred
+    // from mtime by the tracker).
     return false;
   }
 
@@ -264,7 +274,9 @@ export function reduceCodexTranscriptLine(state: TranscriptTailState, line: stri
 /**
  * Apply a `token_count` event. `payload.info` may be null (lines that carry
  * only `rate_limits`), so every field is guarded. We:
- *   • set currentContextTokens from the cumulative total,
+ *   • set currentContextTokens from the LATEST turn (`last_token_usage`
+ *     input+output) — the cumulative `total_token_usage` sums every turn's input
+ *     and so overshoots the context window after a few turns,
  *   • set currentContextLimit from model_context_window (fallback 256k),
  *   • accumulate per-turn input/output from `last_token_usage`,
  *   • map cached_input_tokens → cacheRead,
@@ -278,9 +290,15 @@ function applyTokenCount(state: TranscriptTailState, payload: Record<string, unk
 
   let changed = false;
 
-  const total = i.total_token_usage as Record<string, unknown> | undefined;
-  if (total && typeof total === 'object') {
-    const ctx = Number(total.total_tokens || 0);
+  const last = i.last_token_usage as Record<string, unknown> | undefined;
+
+  // Context meter: the LIVE window occupancy is the latest turn's prompt+output,
+  // NOT the session-cumulative total. `total_token_usage.total_tokens` sums every
+  // turn's input, so it blows past 100% after a few turns. Codex's input_tokens
+  // already includes the cached prefix (cached ⊆ input — see pricing.ts), so the
+  // current context is input + output of `last_token_usage`.
+  if (last && typeof last === 'object') {
+    const ctx = Number(last.input_tokens || 0) + Number(last.output_tokens || 0);
     if (ctx > 0) {
       snap.currentContextTokens = ctx;
       if (ctx > snap.maxContextSeen) snap.maxContextSeen = ctx;
@@ -298,7 +316,6 @@ function applyTokenCount(state: TranscriptTailState, payload: Record<string, unk
   // Per-turn delta drives token accumulation + cost. Codex reports this in
   // `last_token_usage`; if absent (rare), skip billing rather than re-counting
   // the cumulative total.
-  const last = i.last_token_usage as Record<string, unknown> | undefined;
   if (last && typeof last === 'object') {
     const input = Number(last.input_tokens || 0);
     const cached = Number(last.cached_input_tokens || 0);
@@ -331,33 +348,50 @@ export interface CodexTranscriptSummary {
 }
 
 /**
- * Read summary fields from a Codex rollout file in one pass: the recorded cwd
- * (from session_meta / turn_context), the first real user prompt (preview for
- * the resume picker), total line count, byte size and mtime. Parses only the
- * first ~200 lines for cwd/first-user; the rest are merely counted. Returns
+ * Read summary fields from a Codex rollout file: the recorded cwd (from
+ * session_meta / turn_context), the first real user prompt (preview for the
+ * resume picker), byte size and mtime. Reads only a 256KB head window (these
+ * rollouts can be hundreds of MB) and parses at most its first 200 lines for
+ * cwd/first-user; `lineCount` is a cosmetic estimate from byte size. Returns
  * undefined when the file is unreadable.
  */
 export function readCodexTranscriptSummary(transcriptPath: string): CodexTranscriptSummary | undefined {
   let stat: fs.Stats;
-  let buf: string;
   try {
     stat = fs.statSync(transcriptPath);
-    buf = fs.readFileSync(transcriptPath, 'utf8');
   } catch {
     return undefined;
   }
 
+  // cwd + first user prompt live in the first handful of lines, so read only a
+  // head window instead of the whole rollout — these files can be hundreds of MB
+  // and listSessions() calls this for every recent session on picker open.
+  const HEAD_BYTES = 256 * 1024;
+  const readLen = Math.min(HEAD_BYTES, stat.size);
+  let buf: string;
+  try {
+    const fd = fs.openSync(transcriptPath, 'r');
+    const b = Buffer.alloc(readLen);
+    fs.readSync(fd, b, 0, readLen, 0);
+    fs.closeSync(fd);
+    buf = b.toString('utf8');
+  } catch {
+    return undefined;
+  }
+
+  const truncated = stat.size > readLen; // last line in the window may be partial
   let cwd: string | undefined;
   let firstUser: string | undefined;
-  let lineCount = 0;
+  let headLines = 0;
   let cursor = 0;
   while (cursor < buf.length) {
     const next = buf.indexOf('\n', cursor);
+    if (next < 0 && truncated) break; // drop the trailing partial line
     const end = next < 0 ? buf.length : next;
     const line = buf.slice(cursor, end);
     if (line.length > 0) {
-      lineCount++;
-      if (lineCount <= 200 && line[0] === '{' && (!cwd || !firstUser)) {
+      headLines++;
+      if (headLines <= 200 && line[0] === '{' && (!cwd || !firstUser)) {
         try {
           const obj = JSON.parse(line) as { type?: unknown; payload?: unknown };
           const payload = (obj.payload && typeof obj.payload === 'object')
@@ -387,6 +421,12 @@ export function readCodexTranscriptSummary(transcriptPath: string): CodexTranscr
     if (next < 0) break;
     cursor = next + 1;
   }
+
+  // lineCount is cosmetic; estimate it from byte size when the file exceeds the
+  // head window rather than reading the whole file just to count newlines.
+  const lineCount = truncated && headLines > 0
+    ? Math.round(stat.size / (readLen / headLines))
+    : headLines;
 
   return {
     cwd,

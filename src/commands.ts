@@ -5,7 +5,7 @@ import * as vscode from 'vscode';
 import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
-import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive } from './profile-provider';
+import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem } from './sidebar/items';
 import { refreshSidebar, collapseAllSessions, revealSessionInSidebar } from './sidebar/tree-provider';
@@ -13,7 +13,7 @@ import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
 import { notify } from './notifications';
-import { ClaudeTracker, installClaudeHook, uninstallClaudeHook, isClaudeHookInstalled } from './claude-tracker';
+import { ClaudeTracker } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
@@ -262,7 +262,6 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.newGroup, (item?: WorkspaceTreeItem | GroupTreeItem) => cmdNewGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.newMasterGroup, (item?: WorkspaceTreeItem | GroupTreeItem) => cmdNewMasterGroup(index, item)),
-    vscode.commands.registerCommand(COMMAND.newGroupInMaster, (item?: GroupTreeItem) => cmdNewGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.moveGroupToMaster, (item?: GroupTreeItem) => cmdMoveGroupToMaster(index, item)),
     vscode.commands.registerCommand(COMMAND.renameGroup, (item?: GroupTreeItem) => cmdRenameGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.deleteGroup, (item?: GroupTreeItem) => cmdDeleteGroup(index, item)),
@@ -314,6 +313,7 @@ async function cmdSetAllAlerts(value?: boolean): Promise<void> {
 const CONVERSATION_SCHEME = 'ts-conversation';
 
 class ConversationDocProvider implements vscode.TextDocumentContentProvider {
+  private static readonly MAX_DOCS = 12;
   private readonly docs = new Map<string, string>();
   private readonly _onDidChange = new vscode.EventEmitter<vscode.Uri>();
   readonly onDidChange = this._onDidChange.event;
@@ -321,7 +321,18 @@ class ConversationDocProvider implements vscode.TextDocumentContentProvider {
     return this.docs.get(uri.toString()) ?? '_No content._';
   }
   set(uri: vscode.Uri, content: string): void {
-    this.docs.set(uri.toString(), content);
+    // Bounded LRU: a long-lived window that previews many conversations (the
+    // archive picker's eye button renders one per row) used to pin every rendered
+    // transcript — tens/hundreds of MB — in extension-host memory forever. Keep
+    // only the most recent MAX_DOCS; re-set moves a key to newest.
+    const key = uri.toString();
+    this.docs.delete(key);
+    this.docs.set(key, content);
+    while (this.docs.size > ConversationDocProvider.MAX_DOCS) {
+      const oldest = this.docs.keys().next().value as string | undefined;
+      if (oldest === undefined) break;
+      this.docs.delete(oldest);
+    }
     this._onDidChange.fire(uri);
   }
 }
@@ -645,6 +656,7 @@ async function cmdFindSession(searchIndex: ClaudeSearchIndex): Promise<void> {
     if (!sel) return;
     await openSessionActions(sel.entry);
   });
+  qp.onDidHide(() => qp.dispose());
   qp.show();
 }
 
@@ -839,6 +851,10 @@ async function cmdRestart(
     // recordSession keeps existing label/icon/color; just ensures entry exists.
     index.recordSession(parsed.hash, name);
     await tmux.createDetachedSession(tmuxPath, name, restartCwd);
+    // Clear any lingering stopped flag (mirrors cmdStart) — otherwise a session
+    // restarted from the palette stays marked stopped and post-reboot restore
+    // filters it out as "intentionally stopped", losing its auto-resume.
+    index.setSessionStopped(parsed.hash, name, false);
     const term = await openTerminalForSession(name, restartCwd, index, true);
     if (term && claudeSessionId) {
       // Give the shell a moment to init (rc files, prompt) before sending
@@ -1135,7 +1151,7 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
   }
 
   index.recordWorkspace(wsHash, wsPath, wsLabel);
-  const tabId = index.getNextTabId(wsHash, cfg.sessionPrefix);
+  const tabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, wsHash);
   const name = buildSessionName(cfg.sessionPrefix, wsHash, tabId);
   // Persist folderPath only when it differs from the workspace root so a
   // simple "new session in workspace" still inherits future workspace renames.
@@ -1490,6 +1506,9 @@ async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem
   const picks: Pick[] = [];
   for (const [gid, g] of Object.entries(groups)) {
     if (item.session.groupId === gid) continue; // already in this group
+    if (g.kind === 'master') continue; // masters hold only groups; a session moved
+    // into one would render nowhere and vanish from the sidebar (drag-drop already
+    // rejects this; the picker must too).
     picks.push({ action: 'group', groupId: gid, label: `$(folder-library) ${g.name}` });
   }
   picks.push({ action: 'new', label: '$(add) New group...' });
@@ -1565,6 +1584,10 @@ async function cmdResumeFromArchive(
 
   const qp = vscode.window.createQuickPick<Pick>();
   qp.matchOnDetail = true;
+  // Keep the picker open when a row button (View / Name) opens another UI —
+  // otherwise the focus change hides it and the user must re-run the command and
+  // scroll back, defeating the browse-then-resume flow the buttons exist for.
+  qp.ignoreFocusOut = true;
   const refresh = () => {
     qp.placeholder = scopeCwd
       ? `Resume a past session (this workspace${ws?.label ? ' — ' + ws.label : ''})`
@@ -1626,7 +1649,7 @@ async function cmdResumeFromArchive(
   // New persistent session (mirrors cmdNewPersistent), then send resume.
   if (!ws) { vscode.window.showErrorMessage('No workspace folder open to create a session in.'); return; }
   index.recordWorkspace(ws.hash, ws.path, ws.label);
-  const tabId = index.getNextTabId(ws.hash, cfg.sessionPrefix);
+  const tabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, ws.hash);
   const name = buildSessionName(cfg.sessionPrefix, ws.hash, tabId);
   index.recordSession(ws.hash, name);
   const meta = index.getSessionMeta(ws.hash, name);
@@ -1666,7 +1689,18 @@ async function cmdCleanupSessions(
   if (!scopeChoice) return;
   const scopeCwd = scopeChoice.all ? undefined : ws?.path;
 
-  const sessions = scanArchive(registry.enabled(), (id) => index.getSessionName(id), scopeCwd);
+  // Claude ONLY. The 'empty'/'invalid' classifier below is Claude-format
+  // (readTranscriptSummary sniffs Claude JSONL) and the .bak soft-delete scheme
+  // assumes the ~/.claude/projects layout. Scanning every enabled provider made
+  // it score every Codex/agy/grok rollout as 'empty' (0 Claude-shaped turns) and
+  // bulk-move real, resumable conversations out of ~/.codex/sessions. Restrict to
+  // Claude so a foreign agent's transcripts are never classified or moved.
+  const claudeProvider = registry.getProvider('claude');
+  if (!claudeProvider) {
+    vscode.window.showInformationMessage('Session cleanup applies to Claude sessions only, and Claude is not enabled.');
+    return;
+  }
+  const sessions = scanArchive([claudeProvider], (id) => index.getSessionName(id), scopeCwd);
   const targets: Array<{ s: ArchivedSession; verdict: 'empty' | 'invalid' }> = [];
   for (const s of sessions) {
     if (!s.transcriptPath) continue;
@@ -1763,7 +1797,7 @@ async function cmdResumeOtherClaude(
   // the tmux session has no process to attach to. Prompt user to Start first.
   if (session.stopped) {
     const choice = await vscode.window.showInformationMessage(
-      `Session "${session.label}" is stopped. Start it first?`,
+      `Session "${session.label || session.name}" is stopped. Start it first?`,
       'Start and Resume', 'Cancel',
     );
     if (choice !== 'Start and Resume') return;
@@ -1783,7 +1817,7 @@ async function cmdResumeOtherClaude(
   const term = findTerminalForSession(session.name);
   if (!term) {
     vscode.window.showWarningMessage(
-      `Couldn't find an attached terminal for "${session.label}". Click the session to attach, then try Resume again.`,
+      `Couldn't find an attached terminal for "${session.label || session.name}". Click the session to attach, then try Resume again.`,
     );
     return;
   }
