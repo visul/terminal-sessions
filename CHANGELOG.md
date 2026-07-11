@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.18] — 2026-07-11
+
+### Added
+- **Restart / Stop from the native terminal tab.** Right-clicking a terminal tab now offers **Restart Session** and **Stop Session** directly above the built-in "Kill Terminal", so you no longer have to open the sidebar to stop or restart the session in the tab you're looking at. Both resolve the tmux session from the right-clicked tab (the same mechanism the existing "Reveal…" entries use) and behave exactly like their sidebar counterparts — Stop keeps the entry in the sidebar (`tmux kill-session` + marks stopped), Restart re-creates a fresh shell while keeping label/icon/color. Note this is distinct from VS Code's built-in "Kill Terminal", which only detaches a tmux session (it stays alive in the background).
+
 ## [0.20.17] — 2026-07-10
 
 Codebase-wide audit remediation: a multi-agent review surfaced 71 confirmed defects; all are fixed here. No feature or config changes — behavior only becomes more correct.

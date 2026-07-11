@@ -239,8 +239,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.testNotification, () => cmdTestNotification()),
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook(registry)),
-    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem) => cmdRestart(index, registry, claudeTracker, item)),
-    vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem) => cmdStop(index, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal) => cmdRestart(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem | vscode.Terminal) => cmdStop(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.start, (item?: SessionTreeItem) => cmdStart(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
@@ -761,16 +761,40 @@ async function cmdPickFilterMode(): Promise<void> {
   refreshSidebar();
 }
 
+/**
+ * Resolve the tmux session name an action should target from whatever the
+ * command handler was invoked with. The sidebar right-click passes a
+ * SessionTreeItem; the native terminal-tab / terminal context menu passes the
+ * vscode.Terminal for that tab (same shape cmdRevealSessionInSidebar relies on).
+ * Returns undefined when neither yields a session — callers fall back to their
+ * own session picker. Deliberately does NOT fall back to the active terminal:
+ * for stop/restart, silently targeting a different session than the one the user
+ * right-clicked would be destructive.
+ */
+async function resolveSessionNameFromInvocation(
+  arg: SessionTreeItem | vscode.Terminal | undefined,
+  index: SessionIndex,
+  prefix: string,
+): Promise<string | undefined> {
+  const asItem = arg as SessionTreeItem | undefined;
+  if (asItem?.session?.name) return asItem.session.name;
+  const asTerm = arg as vscode.Terminal | undefined;
+  if (asTerm && typeof asTerm.sendText === 'function') {
+    return resolveTmuxNameForTerminalLive(asTerm, index, prefix);
+  }
+  return undefined;
+}
+
 async function cmdRestart(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
-  item?: SessionTreeItem,
+  item?: SessionTreeItem | vscode.Terminal,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
-  let name = item?.session.name;
+  let name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
   if (!name) {
     const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
     interface Pick extends vscode.QuickPickItem { sessionName: string; wsHash: string; wsPath: string }
@@ -880,12 +904,12 @@ async function cmdRestart(
 async function cmdStop(
   index: SessionIndex,
   claudeTracker: ClaudeTracker,
-  item?: SessionTreeItem,
+  item?: SessionTreeItem | vscode.Terminal,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
-  let name = item?.session.name;
+  let name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
   if (!name) {
     const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
     interface Pick extends vscode.QuickPickItem { sessionName: string }
