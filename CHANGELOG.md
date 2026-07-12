@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.21] — 2026-07-12
+
+### Added
+- **Kill Session from the native terminal tab.** Right-clicking a terminal tab now also offers **Kill Session** directly above the built-in "Kill Terminal" (below Restart/Stop). Unlike VS Code's "Kill Terminal" (which only detaches — the tmux session keeps running in the background), this fully terminates the tmux session and removes it from the sidebar, after a confirmation. Resolves the session from the right-clicked tab and behaves exactly like the sidebar's Kill.
+- **Locked sessions swap Kill for Unlock on the tab menu.** When the active terminal's session is locked, the tab menu replaces **Kill Session** with **Unlock (Allow Kill)** — so a protected session can't be killed by an accidental click, and if you do mean to kill it you unlock right there (then right-click again → Kill). VS Code can't read a right-clicked tab's session state in a menu `when` clause, so this keys off the active terminal (the one you're acting on), kept in sync on terminal switch and on lock/unlock; if it's ever momentarily stale, Kill still refuses locked sessions as a backstop.
+
+## [0.20.19] — 2026-07-11
+
+### Added
+- **Fork a Claude conversation into a parallel branch.** Right-click a Claude session in the sidebar → **Fork Conversation** to spin up a new session/tab that continues the same conversation on its own independent branch (via `claude --resume <id> --fork-session`, which mints a fresh conversation id — the two never share a transcript). You name the branch (optional, defaults to "fork N"), and both sessions get a shared **⑂ chip** (in the branch set's color) so the link is visible at a glance while they stay wherever they are in the sidebar. The command appears **only on Claude sessions** (other agents don't support forking yet). Sidebar-only by design — VS Code can't reliably gate the native terminal-tab menu per agent.
+- **Unlink from Branch Set.** Right-click a linked session → **Unlink from Branch Set** to make it standalone again; a set auto-dissolves once fewer than two members remain. This only drops the visual link — the conversations were independent from the moment of the fork, so nothing is lost.
+
 ## [0.20.18] — 2026-07-11
 
 ### Added

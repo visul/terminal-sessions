@@ -148,6 +148,7 @@ export const agyProvider: AgentProvider = {
   badge: 'agy',
   badgeIcon: 'rocket',
   resumeNeedsCwd: true,
+  supportsFork: false,
   hookEvents: AGY_HOOK_EVENTS,
 
   isInstalled(): boolean {

@@ -82,6 +82,7 @@ export const codexProvider: AgentProvider = {
   // but pointless; more importantly the tracker uses this flag to skip cwd
   // resolution entirely for Codex).
   resumeNeedsCwd: false,
+  supportsFork: false,
   hookEvents: CODEX_HOOK_EVENTS,
 
   isInstalled(): boolean {

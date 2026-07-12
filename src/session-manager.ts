@@ -1,10 +1,15 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel, GroupLabel } from './types';
+import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel, GroupLabel, BranchSet } from './types';
 import type { AgentId } from './agents/types';
+import { isForkableAgent } from './agents/registry';
 import * as tmux from './tmux';
 import { parseSessionName } from './workspace-id';
+
+/** Number of contributed branch-chip theme colors (terminalSessions.branchColor1..N).
+ *  New sets cycle through them round-robin. Keep in sync with contributes.colors. */
+const BRANCH_COLOR_COUNT = 8;
 
 export class SessionIndex {
   private indexPath: string;
@@ -367,6 +372,78 @@ export class SessionIndex {
     return max + 1;
   }
 
+  // ────────────────────── Branch set operations ──────────────────────
+  //
+  // A branch set loosely links sessions forked from one another
+  // (Claude --fork-session). Peers, not a hierarchy: every member is equal and
+  // carries `branchSetId`. Orthogonal to groups — a linked session keeps its
+  // position (root or inside a manual group). Metadata only; the forked
+  // conversations are already independent on disk.
+
+  private nextBranchSetId(hash: string): string {
+    const ws = this.data.workspaces[hash];
+    const existing = new Set(Object.keys(ws?.branchSets || {}));
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const id = 'b_' + Math.random().toString(36).slice(2, 6);
+      if (!existing.has(id)) return id;
+    }
+    return 'b_' + Date.now().toString(36);
+  }
+
+  /** Create a new branch set with `name`, assigning the next chip color
+   *  round-robin. Returns the new id (undefined if the workspace is unknown). */
+  createBranchSet(hash: string, name: string): string | undefined {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws) return undefined;
+    if (!ws.branchSets) ws.branchSets = {};
+    const id = this.nextBranchSetId(hash);
+    const n = (Object.keys(ws.branchSets).length % BRANCH_COLOR_COUNT) + 1;
+    const set: BranchSet = { name: name.trim() || 'branch', colorId: `terminalSessions.branchColor${n}` };
+    ws.branchSets[id] = set;
+    this.save();
+    return id;
+  }
+
+  /** Link a session into a branch set. No-op if workspace/session/set is unknown. */
+  addSessionToBranchSet(hash: string, sessionName: string, branchSetId: string): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (!ws.branchSets?.[branchSetId]) return;
+    ws.sessions[sessionName].branchSetId = branchSetId;
+    this.save();
+  }
+
+  /** Unlink a session from its branch set. When fewer than 2 members remain the
+   *  set auto-dissolves: the lone survivor is unlinked and the set entry deleted
+   *  (a set of one is meaningless). */
+  removeSessionFromBranchSet(hash: string, sessionName: string): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    const meta = ws?.sessions[sessionName];
+    if (!ws || !meta?.branchSetId) return;
+    const setId = meta.branchSetId;
+    delete meta.branchSetId;
+    const remaining = Object.values(ws.sessions).filter(s => s.branchSetId === setId);
+    if (remaining.length < 2) {
+      for (const s of remaining) delete s.branchSetId;
+      if (ws.branchSets) delete ws.branchSets[setId];
+    }
+    this.save();
+  }
+
+  getBranchSet(hash: string, branchSetId: string): BranchSet | undefined {
+    return this.data.workspaces[hash]?.branchSets?.[branchSetId];
+  }
+
+  /** Session names currently belonging to the given branch set. */
+  branchSetMembers(hash: string, branchSetId: string): string[] {
+    const ws = this.data.workspaces[hash];
+    if (!ws) return [];
+    return Object.keys(ws.sessions).filter(n => ws.sessions[n].branchSetId === branchSetId);
+  }
+
   // ────────────────────── Group operations ──────────────────────
   //
   // Groups live at workspace level and share the sortOrder pool with
@@ -587,6 +664,9 @@ export async function enrichSessions(
     liveNames.add(row.name);
     const ws = index.getWorkspace(parsed.hash);
     const meta = index.getSessionMeta(parsed.hash, row.name);
+    const bset = meta?.branchSetId ? ws?.branchSets?.[meta.branchSetId] : undefined;
+    const latestAgent: AgentId | undefined = meta?.agentSessions?.[0]?.agent
+      ?? ((meta?.lastClaudeSessionId || meta?.claudeSessionHistory?.length) ? 'claude' : undefined);
     out.push({
       name: row.name,
       workspaceHash: parsed.hash,
@@ -605,6 +685,10 @@ export async function enrichSessions(
       locked: meta?.locked,
       stopped: false,
       groupId: meta?.groupId,
+      branchSetId: meta?.branchSetId,
+      branchName: bset?.name,
+      branchColorId: bset?.colorId,
+      forkable: isForkableAgent(latestAgent),
       folderPath: meta?.folderPath,
     });
   }
@@ -618,6 +702,9 @@ export async function enrichSessions(
       if (!parsed) continue;
       const created = meta.createdAt ? new Date(meta.createdAt) : new Date(0);
       const lastActive = meta.lastActiveAt ? new Date(meta.lastActiveAt) : created;
+      const bset = meta.branchSetId ? ws.branchSets?.[meta.branchSetId] : undefined;
+      const latestAgent: AgentId | undefined = meta.agentSessions?.[0]?.agent
+        ?? ((meta.lastClaudeSessionId || meta.claudeSessionHistory?.length) ? 'claude' : undefined);
       out.push({
         name: sessionName,
         workspaceHash: hash,
@@ -636,6 +723,10 @@ export async function enrichSessions(
         locked: meta.locked,
         stopped: true,
         groupId: meta.groupId,
+        branchSetId: meta.branchSetId,
+        branchName: bset?.name,
+        branchColorId: bset?.colorId,
+        forkable: isForkableAgent(latestAgent),
         folderPath: meta.folderPath,
       });
     }

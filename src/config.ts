@@ -98,6 +98,11 @@ export async function setFilterMode(mode: SidebarFilterMode): Promise<void> {
 export const PROFILE_ID = 'terminalSessions.persistent';
 export const VIEW_ID = 'terminalSessions.sessions';
 export const STOPPED_URI_SCHEME = 'terminal-sessions-stopped';
+// resourceUri scheme for fork branch-set members. The BranchSetDecorationProvider
+// matches this scheme and reads the chip color/name from the uri query, so it
+// needs no index lookup. Distinct from the stopped scheme; a row has one
+// resourceUri, so a stopped+branched session keeps the stopped decoration.
+export const BRANCH_URI_SCHEME = 'terminal-sessions-branch';
 
 export const COMMAND = {
   toggleAllAlerts: 'terminalSessions.toggleAllAlerts',
@@ -129,6 +134,8 @@ export const COMMAND = {
   uninstallClaudeHook: 'terminalSessions.uninstallClaudeHook',
   restart: 'terminalSessions.restart',
   stop: 'terminalSessions.stop',
+  forkConversation: 'terminalSessions.forkConversation',
+  unlinkBranch: 'terminalSessions.unlinkBranch',
   start: 'terminalSessions.start',
   pickSortMode: 'terminalSessions.pickSortMode',
   pickFilterMode: 'terminalSessions.pickFilterMode',

@@ -26,6 +26,14 @@ export interface SessionInfo {
   locked?: boolean;  // when true, the session is protected from Kill (padlock shown; unlock to remove)
   stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
   groupId?: string;  // when set, session lives inside a custom group at workspace level
+  // Fork branch-set membership, resolved at enrichment time so the tree item can
+  // build the chip resourceUri without a second index lookup.
+  branchSetId?: string;
+  branchName?: string;     // set display name (chip tooltip)
+  branchColorId?: string;  // theme color id for the ⑂ chip
+  // True when this session's latest agent conversation can be forked (Claude).
+  // Drives the `forkable` contextValue token that gates the Fork command.
+  forkable?: boolean;
   // Actual cwd the tmux session was started in. Set for subfolder sessions
   // (right-click → New Persistent in Folder); differs from the workspace root.
   folderPath?: string;
@@ -49,6 +57,21 @@ export interface WorkspaceEntry {
   // sortOrder is shared with ungrouped sessions at workspace root — they live
   // at the same hierarchy level and the user reorders both via drag-drop.
   groups?: Record<string, GroupLabel>;
+  // Fork "branch sets": loose peer links between sessions that were forked from
+  // one another (Claude --fork-session). Keyed by short random id. A set is
+  // metadata only — the forked conversations are already independent on disk —
+  // and members carry `branchSetId`. Membership is orthogonal to `groups`: a
+  // linked session keeps its position (root or inside a manual group).
+  branchSets?: Record<string, BranchSet>;
+}
+
+export interface BranchSet {
+  // Human name derived from the origin session's label at fork time (e.g.
+  // "ASCK ⑂"). Shown in the row's chip tooltip.
+  name: string;
+  // Theme color id (terminalSessions.branchColorN) tinting every member's ⑂
+  // chip, so a set is recognizable at a glance. Assigned round-robin on create.
+  colorId: string;
 }
 
 export interface GroupLabel {
@@ -110,6 +133,10 @@ export interface SessionLabel {
   // Cleared (or undefined) means the session sits at the workspace root,
   // siblings with the groups, ordered by sortOrder among them.
   groupId?: string;
+  // When set, this session belongs to the named fork branch set (peers forked
+  // from the same conversation). Drives the ⑂ chip decoration. Cleared on Unlink;
+  // the set auto-dissolves when fewer than 2 members remain.
+  branchSetId?: string;
 }
 
 export interface TmuxSessionRow {

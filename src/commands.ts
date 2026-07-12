@@ -222,7 +222,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.newPersistent, () => cmdNewPersistent(index)),
     vscode.commands.registerCommand(COMMAND.newPersistentInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri)),
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
-    vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem) => cmdKill(index, item)),
+    vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal) => cmdKill(index, item)),
     vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
     vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
     vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, item)),
@@ -241,6 +241,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook(registry)),
     vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal) => cmdRestart(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem | vscode.Terminal) => cmdStop(index, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem) => cmdForkConversation(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
     vscode.commands.registerCommand(COMMAND.start, (item?: SessionTreeItem) => cmdStart(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
@@ -251,8 +253,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
-    vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem) => cmdSetSessionLocked(index, item, true)),
-    vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem) => cmdSetSessionLocked(index, item, false)),
+    vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem | vscode.Terminal) => cmdSetSessionLocked(index, item, true)),
+    vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem | vscode.Terminal) => cmdSetSessionLocked(index, item, false)),
     vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
@@ -496,22 +498,51 @@ async function cmdSetSessionMuted(
  *  important session from an accidental Kill click. Restart/Stop stay available. */
 async function cmdSetSessionLocked(
   index: SessionIndex,
-  item: SessionTreeItem | undefined,
+  item: SessionTreeItem | vscode.Terminal | undefined,
   locked: boolean,
 ): Promise<void> {
-  if (!item) {
-    vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
+  // Accepts a sidebar row OR a native terminal tab (Unlock (Allow Kill) is
+  // offered on the tab menu in place of Kill when the session is locked).
+  const cfg = getConfig();
+  const name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
+  if (!name) {
+    vscode.window.showErrorMessage('Use the sidebar context menu or a terminal tab on a session.');
     return;
   }
-  const name = item.session.name;
-  const parsed = parseSessionName(name, getConfig().sessionPrefix);
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
   if (!parsed) return;
   index.setSessionLocked(parsed.hash, name, locked);
   refreshSidebar();
+  // If the just-(un)locked session is the active terminal, refresh the tab-menu
+  // gate immediately so Kill Session ↔ Unlock flips without waiting for a
+  // terminal re-activation.
+  void syncActiveTerminalLockedContext(index);
+  const label = index.getSessionLabel(parsed.hash, name) || name;
   vscode.window.setStatusBarMessage(
-    `${item.session.label || name}: ${locked ? '🔒 locked — protected from Kill' : '🔓 unlocked'}`,
+    `${label}: ${locked ? '🔒 locked — protected from Kill' : '🔓 unlocked'}`,
     2500,
   );
+}
+
+/** The context key `terminalSessions.activeTerminalLocked` mirrors whether the
+ *  ACTIVE terminal's tmux session is locked. The native terminal-tab right-click
+ *  menu can't read the right-clicked tab's session state in a `when` clause, so
+ *  it keys off this — the active terminal is the one being acted on — to swap
+ *  Kill Session ↔ a "locked" hint. Falls to `false` (Kill shown) on any resolve
+ *  miss; cmdKill still refuses locked sessions as a backstop, so a momentarily
+ *  stale key only degrades to the pre-existing "warn on click" behavior. */
+export async function syncActiveTerminalLockedContext(index: SessionIndex): Promise<void> {
+  const setKey = (v: boolean): void => {
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalLocked', v);
+  };
+  const t = vscode.window.activeTerminal;
+  if (!t) { setKey(false); return; }
+  const cfg = getConfig();
+  const name = await resolveTmuxNameForTerminalLive(t, index, cfg.sessionPrefix);
+  if (!name) { setKey(false); return; }
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
+  if (!parsed) { setKey(false); return; }
+  setKey(index.isSessionLocked(parsed.hash, name));
 }
 
 /** Inline padlock button on a locked row. It is a deliberate no-op on the lock
@@ -899,6 +930,119 @@ async function cmdRestart(
   } catch (e) {
     vscode.window.showErrorMessage(`Restart failed: ${String(e).slice(0, 200)}`);
   }
+}
+
+/**
+ * Fork the conversation running in a session into a NEW parallel session/tab.
+ * Sidebar-only (the `forkable` contextValue gate keeps it off non-Claude rows).
+ * The new session resumes the same conversation with the provider's fork command
+ * (Claude: `--fork-session` → a brand-new conversation id), so the two branches
+ * are independent from the first message. Both are linked into a "branch set"
+ * (peers) so the shared ⑂ chip shows the relationship; Unlink dissolves it.
+ */
+async function cmdForkConversation(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  const src = item?.session;
+  if (!src) {
+    vscode.window.showInformationMessage('Right-click a Claude session in the Terminal Sessions sidebar to fork it.');
+    return;
+  }
+  const parsed = parseSessionName(src.name, cfg.sessionPrefix);
+  if (!parsed) return;
+  const ws = index.getWorkspace(parsed.hash);
+  if (!ws) return;
+
+  // Resolve WHICH conversation to fork, reusing the restart resolution so we
+  // fork the exact conversation this pane is on (walks history, skips dead ids).
+  const { provider, history } = resumeContextFor(index, registry, claudeTracker, parsed.hash, src.name);
+  if (!provider.supportsFork || !provider.buildForkCommand) {
+    vscode.window.showWarningMessage(`Fork is not supported for ${provider.displayName} sessions yet.`);
+    return;
+  }
+
+  // Fork cwd: stored folderPath → live tmux path → workspace root (mirrors restart).
+  let forkCwd = index.getSessionMeta(parsed.hash, src.name)?.folderPath || '';
+  if (!forkCwd) {
+    const live = await tmux.getSessionPath(tmuxPath, src.name);
+    if (live) forkCwd = live;
+  }
+  if (!forkCwd) forkCwd = ws.path;
+
+  const resumeInfo = resolveResumeFromHistory(provider, history, forkCwd, ws.path);
+  if (!resumeInfo) {
+    vscode.window.showWarningMessage('No agent conversation to fork yet — start Claude in this session first.');
+    return;
+  }
+
+  // Optional branch name (default "fork N" within the origin's set).
+  const originLabel = src.label || `#${parsed.tabId}`;
+  const existingSetId = index.getSessionMeta(parsed.hash, src.name)?.branchSetId;
+  const memberCount = existingSetId ? index.branchSetMembers(parsed.hash, existingSetId).length : 1;
+  const defaultName = `fork ${memberCount + 1}`;
+  const input = await vscode.window.showInputBox({
+    prompt: `Name this fork of "${originLabel}" (optional)`,
+    value: defaultName,
+    ignoreFocusOut: true,
+  });
+  if (input === undefined) return; // cancelled
+  const label = input.trim() || defaultName;
+
+  try {
+    // Allocate a fresh session in the same workspace and create its tmux.
+    const newTabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, parsed.hash);
+    const newName = buildSessionName(cfg.sessionPrefix, parsed.hash, newTabId);
+    await tmux.createDetachedSession(tmuxPath, newName, forkCwd);
+    index.recordSession(parsed.hash, newName, label, forkCwd !== ws.path ? forkCwd : undefined);
+    index.setSessionStopped(parsed.hash, newName, false);
+
+    // Link both into a branch set (peers). Reuse the origin's set, else create a
+    // new one seeded from the origin label and add the origin too.
+    let setId = existingSetId;
+    if (!setId) {
+      setId = index.createBranchSet(parsed.hash, `${originLabel} ⑂`);
+      if (setId) index.addSessionToBranchSet(parsed.hash, src.name, setId);
+    }
+    if (setId) index.addSessionToBranchSet(parsed.hash, newName, setId);
+
+    // Open the tab and type the fork command once the shell has initialized.
+    const term = await openTerminalForSession(newName, forkCwd, index, true);
+    if (term) {
+      await sleep(SHELL_INIT_DELAY_MS);
+      if (vscode.window.terminals.includes(term)) {
+        try {
+          term.sendText(provider.buildForkCommand(
+            resumeInfo.sessionId, forkCwd, resumeInfo.transcriptPath,
+            index.getResumeFlags(parsed.hash, src.name, provider.id),
+          ));
+        } catch (e) { console.error('[terminal-sessions] fork sendText failed:', e); }
+      }
+    }
+    refreshSidebar();
+  } catch (e) {
+    vscode.window.showErrorMessage(`Fork failed: ${String(e).slice(0, 200)}`);
+  }
+}
+
+/**
+ * Unlink a session from its fork branch set (it becomes standalone). The set
+ * auto-dissolves when fewer than two members remain. Purely a metadata change —
+ * the forked conversation is untouched (it was independent all along).
+ */
+async function cmdUnlinkBranch(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+  const s = item?.session;
+  if (!s?.branchSetId) {
+    vscode.window.showInformationMessage('Right-click a session with a ⑂ branch chip to unlink it.');
+    return;
+  }
+  index.removeSessionFromBranchSet(s.workspaceHash, s.name);
+  refreshSidebar();
 }
 
 async function cmdStop(
@@ -2031,11 +2175,16 @@ async function cmdAttachTo(index: SessionIndex, item?: SessionTreeItem): Promise
   refreshSidebar();
 }
 
-async function cmdKill(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+async function cmdKill(
+  index: SessionIndex,
+  item?: SessionTreeItem | vscode.Terminal,
+): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
-  let name = item?.session.name;
+  // Accepts a sidebar row OR a native terminal tab (right-click → Kill Session);
+  // the shared resolver maps a vscode.Terminal back to its tmux session name.
+  let name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
   if (!name) {
     const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
     interface Pick extends vscode.QuickPickItem { sessionName: string }

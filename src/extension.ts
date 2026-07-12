@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
-import { registerCommands } from './commands';
+import { registerCommands, syncActiveTerminalLockedContext } from './commands';
 import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
@@ -40,6 +40,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   ctx.subscriptions.push(registerPersistentProfile(index));
   registerCommands(ctx, index, claudeTracker, searchIndex, registry);
+  // Seed the tab-menu Kill ↔ locked-hint gate for whatever terminal is active
+  // at startup (the key is falsy/Kill-shown until the first terminal switch).
+  void syncActiveTerminalLockedContext(index);
   registerRevealPath(ctx);
   // Remote-SSH only: mirror tmux copies to the local clipboard with correct UTF-8
   // (bypasses the OSC 52 path Cursor mangles). No-op on local hosts.
@@ -63,6 +66,11 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.window.onDidCloseTerminal(() => refreshSidebar()),
     vscode.window.onDidOpenTerminal(() => refreshSidebar()),
     vscode.window.onDidChangeActiveTerminal(t => {
+      // Reflect the new active terminal's lock state for the native tab menu's
+      // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
+      // which sets the key false); does its own resolve, independent of the MRU
+      // logic below.
+      void syncActiveTerminalLockedContext(index);
       if (!t) return;
       void (async () => {
         // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed

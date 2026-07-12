@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
-import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME } from '../config';
+import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
 import { WorkspaceTreeItem, GroupTreeItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, buildClaudeDetails } from './items';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
@@ -14,6 +14,24 @@ class StoppedSessionDecorationProvider implements vscode.FileDecorationProvider 
     return {
       color: new vscode.ThemeColor('disabledForeground'),
       tooltip: 'Stopped',
+    };
+  }
+}
+
+/** Paints the ⑂ chip on fork branch-set members. Stateless: the chip color id
+ *  and set name ride in the resourceUri query (built in items.ts), so no index
+ *  lookup is needed. The chip appears/disappears purely by the row's resourceUri
+ *  changing on tree refresh — same mechanism as the stopped decoration. */
+class BranchSetDecorationProvider implements vscode.FileDecorationProvider {
+  provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
+    if (uri.scheme !== BRANCH_URI_SCHEME) return undefined;
+    const params = new URLSearchParams(uri.query);
+    const colorId = params.get('c') || undefined;
+    const name = params.get('n') || 'branch';
+    return {
+      badge: '⑂',
+      color: colorId ? new vscode.ThemeColor(colorId) : undefined,
+      tooltip: `Branch: ${name}`,
     };
   }
 }
@@ -702,6 +720,7 @@ export function registerSidebar(
   ctx.subscriptions.push(treeView);
   ctx.subscriptions.push(
     vscode.window.registerFileDecorationProvider(new StoppedSessionDecorationProvider()),
+    vscode.window.registerFileDecorationProvider(new BranchSetDecorationProvider()),
   );
   treeViewRef = treeView;
   // Track which containers the user has open so the tab-focus highlight can

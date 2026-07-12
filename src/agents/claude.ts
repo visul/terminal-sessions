@@ -62,6 +62,7 @@ export const claudeProvider: AgentProvider = {
   badge: 'claude',
   badgeIcon: 'hubot',
   resumeNeedsCwd: true,
+  supportsFork: true,
   hookEvents: CLAUDE_HOOK_EVENTS,
 
   isInstalled(): boolean {
@@ -155,6 +156,23 @@ export const claudeProvider: AgentProvider = {
       // typed into the terminal.
       ? `cd ${posixQuote(recordedCwd)} && claude --resume ${posixQuote(sessionId)}`
       : `claude --resume ${posixQuote(sessionId)}`;
+    return withFlags(base, extraFlags, CLAUDE_FLAGS);
+  },
+
+  buildForkCommand(
+    sessionId: string,
+    terminalCwd: string,
+    transcriptPath?: string,
+    extraFlags?: readonly string[],
+  ): string {
+    const recordedCwd = transcriptPath ? readTranscriptCwd(transcriptPath) : undefined;
+    // Identical to buildResumeCommand plus `--fork-session`, which makes Claude
+    // continue this conversation under a NEW id — the two branches never share a
+    // transcript, so they can run as independent live tabs. Same cd-back-to-slug
+    // rule and posixQuote hardening apply.
+    const base = recordedCwd && recordedCwd !== terminalCwd
+      ? `cd ${posixQuote(recordedCwd)} && claude --resume ${posixQuote(sessionId)} --fork-session`
+      : `claude --resume ${posixQuote(sessionId)} --fork-session`;
     return withFlags(base, extraFlags, CLAUDE_FLAGS);
   },
 

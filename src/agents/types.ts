@@ -127,6 +127,22 @@ export interface AgentProvider {
   /** Whether resume needs to run from the recorded cwd (Claude: yes; Codex: no). */
   resumeNeedsCwd: boolean;
 
+  // ---- fork ----
+  /** Whether this agent can fork a conversation into a NEW, independent
+   *  conversation id (Claude: `--fork-session`). When false, the Fork command is
+   *  hidden for the agent's sessions — a plain resume in a second live tab would
+   *  interleave both into one transcript rather than branching. */
+  supportsFork: boolean;
+  /** Build the shell command that forks `sessionId` into an independent branch
+   *  (same shape as buildResumeCommand). Only implemented/called when
+   *  `supportsFork` is true. */
+  buildForkCommand?(
+    sessionId: string,
+    terminalCwd: string,
+    transcriptPath?: string,
+    extraFlags?: readonly string[],
+  ): string;
+
   // ---- discovery ----
   /** Recent sessions on disk for the manual picker, newest-ish first. */
   listSessions(cwd?: string): AgentSessionSummary[];

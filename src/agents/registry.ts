@@ -9,6 +9,17 @@ import { grokProvider } from './grok/provider';
 // Antigravity and Grok follow. Order is the default display order in pickers.
 const ALL: AgentProvider[] = [claudeProvider, codexProvider, agyProvider, grokProvider];
 
+const FORKABLE_AGENTS: ReadonlySet<AgentId> = new Set(
+  ALL.filter(p => p.supportsFork).map(p => p.id),
+);
+
+/** Whether an agent can fork a conversation into a new id (drives the Fork
+ *  command's `forkable` contextValue gate). Decoupled from any registry
+ *  instance so enrichment can call it without a live registry. */
+export function isForkableAgent(id: AgentId | undefined): boolean {
+  return !!id && FORKABLE_AGENTS.has(id);
+}
+
 export class AgentRegistry {
   private byId = new Map<AgentId, AgentProvider>();
 

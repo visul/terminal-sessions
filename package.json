@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.18",
+  "version": "0.20.21",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -417,6 +417,16 @@
         "icon": "$(debug-pause)"
       },
       {
+        "command": "terminalSessions.forkConversation",
+        "title": "Fork Conversation (new parallel branch)",
+        "icon": "$(git-branch)"
+      },
+      {
+        "command": "terminalSessions.unlinkBranch",
+        "title": "Unlink from Branch Set",
+        "icon": "$(debug-disconnect)"
+      },
+      {
         "command": "terminalSessions.start",
         "title": "Start Session",
         "icon": "$(play)"
@@ -528,6 +538,8 @@
     ],
     "menus": {
       "commandPalette": [
+        { "command": "terminalSessions.forkConversation", "when": "false" },
+        { "command": "terminalSessions.unlinkBranch", "when": "false" },
         { "command": "terminalSessions.kill", "when": "false" },
         { "command": "terminalSessions.rename", "when": "false" },
         { "command": "terminalSessions.setIcon", "when": "false" },
@@ -586,6 +598,16 @@
         {
           "command": "terminalSessions.stop",
           "group": "6_stop@2"
+        },
+        {
+          "command": "terminalSessions.kill",
+          "when": "!terminalSessions.activeTerminalLocked",
+          "group": "6_stop@3"
+        },
+        {
+          "command": "terminalSessions.unlockSession",
+          "when": "terminalSessions.activeTerminalLocked",
+          "group": "6_stop@3"
         },
         {
           "command": "terminalSessions.revealSessionInSidebar",
@@ -655,37 +677,37 @@
       "view/item/context": [
         {
           "command": "terminalSessions.viewConversation",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "inline@1"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "inline@3"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "inline@4"
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.lockedHint",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?\\.locked$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?\\.locked$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "danger@0"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "danger@0"
         },
         {
@@ -697,6 +719,16 @@
           "command": "terminalSessions.moveSessionToGroup",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "edit@0"
+        },
+        {
+          "command": "terminalSessions.forkConversation",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.forkable\\b/",
+          "group": "open@2"
+        },
+        {
+          "command": "terminalSessions.unlinkBranch",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.branched\\b/",
+          "group": "open@2.5"
         },
         {
           "command": "terminalSessions.resumeOtherClaude",
@@ -785,22 +817,22 @@
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|\\.muted)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)$/",
           "group": "danger@1"
         },
         {
           "command": "terminalSessions.muteSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.unmuteSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.muted(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.muted(\\.forkable)?(\\.branched)?(\\.locked)?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.lockSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|\\.muted)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)$/",
           "group": "danger@0.5"
         },
         {
@@ -1034,6 +1066,46 @@
           "light": "#6a7178",
           "highContrast": "#9aa0a6"
         }
+      },
+      {
+        "id": "terminalSessions.branchColor1",
+        "description": "Fork branch-set chip color 1.",
+        "defaults": { "dark": "#E2C08D", "light": "#B8860B", "highContrast": "#FFE082" }
+      },
+      {
+        "id": "terminalSessions.branchColor2",
+        "description": "Fork branch-set chip color 2.",
+        "defaults": { "dark": "#75BEFF", "light": "#007ACC", "highContrast": "#75BEFF" }
+      },
+      {
+        "id": "terminalSessions.branchColor3",
+        "description": "Fork branch-set chip color 3.",
+        "defaults": { "dark": "#73C991", "light": "#389E0D", "highContrast": "#81C784" }
+      },
+      {
+        "id": "terminalSessions.branchColor4",
+        "description": "Fork branch-set chip color 4.",
+        "defaults": { "dark": "#D291E2", "light": "#8E24AA", "highContrast": "#E1BEE7" }
+      },
+      {
+        "id": "terminalSessions.branchColor5",
+        "description": "Fork branch-set chip color 5.",
+        "defaults": { "dark": "#FF9E2D", "light": "#D97706", "highContrast": "#FFB74D" }
+      },
+      {
+        "id": "terminalSessions.branchColor6",
+        "description": "Fork branch-set chip color 6.",
+        "defaults": { "dark": "#4DD0C7", "light": "#00897B", "highContrast": "#80CBC4" }
+      },
+      {
+        "id": "terminalSessions.branchColor7",
+        "description": "Fork branch-set chip color 7.",
+        "defaults": { "dark": "#F48FB1", "light": "#D81B60", "highContrast": "#F8BBD0" }
+      },
+      {
+        "id": "terminalSessions.branchColor8",
+        "description": "Fork branch-set chip color 8.",
+        "defaults": { "dark": "#9FA8DA", "light": "#3949AB", "highContrast": "#C5CAE9" }
       }
     ]
   },

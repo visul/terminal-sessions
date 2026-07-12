@@ -83,6 +83,7 @@ export const grokProvider: AgentProvider = {
   // Sessions are stored per-cwd and `grok -r` resolves them from the working
   // directory, so resume must cd back to the recorded cwd first.
   resumeNeedsCwd: true,
+  supportsFork: false,
   // Grok hooks are project-scoped and trust-gated, so we do NOT install a global
   // lifecycle hook. Grok is tracked entirely from its transcript + a process
   // poll (see ClaudeTracker.pollGrokSessions). These no-ops keep it out of the

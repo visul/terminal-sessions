@@ -3,7 +3,7 @@ import { SessionInfo } from '../types';
 import { humanAge } from '../util';
 import { ClaudeSnapshot } from '../claude-tracker';
 import { SubagentSnapshot } from '../claude-transcript';
-import { STOPPED_URI_SCHEME } from '../config';
+import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
 
 /**
  * User-defined folder within a workspace.
@@ -249,13 +249,34 @@ export class SessionTreeItem extends vscode.TreeItem {
       };
       return;
     }
-    // contextValue drives view/item/context menus. Flags are appended in a fixed
-    // order (muted, then locked) so menu `when` regexes can match any combination:
-    // "session", "session.muted", "session.locked", "session.muted.locked".
+    // contextValue drives view/item/context menus. Flags are appended in a FIXED
+    // order — muted, forkable, branched, locked — so menu `when` regexes can match
+    // any combination, e.g. "session", "session.muted", "session.forkable",
+    // "session.forkable.branched", "session.muted.forkable.branched.locked".
+    // Any change to this order requires updating every session `when` regex in
+    // package.json (they are anchored). `forkable` = latest agent supports fork
+    // (Claude), gating the Fork command; `branched` = in a branch set, gating
+    // Unlink. Stopped rows use a separate scheme and never carry these two.
     let cv = 'session';
     if (session.muted) cv += '.muted';
+    if (session.forkable) cv += '.forkable';
+    if (session.branchSetId) cv += '.branched';
     if (session.locked) cv += '.locked';
     this.contextValue = cv;
+
+    // Fork branch-set members carry a resourceUri in the branch scheme so the
+    // BranchSetDecorationProvider paints the ⑂ chip (in the set's color). The
+    // color id and set name ride in the query, so the provider needs no index
+    // lookup. Stopped rows already own their resourceUri (the greyed-out
+    // decoration and its early return above), so a stopped+branched session keeps
+    // the stopped look and drops its chip — an acceptable trade-off, since dimmed
+    // rows aren't part of active parallel work.
+    if (session.branchSetId) {
+      this.resourceUri = vscode.Uri.parse(
+        `${BRANCH_URI_SCHEME}://branch/${session.workspaceHash}/${encodeURIComponent(session.name)}` +
+        `?c=${encodeURIComponent(session.branchColorId || '')}&n=${encodeURIComponent(session.branchName || 'branch')}`,
+      );
+    }
 
     // Attached state is now encoded in the icon (filled vs outline) instead
     // of a trailing " · attached" text, which was just noise on every row.
