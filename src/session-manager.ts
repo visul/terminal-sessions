@@ -324,7 +324,12 @@ export class SessionIndex {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return;
+    // Capture branch-set membership before deleting so a Kill dissolves an
+    // orphaned set the same way Unlink does — otherwise the lone survivor keeps
+    // its branchSetId and stays chip-colored forever (a set of one is dead).
+    const setId = ws.sessions[sessionName]?.branchSetId;
     delete ws.sessions[sessionName];
+    if (setId) this.dissolveBranchSetIfOrphaned(ws, setId);
     this.save();
   }
 
@@ -431,12 +436,37 @@ export class SessionIndex {
     if (!ws || !meta?.branchSetId) return;
     const setId = meta.branchSetId;
     delete meta.branchSetId;
+    this.dissolveBranchSetIfOrphaned(ws, setId);
+    this.save();
+  }
+
+  /** Auto-dissolve a branch set once it can't hold a relationship: when fewer
+   *  than 2 members remain, unlink the lone survivor and delete the set entry.
+   *  Shared by Unlink and Kill (session removal). Caller saves. */
+  private dissolveBranchSetIfOrphaned(ws: WorkspaceEntry, setId: string): void {
     const remaining = Object.values(ws.sessions).filter(s => s.branchSetId === setId);
     if (remaining.length < 2) {
       for (const s of remaining) delete s.branchSetId;
       if (ws.branchSets) delete ws.branchSets[setId];
     }
-    this.save();
+  }
+
+  /** One-shot self-heal (run at activation): dissolve every branch set that can
+   *  no longer hold a relationship (<2 member sessions). Recovers sets orphaned
+   *  by a Kill from before removeSession learned to dissolve them, or by any
+   *  other path that dropped a member outside the branch-set API — otherwise the
+   *  lone survivor stays chip-colored forever. */
+  pruneOrphanedBranchSets(): void {
+    this.reloadIfChanged();
+    let changed = false;
+    for (const ws of Object.values(this.data.workspaces)) {
+      if (!ws.branchSets) continue;
+      for (const setId of Object.keys(ws.branchSets)) {
+        this.dissolveBranchSetIfOrphaned(ws, setId);
+        if (!ws.branchSets[setId]) changed = true;
+      }
+    }
+    if (changed) this.save();
   }
 
   getBranchSet(hash: string, branchSetId: string): BranchSet | undefined {

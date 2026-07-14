@@ -30,6 +30,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   tmuxMod.setRemoteHost(!!vscode.env.remoteName);
 
   const index = new SessionIndex();
+  // Self-heal branch sets orphaned by a Kill (or any past path) that left a lone
+  // survivor still linked — otherwise it stays chip-colored with no peer.
+  index.pruneOrphanedBranchSets();
   const registry = new AgentRegistry();
   const claudeTracker = new ClaudeTracker(ctx, registry, index);
   claudeTracker.start();

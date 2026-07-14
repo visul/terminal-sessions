@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.23] — 2026-07-14
+
+### Fixed
+- **Killing a fork now dissolves a one-member branch set.** After killing one side of a fork pair, the surviving session kept its branch-set link and stayed chip-colored (label tinted in the branch color) with no peer left. Kill now dissolves a set the moment it drops below two members — exactly like Unlink already did — so the survivor reverts to its normal (or manually-set) color. A one-shot self-heal at startup also clears any set already orphaned this way.
+
 ## [0.20.22] — 2026-07-14
 
 ### Added
