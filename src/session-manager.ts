@@ -391,15 +391,21 @@ export class SessionIndex {
   }
 
   /** Create a new branch set with `name`, assigning the next chip color
-   *  round-robin. Returns the new id (undefined if the workspace is unknown). */
-  createBranchSet(hash: string, name: string): string | undefined {
+   *  round-robin. `baseLabel` is the clean origin label (no " ⑂"), stored for the
+   *  fork-cluster header and name proposals. Returns the new id (undefined if the
+   *  workspace is unknown). */
+  createBranchSet(hash: string, name: string, baseLabel?: string): string | undefined {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return undefined;
     if (!ws.branchSets) ws.branchSets = {};
     const id = this.nextBranchSetId(hash);
     const n = (Object.keys(ws.branchSets).length % BRANCH_COLOR_COUNT) + 1;
-    const set: BranchSet = { name: name.trim() || 'branch', colorId: `terminalSessions.branchColor${n}` };
+    const set: BranchSet = {
+      name: name.trim() || 'branch',
+      colorId: `terminalSessions.branchColor${n}`,
+      baseLabel: baseLabel?.trim() || undefined,
+    };
     ws.branchSets[id] = set;
     this.save();
     return id;
@@ -688,6 +694,7 @@ export async function enrichSessions(
       branchSetId: meta?.branchSetId,
       branchName: bset?.name,
       branchColorId: bset?.colorId,
+      branchBaseLabel: bset ? (bset.baseLabel ?? bset.name.replace(/\s*⑂\s*$/, '')) : undefined,
       forkable: isForkableAgent(latestAgent),
       folderPath: meta?.folderPath,
     });

@@ -69,6 +69,49 @@ export class GroupTreeItem extends vscode.TreeItem {
   }
 }
 
+/**
+ * Collapsible header for a fork branch set: gathers all its member sessions under
+ * one node so parallel forks read as a cluster. Virtual — computed at render time
+ * from `branchSetId`, NOT a persisted group, so it has no drag-drop/rename/color.
+ * The `repo-forked` icon (tinted with the set color) marks it as a fork cluster,
+ * distinct from folder groups (`folder`) and masters (`layers`). Default-expanded;
+ * VS Code persists the user's collapse by the stable id `clu:hash:setId`.
+ */
+export class BranchClusterItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly branchSetId: string,
+    public readonly members: SessionInfo[],
+    baseLabel: string,
+    colorId: string | undefined,
+    // The container all members share (undefined = workspace root). Drives
+    // getParent() so reveal() expands the right ancestor chain.
+    public readonly groupId: string | undefined,
+  ) {
+    super(baseLabel || 'fork', vscode.TreeItemCollapsibleState.Expanded);
+    this.id = `clu:${workspaceHash}:${branchSetId}`;
+    this.contextValue = 'branchCluster';
+    this.iconPath = new vscode.ThemeIcon(
+      'repo-forked',
+      colorId ? new vscode.ThemeColor(colorId) : undefined,
+    );
+    const n = members.length;
+    this.description = `${n} fork${n === 1 ? '' : 's'}`;
+    const active = members.filter(s => !s.stopped && s.attached).length;
+    const detached = members.filter(s => !s.stopped && !s.attached).length;
+    const stopped = members.filter(s => s.stopped).length;
+    this.tooltip = new vscode.MarkdownString(
+      [
+        `**${baseLabel || 'fork'}**  _(fork cluster)_`,
+        `${n} branch${n === 1 ? '' : 'es'} forked from the same conversation`,
+        `Active: ${active}  ·  Detached: ${detached}${stopped > 0 ? `  ·  Stopped: ${stopped}` : ''}`,
+        `Peers:`,
+        ...members.map(s => `- ${s.label || `#${s.tabId}`}`),
+      ].join('\n\n'),
+    );
+  }
+}
+
 export class WorkspaceTreeItem extends vscode.TreeItem {
   public readonly allSessions: SessionInfo[];
   constructor(
@@ -182,6 +225,9 @@ export class SessionTreeItem extends vscode.TreeItem {
     public readonly claude: ClaudeSnapshot | undefined,
     public readonly detailsMode: 'auto' | 'always' | 'collapsed' | 'off',
     public readonly contextPctAlert: number,
+    // True when this row renders inside a fork cluster: the cluster header already
+    // carries the ⑂ meaning, so the per-row chip is suppressed to cut redundancy.
+    public readonly inCluster = false,
   ) {
     const label = session.label || `#${session.tabId}`;
     const hasActiveClaude =
@@ -271,7 +317,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     // decoration and its early return above), so a stopped+branched session keeps
     // the stopped look and drops its chip — an acceptable trade-off, since dimmed
     // rows aren't part of active parallel work.
-    if (session.branchSetId) {
+    if (session.branchSetId && !inCluster) {
       this.resourceUri = vscode.Uri.parse(
         `${BRANCH_URI_SCHEME}://branch/${session.workspaceHash}/${encodeURIComponent(session.name)}` +
         `?c=${encodeURIComponent(session.branchColorId || '')}&n=${encodeURIComponent(session.branchName || 'branch')}`,

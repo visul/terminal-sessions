@@ -4,6 +4,15 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.22] — 2026-07-14
+
+### Added
+- **Forks now group under a collapsible fork cluster.** When you fork a conversation, the origin and its forks are gathered under one collapsible header (a distinct **`repo-forked` icon** tinted in the branch set's color, labeled `{origin} · N forks`) instead of only sharing a small ⑂ chip. The cluster reads clearly as a fork group — separate from your folder groups — and stays expanded by default (collapse it and the choice sticks). Rows inside the cluster drop the now-redundant ⑂ chip; a lone/filtered member outside a cluster keeps it.
+
+### Changed
+- **Fork name proposal carries the origin's name.** The suggested branch name is now `{origin} · fork N` (still fully editable) instead of a bare `fork N`, so forks read as related to their origin at a glance. Forking a fork stays `{origin} · fork N` — the base name comes from the set's origin, not the pane you forked, so suffixes never nest.
+- **A fork inherits its origin's group,** so every member of a set lives in the same container and always clusters together (previously a fork of a grouped session landed at the root, leaving the two visually disconnected).
+
 ## [0.20.21] — 2026-07-12
 
 ### Added

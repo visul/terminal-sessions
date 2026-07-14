@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, buildClaudeDetails } from './items';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
 
@@ -94,6 +94,9 @@ class SessionsTreeProvider
   // return the actual container instances that sit between a session and its
   // workspace — the chain treeView.reveal() must expand.
   private lastGroupItems = new Map<string, GroupTreeItem>();
+  // Fork-cluster items by `${workspaceHash}::${branchSetId}`, so getParent() can
+  // return the exact virtual container reveal() must expand for a clustered row.
+  private lastClusterItems = new Map<string, BranchClusterItem>();
   // User-driven expansion state, tracked via the tree view's expand/collapse
   // events, so the tab-focus highlight can tell whether a session is already
   // on-screen. Workspaces render Expanded by default (recorded here only when
@@ -101,6 +104,9 @@ class SessionsTreeProvider
   // only when the user opens one).
   private collapsedWorkspaceIds = new Set<string>();
   private expandedContainerIds = new Set<string>();
+  // Fork clusters render Expanded by default (active parallel work), so — unlike
+  // groups — we record only the ones the user has COLLAPSED, mirroring workspaces.
+  private collapsedClusterIds = new Set<string>();
 
   // One enrichSessions() (a tmux subprocess) per refresh pass, shared across the
   // root + every expanded container's getChildren call. VS Code fans getChildren
@@ -143,12 +149,27 @@ class SessionsTreeProvider
    *  tree renders it. */
   getParent(el: vscode.TreeItem): vscode.TreeItem | undefined {
     if (el instanceof SessionTreeItem) {
+      // A clustered session's immediate parent is its fork cluster (present only
+      // when the cluster actually rendered, i.e. ≥2 members shared this container).
+      const setId = el.session.branchSetId;
+      if (setId) {
+        const c = this.lastClusterItems.get(`${el.session.workspaceHash}::${setId}`);
+        if (c) return c;
+      }
       const gid = el.session.groupId;
       if (gid) {
         const g = this.lastGroupItems.get(`${el.session.workspaceHash}::${gid}`);
         if (g) return g;
       }
       return this.lastWorkspaceItems.get(el.session.workspaceHash);
+    }
+    if (el instanceof BranchClusterItem) {
+      // The cluster sits in the container its members share (a group) or at root.
+      if (el.groupId) {
+        const g = this.lastGroupItems.get(`${el.workspaceHash}::${el.groupId}`);
+        if (g) return g;
+      }
+      return this.lastWorkspaceItems.get(el.workspaceHash);
     }
     if (el instanceof GroupTreeItem) {
       const parentId = this.index.getGroups(el.workspaceHash)[el.groupId]?.parentGroupId;
@@ -176,6 +197,10 @@ class SessionsTreeProvider
     } else if (el instanceof GroupTreeItem) {
       if (expanded) this.expandedContainerIds.add(id);
       else this.expandedContainerIds.delete(id);
+    } else if (el instanceof BranchClusterItem) {
+      // Default-expanded, so we record the inverse: only clusters the user closed.
+      if (expanded) this.collapsedClusterIds.delete(id);
+      else this.collapsedClusterIds.add(id);
     }
   }
 
@@ -184,6 +209,10 @@ class SessionsTreeProvider
    *  by the tab-focus highlight, which must never expand a hidden branch. */
   isSessionVisible(session: SessionInfo): boolean {
     if (this.collapsedWorkspaceIds.has(`ws:${session.workspaceHash}`)) return false;
+    // A session in a collapsed fork cluster is off-screen even if its group chain
+    // is open. (When no cluster rendered, the id simply isn't in the set.)
+    if (session.branchSetId
+      && this.collapsedClusterIds.has(`clu:${session.workspaceHash}:${session.branchSetId}`)) return false;
     const groups = this.index.getGroups(session.workspaceHash);
     let gid = session.groupId;
     let guard = 0;
@@ -205,6 +234,63 @@ class SessionsTreeProvider
    * filter, groups/masters with no visible sessions anywhere beneath them are
    * hidden so the tree doesn't show empty folders.
    */
+  /** Build a session row, caching it for reveal(). `inCluster` suppresses the ⑂
+   *  chip on rows rendered inside a fork cluster (the header carries it). */
+  private makeSessionItem(
+    s: SessionInfo,
+    cfg: ReturnType<typeof getConfig>,
+    inCluster = false,
+  ): SessionTreeItem {
+    const item = new SessionTreeItem(
+      s, this.claude.getSnapshot(s.name), cfg.claudeSidebarDetails, cfg.contextWarnPct, inCluster,
+    );
+    this.lastSessionItems.set(s.name, item);
+    return item;
+  }
+
+  /** Fold branch-set members within one container's ordered rows into fork
+   *  clusters. A set with ≥2 members present here collapses to a single
+   *  BranchClusterItem at its first member's position; the rest are absorbed.
+   *  Sets with <2 members here (lone/filtered) fall through as plain rows (which
+   *  keep their ⑂ chip). Container rows (no `session`) pass through untouched. */
+  private foldRows(
+    hash: string,
+    rows: Array<{ session?: SessionInfo; build: () => vscode.TreeItem }>,
+    _cfg: ReturnType<typeof getConfig>,
+  ): vscode.TreeItem[] {
+    const counts = new Map<string, number>();
+    for (const r of rows) {
+      const id = r.session?.branchSetId;
+      if (id) counts.set(id, (counts.get(id) ?? 0) + 1);
+    }
+    const out: vscode.TreeItem[] = [];
+    const emitted = new Set<string>();
+    for (const r of rows) {
+      const id = r.session?.branchSetId;
+      if (id && (counts.get(id) ?? 0) >= 2) {
+        if (emitted.has(id)) continue; // absorbed into the cluster emitted below
+        emitted.add(id);
+        const members = rows
+          .map(x => x.session)
+          .filter((s): s is SessionInfo => !!s && s.branchSetId === id);
+        out.push(this.buildCluster(hash, id, members));
+      } else {
+        out.push(r.build());
+      }
+    }
+    return out;
+  }
+
+  private buildCluster(hash: string, setId: string, members: SessionInfo[]): BranchClusterItem {
+    const first = members[0];
+    const baseLabel = first.branchBaseLabel
+      || first.branchName?.replace(/\s*⑂\s*$/, '')
+      || 'fork';
+    const item = new BranchClusterItem(hash, setId, members, baseLabel, first.branchColorId, first.groupId);
+    this.lastClusterItems.set(`${hash}::${setId}`, item);
+    return item;
+  }
+
   private renderContainer(
     hash: string,
     parentGroupId: string | undefined,
@@ -273,23 +359,18 @@ class SessionsTreeProvider
           && passFilter(s))
       : [];
 
-    const buildSession = (s: SessionInfo): vscode.TreeItem => {
-      const item = new SessionTreeItem(
-        s, this.claude.getSnapshot(s.name), cfg.claudeSidebarDetails, cfg.contextWarnPct,
-      );
-      this.lastSessionItems.set(s.name, item);
-      return item;
-    };
-
     if (cfg.sidebarSortMode === 'custom') {
-      // Containers and root sessions interleave by their shared sortOrder.
-      interface Row { sortOrder: number; secondaryKey: number | string; build: () => vscode.TreeItem }
+      // Containers and root sessions interleave by their shared sortOrder. Fork
+      // clusters fold in via foldRows at their first member's position; container
+      // rows carry no `session` and pass through untouched.
+      interface Row { sortOrder: number; secondaryKey: number | string; session?: SessionInfo; build: () => vscode.TreeItem }
       const rows: Row[] = [
         ...containerRows.map(r => ({ sortOrder: r.sortOrder, secondaryKey: r.name, build: r.build })),
         ...ungrouped.map(s => ({
           sortOrder: s.sortOrder ?? Number.MAX_SAFE_INTEGER,
           secondaryKey: s.tabId,
-          build: () => buildSession(s),
+          session: s,
+          build: () => this.makeSessionItem(s, cfg),
         })),
       ];
       rows.sort((a, b) => {
@@ -299,17 +380,18 @@ class SessionsTreeProvider
         }
         return String(a.secondaryKey).localeCompare(String(b.secondaryKey));
       });
-      return rows.map(r => r.build());
+      return this.foldRows(hash, rows, cfg);
     }
 
     // Non-custom modes: containers first (by sortOrder then name), then
-    // ungrouped sessions ordered by the active mode (MRU / alphabetical / …).
+    // ungrouped sessions ordered by the active mode (MRU / alphabetical / …),
+    // with fork clusters folded in among the sessions.
     containerRows.sort((a, b) =>
       a.sortOrder !== b.sortOrder ? a.sortOrder - b.sortOrder : a.name.localeCompare(b.name));
     const sortedUngrouped = sortSessions(ungrouped, cfg.sidebarSortMode);
     return [
       ...containerRows.map(r => r.build()),
-      ...sortedUngrouped.map(buildSession),
+      ...this.foldRows(hash, sortedUngrouped.map(s => ({ session: s, build: () => this.makeSessionItem(s, cfg) })), cfg),
     ];
   }
 
@@ -342,6 +424,7 @@ class SessionsTreeProvider
         this.lastWorkspaceItems.clear();
         this.lastSessionItems.clear();
         this.lastGroupItems.clear();
+        this.lastClusterItems.clear();
         if (sessions.length > 0) {
           // Filter-induced empty state — distinguish from truly-empty
           const label = cfg.sidebarFilterMode === 'stopped'
@@ -367,6 +450,7 @@ class SessionsTreeProvider
       // collapsed group — exactly the case reveal exists for).
       this.lastGroupItems.clear();
       this.lastSessionItems.clear();
+      this.lastClusterItems.clear();
       for (const [hash, group] of grouped) {
         const ordered = sortSessions(group, cfg.sidebarSortMode);
         const wsPath = ordered[0].workspacePath;
@@ -395,17 +479,19 @@ class SessionsTreeProvider
         // sessions appear directly under a master.
         return this.renderContainer(el.workspaceHash, el.groupId, allWsSessions, cfg);
       }
-      // Normal group: only its sessions, in current sidebar sort order.
-      return el.sessions.map(s => {
-        const item = new SessionTreeItem(
-          s,
-          this.claude.getSnapshot(s.name),
-          cfg.claudeSidebarDetails,
-          cfg.contextWarnPct,
-        );
-        this.lastSessionItems.set(s.name, item);
-        return item;
-      });
+      // Normal group: its sessions (in current sort order) with fork clusters
+      // folded in, exactly like the root's ungrouped list.
+      return this.foldRows(
+        el.workspaceHash,
+        el.sessions.map(s => ({ session: s, build: () => this.makeSessionItem(s, cfg) })),
+        cfg,
+      );
+    }
+    if (el instanceof BranchClusterItem) {
+      // Fork cluster: its member sessions, chip suppressed (header carries ⑂).
+      // Members were captured when the cluster was built this pass — no tmux
+      // enrichment needed, same as a normal group renders its captured sessions.
+      return el.members.map(s => this.makeSessionItem(s, cfg, true));
     }
     if (el instanceof SessionTreeItem) {
       const snap = el.claude;
@@ -824,7 +910,11 @@ export async function revealSessionInSidebar(
     let guard = 0;
     while (stack.length && guard++ < 5000) {
       const node = stack.pop()!;
-      if (node instanceof WorkspaceTreeItem || node instanceof GroupTreeItem) {
+      // Descend into fork clusters too, so a clustered session's row is built and
+      // cached (and its cluster registered for getParent) before reveal walks up.
+      if (node instanceof WorkspaceTreeItem
+        || node instanceof GroupTreeItem
+        || node instanceof BranchClusterItem) {
         // eslint-disable-next-line no-await-in-loop
         const kids = await provider.getChildren(node);
         for (const k of kids) stack.push(k);

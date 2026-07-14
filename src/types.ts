@@ -31,6 +31,7 @@ export interface SessionInfo {
   branchSetId?: string;
   branchName?: string;     // set display name (chip tooltip)
   branchColorId?: string;  // theme color id for the ⑂ chip
+  branchBaseLabel?: string; // origin's label, drives the fork-cluster header
   // True when this session's latest agent conversation can be forked (Claude).
   // Drives the `forkable` contextValue token that gates the Fork command.
   forkable?: boolean;
@@ -72,6 +73,11 @@ export interface BranchSet {
   // Theme color id (terminalSessions.branchColorN) tinting every member's ⑂
   // chip, so a set is recognizable at a glance. Assigned round-robin on create.
   colorId: string;
+  // Clean origin label (no " ⑂" suffix), captured at create. Drives the fork
+  // cluster header and the "{baseLabel} · fork N" name proposal, so forking a
+  // fork stays "{origin} · fork N" instead of nesting suffixes. Older sets
+  // without this field fall back to `name` with the " ⑂" stripped.
+  baseLabel?: string;
 }
 
 export interface GroupLabel {

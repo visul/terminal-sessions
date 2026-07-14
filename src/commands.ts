@@ -981,11 +981,17 @@ async function cmdForkConversation(
     return;
   }
 
-  // Optional branch name (default "fork N" within the origin's set).
+  // Optional branch name (default "{origin} · fork N" within the origin's set).
+  // The base label comes from the SET's origin (not this pane's label), so
+  // forking a fork stays "{origin} · fork N" instead of nesting "· fork" suffixes.
   const originLabel = src.label || `#${parsed.tabId}`;
   const existingSetId = index.getSessionMeta(parsed.hash, src.name)?.branchSetId;
+  const existingSet = existingSetId ? index.getBranchSet(parsed.hash, existingSetId) : undefined;
+  const baseLabel = existingSet
+    ? (existingSet.baseLabel ?? existingSet.name.replace(/\s*⑂\s*$/, ''))
+    : originLabel;
   const memberCount = existingSetId ? index.branchSetMembers(parsed.hash, existingSetId).length : 1;
-  const defaultName = `fork ${memberCount + 1}`;
+  const defaultName = `${baseLabel} · fork ${memberCount + 1}`;
   const input = await vscode.window.showInputBox({
     prompt: `Name this fork of "${originLabel}" (optional)`,
     value: defaultName,
@@ -1001,12 +1007,17 @@ async function cmdForkConversation(
     await tmux.createDetachedSession(tmuxPath, newName, forkCwd);
     index.recordSession(parsed.hash, newName, label, forkCwd !== ws.path ? forkCwd : undefined);
     index.setSessionStopped(parsed.hash, newName, false);
+    // Inherit the origin's group so all members share a container — the fork
+    // cluster can only render when its peers live at the same level. No-op when
+    // the origin is ungrouped or its groupId is stale/a master (guarded inside).
+    if (src.groupId) index.setSessionGroup(parsed.hash, newName, src.groupId);
 
     // Link both into a branch set (peers). Reuse the origin's set, else create a
-    // new one seeded from the origin label and add the origin too.
+    // new one seeded from the origin label (baseLabel drives the cluster header)
+    // and add the origin too.
     let setId = existingSetId;
     if (!setId) {
-      setId = index.createBranchSet(parsed.hash, `${originLabel} ⑂`);
+      setId = index.createBranchSet(parsed.hash, `${baseLabel} ⑂`, baseLabel);
       if (setId) index.addSessionToBranchSet(parsed.hash, src.name, setId);
     }
     if (setId) index.addSessionToBranchSet(parsed.hash, newName, setId);
