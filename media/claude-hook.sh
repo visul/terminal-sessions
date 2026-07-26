@@ -18,7 +18,13 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
 TMUX_SESSION=""
 if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-  TMUX_SESSION=$(tmux display -p '#{session_name}' 2>/dev/null || echo "")
+  # Pin to OUR pane — without -t, a dying pane resolves to some OTHER live
+  # session and misattributes the event (see agent-hook.sh for details).
+  if [ -n "${TMUX_PANE:-}" ]; then
+    TMUX_SESSION=$(tmux display -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null || echo "")
+  else
+    TMUX_SESSION=$(tmux display -p '#{session_name}' 2>/dev/null || echo "")
+  fi
 fi
 
 STDIN_JSON=""

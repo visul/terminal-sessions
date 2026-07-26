@@ -34,6 +34,7 @@ export interface Config {
   contextWarnPct: number;
   showCompletedSubagents: boolean;
   claudeNoFlicker: boolean;
+  revealActiveSession: boolean;
 }
 
 export function getConfig(): Config {
@@ -82,6 +83,7 @@ export function getConfig(): Config {
       // On = the wheel scrolls Claude's conversation natively (smooth).
       return true;
     })(),
+    revealActiveSession: c.get('revealActiveSession', true),
   };
 }
 

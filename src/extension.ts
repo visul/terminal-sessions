@@ -89,7 +89,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         // visible. Never expand a collapsed group/master or scroll to a hidden
         // row on a plain tab switch; that jump is reserved for the explicit
         // right-click "Reveal in Terminal Sessions View" command (expand=true).
-        void revealSessionInSidebar(name, false, false);
+        // Opt-out via terminalSessions.revealActiveSession (some users find the
+        // selection jumping around on every tab switch distracting — see #1).
+        if (getConfig().revealActiveSession) void revealSessionInSidebar(name, false, false);
       })();
     }),
     vscode.workspace.onDidChangeConfiguration(e => {

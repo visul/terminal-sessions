@@ -228,7 +228,11 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, item)),
     vscode.commands.registerCommand(COMMAND.refreshSidebar, () => refreshSidebar()),
     vscode.commands.registerCommand(COMMAND.revealSidebar,
-      () => vscode.commands.executeCommand('workbench.view.extension.terminalSessionsContainer')),
+      // <viewId>.focus reveals the view wherever the user has placed it (Explorer
+      // by default, or a container they've dragged it to) — the old
+      // workbench.view.extension.<container> id no longer exists now that the
+      // view is contributed to the built-in Explorer container.
+      () => vscode.commands.executeCommand('terminalSessions.sessions.focus')),
     vscode.commands.registerCommand(COMMAND.resumeAll, () => cmdResumeAll(index)),
     vscode.commands.registerCommand(COMMAND.setAsDefaultProfile, () => cmdSetDefaultProfile()),
     vscode.commands.registerCommand(COMMAND.openTmuxConfig, () => cmdOpenTmuxConfig()),

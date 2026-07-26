@@ -4,6 +4,20 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.25] — 2026-07-26
+
+### Added
+- **Option to stop the sidebar from following the active terminal.** New setting `terminalSessions.revealActiveSession` (default `true`, unchanged behavior). When you focus a terminal, the extension highlights its matching session in the sidebar so it's easy to locate among many tabs; set this to `false` if you'd rather the sidebar selection not jump around on every tab switch. This only ever affects an already-visible row — even when on, it never expands a collapsed group or scrolls to a hidden one. Requested in [#1](https://github.com/visul/terminal-sessions/issues/1).
+
+### Changed
+- **The sidebar now lives under the Explorer by default.** Previously the view got its own dedicated Activity Bar icon; new installs now show a **Terminal Sessions** section under the file Explorer instead — the placement most people end up dragging it to anyway. You can still move it anywhere: drag its header (or right-click → *Move View*) onto the Activity Bar for a standalone icon, into the panel, or to the secondary sidebar, and VS Code remembers the choice. Existing users keep wherever they already put it — this only changes the first-run default. The `Terminal Sessions: Reveal Sidebar` command and the badge follow the view to whatever container hosts it.
+
+## [0.20.24] — 2026-07-14
+
+### Fixed
+- **Stop → Start no longer resumes another tab's conversation.** During a tmux shutdown, the hook's un-pinned `tmux display` lookup could resolve to a *different still-alive session* while its own pane was dying — so `SessionEnd` events landed on the wrong tab (observed shifting attribution one-by-one across sessions as they died). The tracker then recorded those misattributed conversation ids as the wrong session's resume head, and the next Stop → Start (or restore) reopened a conversation belonging to a different tab — e.g. a fork's origin resuming the fork's own conversation, leaving both panes on the same conversation. Two-layer fix: the hook now pins its tmux lookup to `$TMUX_PANE` (a dead pane reports *no* session instead of a wrong one), and the tracker no longer lets `SessionEnd` events claim ownership or write resume history at all — an end event is only trusted for the idle-state reset, and only when it matches the conversation that tab already tracks.
+- **Tab-id allocation now syncs from disk first.** `getNextTabId` read a possibly-stale in-memory index, so a second VS Code window could hand out an already-taken tab id — the "new" session then merged into the old entry and inherited its Claude history.
+
 ## [0.20.23] — 2026-07-14
 
 ### Fixed

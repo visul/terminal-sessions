@@ -18,7 +18,18 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
 TMUX_SESSION=""
 if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
-  TMUX_SESSION=$(tmux display -p '#{session_name}' 2>/dev/null || echo "")
+  # Pin the lookup to OUR pane ($TMUX_PANE, inherited from the agent process).
+  # Without -t, tmux resolves the "current" session — which, while this pane is
+  # dying (tmux server shutdown, session kill), is some OTHER still-alive
+  # session. That misattributed SessionEnd events shift-by-one across tabs and
+  # poisoned per-session resume history. With -t, a dead pane makes tmux error
+  # out and we report NO tmux session instead of a wrong one (the tracker
+  # drops tmux-less events).
+  if [ -n "${TMUX_PANE:-}" ]; then
+    TMUX_SESSION=$(tmux display -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null || echo "")
+  else
+    TMUX_SESSION=$(tmux display -p '#{session_name}' 2>/dev/null || echo "")
+  fi
 fi
 
 STDIN_JSON=""

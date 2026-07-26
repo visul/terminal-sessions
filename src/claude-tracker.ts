@@ -779,6 +779,27 @@ export class ClaudeTracker {
     if (e.sessionId && !provider.isValidSessionId(e.sessionId)) return false;
     if (e.cwd) e.cwd = path.resolve(e.cwd); // collapses any `..` segments
 
+    // SessionEnd carries UNRELIABLE tmux attribution: while a pane is dying
+    // (tmux server shutdown, session kill), the hook's un-pinned tmux lookup
+    // used to resolve to a DIFFERENT still-alive session — observed poisoning
+    // session history shift-by-one across tabs (a fork's conversation became
+    // its origin's resume head, so Stop→Start reopened the wrong conversation).
+    // The hook now pins its lookup, but as defense in depth an end event must
+    // NEVER claim ownership, transfer the live map, or write resume history —
+    // a conversation ENDING somewhere is not evidence it ever BELONGED there.
+    // Trust it only for the state reset, and only when it matches (or there is
+    // no record of) the conversation this tmux already tracks.
+    if (e.event === 'SessionEnd') {
+      const owner = this.map.get(e.tmuxSession);
+      if (e.sessionId && owner && owner.sessionId !== e.sessionId) return false;
+      snap.state = 'none';
+      snap.toolName = undefined;
+      snap.toolInput = undefined;
+      snap.toolSince = undefined;
+      this.snapshots.set(e.tmuxSession, snap);
+      return true;
+    }
+
     // Always update sessionId + transcript if we have one
     if (e.sessionId) {
       snap.sessionId = e.sessionId;
@@ -908,12 +929,8 @@ export class ClaudeTracker {
         snap.waitingSince = undefined;
         this.triggerStopNotify(e, tsMs, provider);
         break;
-      case 'SessionEnd':
-        snap.state = 'none';
-        snap.toolName = undefined;
-        snap.toolInput = undefined;
-        snap.toolSince = undefined;
-        break;
+      // SessionEnd is fully handled (and gated) before the ownership-transfer
+      // block above — it must never reach the generic recording path.
     }
 
     // Opportunistically capture the launch flags of the live agent process (the

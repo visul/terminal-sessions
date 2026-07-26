@@ -367,6 +367,11 @@ export class SessionIndex {
   }
 
   getNextTabId(hash: string, prefix: string): number {
+    // Sync from disk first — another window may have created sessions since our
+    // last touch, and allocating from a stale snapshot would REUSE a taken tab
+    // id (the new session then merges into the old entry, inheriting its
+    // Claude history and resuming someone else's conversation).
+    this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return 1;
     let max = 0;

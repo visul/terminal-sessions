@@ -61,9 +61,9 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 ### UI integration
 - **Terminal Profile "Persistent Session"** — available in the `+ ∨` dropdown; can be set as default so every new terminal auto-wraps in tmux
-- **Activity bar sidebar** — tree view grouped by workspace, with status indicators (attached vs detached) and relative timestamps
+- **Sidebar tree view** — grouped by workspace, with status indicators (attached vs detached) and relative timestamps. Lives **under the Explorer** by default; drag it (or right-click its header → *Move View*) to your own Activity Bar icon, the panel, or the secondary sidebar
 - **Rich hover tooltip** — hovering a session row shows its tmux ID, workspace, the actual **start folder (cwd)** for subfolder sessions, created/last-attached times, and — while an agent is active — the live **Conversation ID**, model, API-equivalent cost, context %, token totals, and the last user/assistant messages
-- **Activity bar badge** (v0.11+) — a red numeric badge appears on the Terminal Sessions icon when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which
+- **Sidebar badge** (v0.11+) — a red numeric badge appears on the view's host icon (the Explorer, or wherever you've placed the view) when Claude sessions need attention. `waiting` count takes priority (user permission pending), falls back to `working` count. Tooltip explains which is which
 - **Click terminal tab → reveal sidebar session** (v0.11+) — clicking any `Terminal Sessions #N` tab in the VS Code terminal panel selects and highlights the matching row in the Terminal Sessions sidebar, auto-expanding its workspace group
 - **Status bar badge** — `⚡ ts: 2▶ 4⇄` (attached · detached), click to open the attach picker
 - **View conversation** — open the session's agent transcript as readable Markdown; reads the transcript `.jsonl` directly, so it works on stopped sessions too (not just live ones) and shows the real conversation regardless of renderer
@@ -246,7 +246,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 1. Install tmux on the target machine
 2. Install the extension and reload Cursor (full quit + reopen if you see stale state)
 3. Run `Terminal Sessions: Set as Default Terminal Profile` so every `+` button creates a tmux-wrapped terminal
-4. Open the **Terminal Sessions** activity bar icon to see the sidebar
+4. Find the **Terminal Sessions** section under the Explorer (or drag it out to its own Activity Bar icon / the panel — VS Code remembers where you put it)
 5. Optional: run `Terminal Sessions: Install AI Agent Hooks` to enable live agent state + notifications for Claude, Codex, and Antigravity
 
 ## Commands

@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.23",
+  "version": "0.20.25",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -210,6 +210,11 @@
           "type": "boolean",
           "default": true,
           "description": "Show subagents that have already finished (Task tool_result received) in the sidebar. On by default so short-running agents don't flicker in and out; flip to false if the tree gets too busy in sessions with many completed agents."
+        },
+        "terminalSessions.revealActiveSession": {
+          "type": "boolean",
+          "default": true,
+          "description": "When you focus a terminal, highlight (select) its matching session in the sidebar so it's easy to locate among many tabs. This only selects an already-visible row — it never expands a collapsed group or scrolls to a hidden one. Set to false if you don't want the sidebar selection to follow the active terminal."
         },
         "terminalSessions.claudeNoFlicker": {
           "type": "string",
@@ -877,20 +882,11 @@
         }
       ]
     },
-    "viewsContainers": {
-      "activitybar": [
-        {
-          "id": "terminalSessionsContainer",
-          "title": "Terminal Sessions",
-          "icon": "media/icon.svg"
-        }
-      ]
-    },
     "views": {
-      "terminalSessionsContainer": [
+      "explorer": [
         {
           "id": "terminalSessions.sessions",
-          "name": "",
+          "name": "Terminal Sessions",
           "icon": "media/icon.svg"
         }
       ]
