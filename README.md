@@ -10,7 +10,13 @@ Persistent terminal sessions for Cursor and VS Code, with first-class awareness 
 
 Every terminal is wrapped in a tmux session whose server runs independent of the editor. Quit Cursor, reboot the window, crash the renderer: Claude Code, dev servers, REPLs, migrations, SSH sessions keep running. Reopen the workspace and everything is where you left it.
 
-**Contents:** [Platform support](#platform-support) · [Why](#why) · [How it works](#how-it-works) · [Features](#features) · [Requirements](#requirements) · [Install](#install) · [First-time setup](#first-time-setup) · [Commands](#commands) · [Keyboard](#keyboard-tmux-prefix-ctrla) · [Settings](#settings) · [Session naming](#session-naming-scheme) · [Recovering without the extension](#recovering-without-the-extension) · [Claude Code rendering in tmux](#claude-code-rendering-in-tmux)
+**Contents:** [What it looks like](#what-it-looks-like) · [Platform support](#platform-support) · [Why](#why) · [How it works](#how-it-works) · [Features](#features) · [Requirements](#requirements) · [Install](#install) · [First-time setup](#first-time-setup) · [Commands](#commands) · [Keyboard](#keyboard-tmux-prefix-ctrla) · [Settings](#settings) · [Session naming](#session-naming-scheme) · [Recovering without the extension](#recovering-without-the-extension) · [Claude Code rendering in tmux](#claude-code-rendering-in-tmux)
+
+## What it looks like
+
+![The Terminal Sessions sidebar showing a live Claude session with its state, messages, cost and context use](media/screenshots/sidebar.png)
+
+Sessions are grouped by workspace. The live one shows what the agent is doing right now (running a Bash tool here), the last thing you said, the last thing it replied, the tool it's on with its input, and the model, running cost, turn count, and context use with a warning past 80%. Stopped sessions keep their row and their buttons, so you can view the conversation, restart, or kill them.
 
 ## Platform support
 
