@@ -1,5 +1,11 @@
 # Terminal Sessions
 
+[![VS Code Marketplace](https://img.shields.io/badge/VS_Code_Marketplace-install-0098FF?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=visul.terminal-sessions)
+[![Open VSX](https://img.shields.io/open-vsx/v/visul/terminal-sessions?label=Open%20VSX&color=c160ef)](https://open-vsx.org/extension/visul/terminal-sessions)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
+**Install:** [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=visul.terminal-sessions) for VS Code, or [Open VSX](https://open-vsx.org/extension/visul/terminal-sessions) for Cursor, Windsurf, and other editors that use the Open VSX registry. Both are on the same version. See [Install](#install) for VSIX and build-from-source.
+
 Persistent terminal sessions for Cursor and VS Code, with first-class awareness of your AI coding agents — **Claude Code, Codex, Antigravity (`agy`), and Grok (xAI)**. Terminals survive full editor restart, organized per workspace, and the sidebar shows live agent state: working/tool/waiting, context usage, cost, last user and assistant messages. Browse, read, name, resume, and clean up every past conversation on your machine, across all four agents.
 
 Every terminal is wrapped in a tmux session whose server runs independent of the editor. Quit Cursor, reboot the window, crash the renderer: Claude Code, dev servers, REPLs, migrations, SSH sessions keep running. Reopen the workspace and everything is where you left it.
@@ -216,6 +222,17 @@ The extension works out of the box, but the click-to-focus behavior on notificat
 | Linux | `zenity` | `waitingAlertStyle: "alert"` falls back to sticky banner | Real modal dialog with `Show terminal` button |
 
 ## Install
+
+### From a marketplace (recommended)
+
+- **VS Code** — [marketplace.visualstudio.com](https://marketplace.visualstudio.com/items?itemName=visul.terminal-sessions), or search `Terminal Sessions` in the Extensions panel
+- **Cursor, Windsurf, VSCodium** — [open-vsx.org](https://open-vsx.org/extension/visul/terminal-sessions), which is the registry those editors use. Searching `Terminal Sessions` in the Extensions panel finds it
+
+Or from the command line:
+```bash
+code --install-extension visul.terminal-sessions      # VS Code
+cursor --install-extension visul.terminal-sessions    # Cursor
+```
 
 ### From VSIX
 ```bash
