@@ -140,6 +140,17 @@ export const grokProvider: AgentProvider = {
     return captureFlags(argv, GROK_FLAGS);
   },
 
+  // Grok reaches auto-approve two ways: the dedicated switch, or the shared
+  // `--permission-mode` enum. Only `bypassPermissions` is auto-approve.
+  // `dontAsk` is the opposite — Grok's own docs table reads "Deny anything
+  // without an explicit allow rule", recommended for "Headless, CI,
+  // high-security" — so it must not be flagged as yolo.
+  yolo: {
+    on: ['--always-approve'],
+    off: ['--always-approve'],
+    offValues: { '--permission-mode': ['bypassPermissions'] },
+  },
+
   buildResumeCommand(
     sessionId: string,
     terminalCwd: string,

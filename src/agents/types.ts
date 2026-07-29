@@ -64,6 +64,33 @@ export interface AgentSessionSummary {
   subsessionRole?: 'teammate' | 'subagent';
 }
 
+/**
+ * Declarative description of an agent's "YOLO" (auto-approve) launch surface.
+ *
+ * Agents express the same idea with different flags — and several express it
+ * more than one way (`--yolo` vs `--full-auto`, or a *value* flag such as
+ * `--permission-mode bypassPermissions`). Detection therefore has to consider
+ * every spelling, while turning the mode ON only ever emits the canonical one.
+ */
+export interface YoloSpec {
+  /** Canonical flags added when switching a session TO yolo. */
+  on: readonly string[];
+  /** Valueless flags that MEAN yolo. Any of them present ⇒ the session is yolo;
+   *  all of them are removed when switching to Normal. Include every alias, not
+   *  just the canonical `on` flag. */
+  off: readonly string[];
+  /** Value-taking flags whose listed values also mean yolo, e.g.
+   *  `{'--permission-mode': ['bypassPermissions']}`. Matching pairs are removed
+   *  in BOTH directions: switching to Normal because they grant the bypass, and
+   *  switching to YOLO because they would otherwise conflict with `on`. */
+  offValues?: Readonly<Record<string, readonly string[]>>;
+  /** Value flags that contradict yolo and must be dropped when enabling it
+   *  (Codex's `--sandbox`/`--ask-for-approval` refuse to coexist with `--yolo`).
+   *  Unlike `offValues` these are dropped whatever their value, and only when
+   *  switching TO yolo. */
+  conflicts?: readonly string[];
+}
+
 // ───────────────────────── the provider contract ─────────────────────────
 
 export interface AgentProvider {
@@ -112,6 +139,10 @@ export interface AgentProvider {
    *  from a live process argv, so resume can relaunch the conversation the way it
    *  was started. Drops resume/continue/print/prompt and ephemeral MCP flags. */
   captureResumeFlags(argv: readonly string[]): string[];
+  /** Which of this agent's launch flags mean "auto-approve everything". Drives
+   *  the 🚨 sidebar chip and the Switch to YOLO/Normal Mode commands. Omit it
+   *  and both are hidden for the agent — no UI claims a mode it can't set. */
+  yolo?: YoloSpec;
 
   // ---- resume ----
   /** Build the shell command that resumes `sessionId`. `terminalCwd` is where

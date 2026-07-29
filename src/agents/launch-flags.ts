@@ -26,6 +26,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { posixQuote } from '../shell-escape';
+import type { YoloSpec } from './types';
 
 /** Declarative description of which launch flags a provider re-applies on resume. */
 export interface FlagSpec {
@@ -145,6 +146,83 @@ export function materializeFlags(flags: readonly string[], spec: FlagSpec): stri
     }
   }
   return final;
+}
+
+/**
+ * Whether a captured flag list puts the session in YOLO (auto-approve) mode.
+ *
+ * Checks every spelling the agent accepts — the valueless aliases in `off` and
+ * the value flags in `offValues` — so a session started with `--permission-mode
+ * bypassPermissions` reads as yolo just like one started with
+ * `--dangerously-skip-permissions`.
+ */
+export function isYolo(flags: readonly string[], yolo: YoloSpec | undefined): boolean {
+  return matchedYoloFlags(flags, yolo).length > 0;
+}
+
+/** The specific flags that make `flags` count as YOLO, rendered back as they
+ *  appeared (`--permission-mode bypassPermissions`, not just the flag name).
+ *  Empty when the session is in normal mode. Lets the tooltip name the real
+ *  reason rather than assuming one canonical flag per agent. */
+export function matchedYoloFlags(
+  flags: readonly string[],
+  yolo: YoloSpec | undefined,
+): string[] {
+  if (!yolo) return [];
+  const hits: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const name = flags[i];
+    if (yolo.off.includes(name)) { hits.push(name); continue; }
+    const values = yolo.offValues?.[name];
+    const value = flags[i + 1] ?? '';
+    if (values && values.includes(value)) hits.push(`${name} ${value}`);
+  }
+  return hits;
+}
+
+/**
+ * Return `flags` with YOLO mode forced on or off.
+ *
+ * Both directions first strip every yolo spelling, which keeps the result
+ * canonical: turning yolo on can't leave a stale `--full-auto` behind, and
+ * turning it off can't miss an alias. Enabling then appends `yolo.on` and drops
+ * the value flags in `conflicts` (a sandbox setting the CLI would reject next
+ * to `--yolo`). Value flags are consumed as flag+value pairs so a removal never
+ * orphans a bare value into the next relaunch.
+ */
+export function setYolo(
+  flags: readonly string[],
+  yolo: YoloSpec,
+  on: boolean,
+): string[] {
+  // Every flag this function has to *remove* is named in the spec, and the only
+  // value-taking ones among them are the `offValues` keys and `conflicts` — so
+  // the provider's full FlagSpec isn't needed here. Flags we don't touch are
+  // copied through token by token, values included, untouched.
+  const out: string[] = [];
+  for (let i = 0; i < flags.length; i++) {
+    const name = flags[i];
+    if (yolo.off.includes(name)) continue; // valueless yolo alias → drop
+    const takesValue = Boolean(yolo.offValues?.[name]) || Boolean(yolo.conflicts?.includes(name));
+    if (takesValue) {
+      // A value flag with nothing after it is malformed. `captureFlags` already
+      // drops those, so it should be unreachable — but emitting `name, ''` would
+      // invent an empty argument that survives quoting as a bare `''` on the
+      // relaunch command line. Drop the orphan rather than fabricate a value.
+      if (i + 1 >= flags.length) continue;
+      const value = flags[i + 1];
+      i++; // consume the value alongside its flag either way
+      // Drop when the value grants the bypass, or when enabling yolo would put
+      // this flag in conflict with it. Otherwise keep the pair intact.
+      if (yolo.offValues?.[name]?.includes(value)) continue;
+      if (on && yolo.conflicts?.includes(name)) continue;
+      out.push(name, value);
+      continue;
+    }
+    out.push(name);
+  }
+  if (on) out.push(...yolo.on);
+  return out;
 }
 
 /** Single-quote every token before it is appended to a resume command string.

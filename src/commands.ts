@@ -19,6 +19,7 @@ import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTr
 import { transcriptToMarkdown } from './transcript-render';
 import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
 import { AgentRegistry } from './agents/registry';
+import { isYolo, setYolo } from './agents/launch-flags';
 import type { AgentProvider, AgentId } from './agents/types';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
@@ -244,6 +245,9 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook(registry)),
     vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal) => cmdRestart(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.switchToYolo, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, true, item)),
+    vscode.commands.registerCommand(COMMAND.switchToNormal, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, false, item)),
+    vscode.commands.registerCommand(COMMAND.toggleYolo, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, undefined, item)),
     vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem | vscode.Terminal) => cmdStop(index, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
@@ -820,14 +824,35 @@ async function resolveSessionNameFromInvocation(
   return undefined;
 }
 
-async function cmdRestart(
+/** A session resolved down to everything needed to tear it down and bring it
+ *  back with its conversation resumed. Shared by Restart and the YOLO switch,
+ *  which differ only in the confirmation text and the launch flags they pass. */
+interface RelaunchTarget {
+  name: string;
+  hash: string;
+  /** cwd to re-create the tmux session in. */
+  cwd: string;
+  /** `"my label"` or `#3`, for user-facing messages. */
+  labelDisplay: string;
+  provider: AgentProvider;
+  /** Conversation to auto-resume, when one was found on disk. */
+  sessionId?: string;
+  transcriptPath?: string;
+}
+
+/**
+ * Resolve the session a relaunch command was invoked on — from the clicked
+ * sidebar row / terminal, or a quick pick when invoked from the palette — plus
+ * its cwd and the conversation to resume.
+ */
+async function resolveRelaunchTarget(
+  tmuxPath: string,
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
-  item?: SessionTreeItem | vscode.Terminal,
-): Promise<void> {
-  const tmuxPath = await requireTmux();
-  if (!tmuxPath) return;
+  item: SessionTreeItem | vscode.Terminal | undefined,
+  placeHolder: string,
+): Promise<RelaunchTarget | undefined> {
   const cfg = getConfig();
   let name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
   if (!name) {
@@ -840,18 +865,15 @@ async function cmdRestart(
       wsHash: s.workspaceHash,
       wsPath: s.workspacePath,
     }));
-    const pick = await vscode.window.showQuickPick<Pick>(picks, {
-      placeHolder: 'Restart which session? (kills any running process, keeps label/icon/color)',
-    });
-    if (!pick) return;
+    const pick = await vscode.window.showQuickPick<Pick>(picks, { placeHolder });
+    if (!pick) return undefined;
     name = pick.sessionName;
   }
   const parsed = parseSessionName(name, cfg.sessionPrefix);
-  if (!parsed) return;
+  if (!parsed) return undefined;
   const ws = index.getWorkspace(parsed.hash);
-  if (!ws) return;
+  if (!ws) return undefined;
   const meta = index.getSessionMeta(parsed.hash, name);
-  const labelDisplay = meta?.label ? `"${meta.label}"` : `#${parsed.tabId}`;
 
   // Resolve the cwd to re-create the tmux session in.
   // Priority: stored folderPath → live tmux session_path → workspace root.
@@ -878,26 +900,41 @@ async function cmdRestart(
   // Walk the full history to skip past dead sessionIds (Claude prunes empty
   // sessions, so the head may be a 0-turn ghost while the real conversation
   // lives one or two slots deeper).
-  const { provider: resumeProvider, history: resumeHistory } =
+  const { provider, history } =
     resumeContextFor(index, registry, claudeTracker, parsed.hash, name);
-  const resumeInfo = resolveResumeFromHistory(
-    resumeProvider,
-    resumeHistory,
-    restartCwd,
-    ws.path,
-  );
-  const claudeSessionId = resumeInfo?.sessionId;
-  const claudeTranscriptPath = resumeInfo?.transcriptPath;
-  const claudeLine = claudeSessionId
-    ? `\n\nDetected ${resumeProvider.displayName} session ${claudeSessionId.slice(0, 8)}… — will auto-resume after restart.`
-    : '';
+  const resumeInfo = resolveResumeFromHistory(provider, history, restartCwd, ws.path);
 
-  const confirm = await vscode.window.showWarningMessage(
-    `Restart session ${labelDisplay}?\n\nKills the current tmux session (any running program in it, including Claude Code) and creates a fresh empty shell with the same name, workspace, icon, and color.${claudeLine}`,
-    { modal: true }, 'Restart',
-  );
-  if (confirm !== 'Restart') return;
+  return {
+    name,
+    hash: parsed.hash,
+    cwd: restartCwd,
+    labelDisplay: meta?.label ? `"${meta.label}"` : `#${parsed.tabId}`,
+    provider,
+    sessionId: resumeInfo?.sessionId,
+    transcriptPath: resumeInfo?.transcriptPath,
+  };
+}
 
+/**
+ * Kill the tmux session, recreate it in the same place, and resume its
+ * conversation with `flags`. `flags` is passed explicitly rather than read from
+ * the index so the YOLO switch can relaunch with a modified set.
+ *
+ * Pass a THUNK to defer the read to the moment the resume command is built.
+ * `captureLaunchFlags` writes the live process's flags fire-and-forget, so a
+ * Restart fired seconds after the agent's last hook event can otherwise read the
+ * index before that write lands and silently relaunch without `--model`,
+ * `--add-dir` or the yolo flag. Restart passes a thunk for exactly that reason;
+ * the YOLO switch passes an array, since it must use the flags it just computed.
+ */
+async function relaunchSession(
+  tmuxPath: string,
+  target: RelaunchTarget,
+  index: SessionIndex,
+  flags: readonly string[] | (() => readonly string[]),
+  failureLabel: string,
+): Promise<boolean> {
+  const { name, hash, cwd } = target;
   try {
     await tmux.killSession(tmuxPath, name);
     // Close the now-orphaned VS Code tab (the shell inside it sees its tmux
@@ -908,14 +945,14 @@ async function cmdRestart(
     const dead = findTerminalForSession(name);
     if (dead) await disposeAndWait(dead, 500);
     // recordSession keeps existing label/icon/color; just ensures entry exists.
-    index.recordSession(parsed.hash, name);
-    await tmux.createDetachedSession(tmuxPath, name, restartCwd);
+    index.recordSession(hash, name);
+    await tmux.createDetachedSession(tmuxPath, name, cwd);
     // Clear any lingering stopped flag (mirrors cmdStart) — otherwise a session
     // restarted from the palette stays marked stopped and post-reboot restore
     // filters it out as "intentionally stopped", losing its auto-resume.
-    index.setSessionStopped(parsed.hash, name, false);
-    const term = await openTerminalForSession(name, restartCwd, index, true);
-    if (term && claudeSessionId) {
+    index.setSessionStopped(hash, name, false);
+    const term = await openTerminalForSession(name, cwd, index, true);
+    if (term && target.sessionId) {
       // Give the shell a moment to init (rc files, prompt) before sending
       // the resume command. Heavy zshrc / oh-my-zsh setups need > 1 s.
       await sleep(SHELL_INIT_DELAY_MS);
@@ -924,16 +961,167 @@ async function cmdRestart(
       if (vscode.window.terminals.includes(term)) {
         try {
           term.sendText(buildResumeCommand(
-            resumeProvider, claudeSessionId, claudeTranscriptPath, restartCwd,
-            index.getResumeFlags(parsed.hash, name, resumeProvider.id),
+            target.provider, target.sessionId, target.transcriptPath, cwd,
+            typeof flags === 'function' ? flags() : flags,
           ));
         } catch (e) { console.error('[terminal-sessions] sendText failed:', e); }
       }
     }
     refreshSidebar();
+    return true;
   } catch (e) {
-    vscode.window.showErrorMessage(`Restart failed: ${String(e).slice(0, 200)}`);
+    vscode.window.showErrorMessage(`${failureLabel} failed: ${String(e).slice(0, 200)}`);
+    return false;
   }
+}
+
+async function cmdRestart(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem | vscode.Terminal,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const target = await resolveRelaunchTarget(
+    tmuxPath, index, registry, claudeTracker, item,
+    'Restart which session? (kills any running process, keeps label/icon/color)',
+  );
+  if (!target) return;
+
+  const claudeLine = target.sessionId
+    ? `\n\nDetected ${target.provider.displayName} session ${target.sessionId.slice(0, 8)}… — will auto-resume after restart.`
+    : '';
+  const confirm = await vscode.window.showWarningMessage(
+    `Restart session ${target.labelDisplay}?\n\nKills the current tmux session (any running program in it, including Claude Code) and creates a fresh empty shell with the same name, workspace, icon, and color.${claudeLine}`,
+    { modal: true }, 'Restart',
+  );
+  if (confirm !== 'Restart') return;
+
+  // Restart preserves the session's character, YOLO included — switching modes
+  // is what cmdSwitchYolo is for. Read the flags late (thunk) so a capture still
+  // in flight when Restart was clicked isn't missed.
+  await relaunchSession(
+    tmuxPath, target, index,
+    () => index.getResumeFlags(target.hash, target.name, target.provider.id),
+    'Restart',
+  );
+}
+
+/**
+ * Switch a session between YOLO (auto-approve) and normal permission mode.
+ *
+ * The permission mode is fixed at launch, so switching means relaunching: the
+ * tmux session is recreated and the conversation resumed with the yolo flag
+ * added or removed. Nothing is lost — the conversation continues, only its
+ * launch flags change.
+ *
+ * `on === undefined` toggles, which is what the palette command does; the two
+ * context-menu entries pass an explicit target so they always mean what they say.
+ */
+async function cmdSwitchYolo(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  on: boolean | undefined,
+  item?: SessionTreeItem | vscode.Terminal,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const target = await resolveRelaunchTarget(
+    tmuxPath, index, registry, claudeTracker, item,
+    'Switch permission mode for which session?',
+  );
+  if (!target) return;
+
+  const spec = target.provider.yolo;
+  if (!spec) {
+    vscode.window.showInformationMessage(
+      `${target.provider.displayName} has no auto-approve mode this extension can set.`,
+    );
+    return;
+  }
+
+  // The mode is a launch flag, so it can only be applied by relaunching the
+  // conversation. With nothing to resume, a relaunch would kill the shell and
+  // change nothing — refuse instead of destroying the session for no gain.
+  if (!target.sessionId) {
+    vscode.window.showWarningMessage(
+      `No ${target.provider.displayName} conversation found in ${target.labelDisplay} to switch. `
+      + `Start one first — the permission mode is chosen when the agent launches.`,
+    );
+    return;
+  }
+
+  const current = index.getResumeFlags(target.hash, target.name, target.provider.id);
+  const isOn = isYolo(current, spec);
+  const want = on ?? !isOn;
+  if (want === isOn) {
+    vscode.window.showInformationMessage(
+      `Session ${target.labelDisplay} is already in ${isOn ? 'YOLO' : 'normal'} mode.`,
+    );
+    return;
+  }
+
+  // A session mid-tool-call loses that work when the process dies, so it is
+  // always worth a prompt — regardless of direction or the confirm setting.
+  const state = claudeTracker.getSnapshot(target.name)?.state;
+  const busy = state === 'working' || state === 'tool';
+  const cfg = getConfig();
+
+  if (want && (cfg.confirmYoloSwitch || busy)) {
+    const flagList = spec.on.join(' ');
+    const busyLine = busy
+      ? `\n\n${target.provider.displayName} is working right now — restarting will interrupt the current step.`
+      : '';
+    // Conflicting flags have to be dropped for the CLI to accept the yolo flag,
+    // and nothing restores them on the way back. Say so rather than silently
+    // discarding a setting the user deliberately chose.
+    const dropped = (spec.conflicts || []).filter(f => current.includes(f));
+    const droppedLine = dropped.length
+      ? `\n\nThis also removes ${dropped.map(f => `\`${f}\``).join(', ')}, which cannot be combined with it. `
+        + `Switching back to normal mode will not restore it.`
+      : '';
+    const resumeLine = target.sessionId
+      ? `\n\nThe conversation (${target.sessionId.slice(0, 8)}…) is resumed; only the permission mode changes.`
+      : '';
+    const choice = await vscode.window.showWarningMessage(
+      `Switch session ${target.labelDisplay} to YOLO mode?\n\n`
+      + `${target.provider.displayName} will be relaunched with ${flagList}. `
+      + `It will no longer ask you to approve tool use, file writes, or shell commands `
+      + `in this session.${droppedLine}${resumeLine}${busyLine}`,
+      { modal: true },
+      'Switch to YOLO', "Switch and don't ask again",
+    );
+    if (choice !== 'Switch to YOLO' && choice !== "Switch and don't ask again") return;
+    if (choice === "Switch and don't ask again") {
+      await vscode.workspace.getConfiguration('terminalSessions')
+        .update('confirmYoloSwitch', false, vscode.ConfigurationTarget.Global);
+    }
+  } else if (!want && busy) {
+    // Turning safety back on needs no gate of its own, but interrupting live
+    // work still does.
+    const choice = await vscode.window.showWarningMessage(
+      `Switch session ${target.labelDisplay} to normal mode?\n\n`
+      + `${target.provider.displayName} is working right now — restarting will interrupt the current step.`,
+      { modal: true }, 'Switch to Normal',
+    );
+    if (choice !== 'Switch to Normal') return;
+  }
+
+  const next = setYolo(current, spec, want);
+  // Persist before relaunching so the 🚨 chip and the menu gating reflect the new
+  // mode even if the relaunch fails partway, and so a later plain Restart keeps
+  // the mode the user just chose.
+  index.recordResumeFlags(target.hash, target.name, target.provider.id, next);
+
+  const ok = await relaunchSession(tmuxPath, target, index, next, 'Mode switch');
+  if (!ok) return;
+  vscode.window.showInformationMessage(
+    want
+      ? `🚨 ${target.labelDisplay} is now in YOLO mode — tool use is auto-approved.`
+      : `${target.labelDisplay} is back to normal mode — you'll be asked to approve again.`,
+  );
 }
 
 /**

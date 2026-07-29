@@ -268,7 +268,11 @@ export class SessionTreeItem extends vscode.TreeItem {
         new vscode.ThemeColor('disabledForeground'),
       );
       const ageHint = humanAge(session.lastAttached);
-      this.description = `stopped · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`;
+      // A stopped session still carries the flags Start will relaunch with, so a
+      // yolo one must say so BEFORE the click — clicking this row runs Start
+      // directly, with no confirmation anywhere on that path.
+      this.description = `stopped · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
+        + (session.yolo ? ' · 🚨' : '');
       this.collapsibleState = vscode.TreeItemCollapsibleState.None;
       this.resourceUri = vscode.Uri.parse(
         `${STOPPED_URI_SCHEME}:${encodeURIComponent(session.name)}`,
@@ -286,6 +290,14 @@ export class SessionTreeItem extends vscode.TreeItem {
       if (claude?.sessionId) {
         parts.push(`Last Claude session: \`${claude.sessionId.slice(0, 8)}…\` (will auto-resume on Start)`);
       }
+      if (session.yolo) {
+        const why = (session.yoloFlags || []).map(f => `\`${f}\``).join(', ');
+        parts.push(
+          `🚨 **Will start in YOLO mode** — Start relaunches this session with `
+          + `${why || 'auto-approve flags'}, so tool use, file writes and shell commands `
+          + `run without asking.`,
+        );
+      }
       parts.push(`Click to start.`);
       this.tooltip = new vscode.MarkdownString(parts.join('\n\n'));
       this.command = {
@@ -296,18 +308,23 @@ export class SessionTreeItem extends vscode.TreeItem {
       return;
     }
     // contextValue drives view/item/context menus. Flags are appended in a FIXED
-    // order — muted, forkable, branched, locked — so menu `when` regexes can match
-    // any combination, e.g. "session", "session.muted", "session.forkable",
-    // "session.forkable.branched", "session.muted.forkable.branched.locked".
+    // order — muted, forkable, branched, locked, yolo — so menu `when` regexes
+    // can match any combination, e.g. "session", "session.muted",
+    // "session.forkable", "session.muted.forkable.branched.locked.yoloOn".
     // Any change to this order requires updating every session `when` regex in
     // package.json (they are anchored). `forkable` = latest agent supports fork
     // (Claude), gating the Fork command; `branched` = in a branch set, gating
-    // Unlink. Stopped rows use a separate scheme and never carry these two.
+    // Unlink. The trailing yolo token is `.yoloOn`/`.yoloOff` when the agent has
+    // an auto-approve mode we can drive (absent entirely when it doesn't), which
+    // both gates the two Switch commands and picks which of them shows — one
+    // token rather than two keeps the other regexes to a single extra group.
+    // Stopped rows use a separate scheme and carry none of these.
     let cv = 'session';
     if (session.muted) cv += '.muted';
     if (session.forkable) cv += '.forkable';
     if (session.branchSetId) cv += '.branched';
     if (session.locked) cv += '.locked';
+    if (session.yoloCapable) cv += session.yolo ? '.yoloOn' : '.yoloOff';
     this.contextValue = cv;
 
     // Fork branch-set members carry a resourceUri in the branch scheme so the
@@ -328,6 +345,8 @@ export class SessionTreeItem extends vscode.TreeItem {
     // of a trailing " · attached" text, which was just noise on every row.
     const mutedHint = session.muted ? ' · 🔕' : '';
     const lockHint = session.locked ? ' · 🔒' : '';
+    // Auto-approve sessions act without asking, so the row says so at a glance.
+    const yoloHint = session.yolo ? ' · 🚨' : '';
     const aLabel = claude ? agentLabel(claude.agent) : '';
     const claudeDesc = claude ? claudeStateDescription(claude) : undefined;
     // Prefix the agent name for non-Claude rows so "Codex working 12s" vs
@@ -337,8 +356,8 @@ export class SessionTreeItem extends vscode.TreeItem {
       : undefined;
     const ageHint = humanAge(session.lastAttached);
     this.description = stateDesc
-      ? `${stateDesc}${mutedHint}${lockHint}`
-      : `${ageHint}${mutedHint}${lockHint}`;
+      ? `${stateDesc}${mutedHint}${lockHint}${yoloHint}`
+      : `${ageHint}${mutedHint}${lockHint}${yoloHint}`;
 
     const customized = Boolean(session.icon || session.color || session.label);
     const claudeIcon = claude ? STATE_ICONS[claude.state] : '';
@@ -383,6 +402,16 @@ export class SessionTreeItem extends vscode.TreeItem {
       `State: ${session.attached ? 'Attached (live)' : 'Detached'}`,
     );
     if (session.locked) parts.push(`🔒 **Locked** — protected from Kill (right-click → Unlock to remove)`);
+    // Name the flags actually responsible instead of a hardcoded one — agents
+    // reach auto-approve by more than one spelling.
+    if (session.yolo) {
+      const why = (session.yoloFlags || []).map(f => `\`${f}\``).join(', ');
+      parts.push(
+        `🚨 **YOLO mode** — launched with ${why || 'auto-approve flags'}; `
+        + `tool use, file writes and shell commands run without asking. `
+        + `Right-click → Switch to Normal Mode to restore prompts.`,
+      );
+    }
     if (session.icon) parts.push(`Icon: \`${session.icon}\``);
     if (session.color) parts.push(`Color: \`${session.color}\``);
     if (claude && claude.state !== 'none') {

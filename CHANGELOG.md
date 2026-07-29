@@ -4,6 +4,17 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.26] — 2026-07-29
+
+### Added
+- **Switch a session between YOLO and normal permission mode without losing the conversation.** Right-click any session running an AI agent and pick **Switch to YOLO Mode** (auto-approve everything) or **Switch to Normal Mode** (permission prompts back on) — only one of the two shows, whichever you aren't already in. Because the permission mode is fixed at launch, switching relaunches the agent, but the conversation is resumed, so you keep your context and lose only a couple of seconds. Also available as `Terminal Sessions: Toggle YOLO Mode` in the command palette.
+- **YOLO sessions are marked 🚨 in the sidebar.** A session running with auto-approve gets a 🚨 next to its state, alongside the existing 🔒 and 🔕 chips, and its tooltip names the exact flags responsible. Each agent declares its own auto-approve surface, so the badge and the switch work per agent: Claude (`--dangerously-skip-permissions`, or `--permission-mode bypassPermissions`), Codex (`--yolo`), Antigravity (`--dangerously-skip-permissions`) and Grok (`--always-approve`, or `--permission-mode bypassPermissions`). Modes that merely *narrow* what gets asked are deliberately not flagged: `acceptEdits` still prompts for shell commands, and `dontAsk` is the opposite of auto-approve (it denies anything not pre-approved, a hardening mode for headless runs). Agents with no auto-approve mode simply don't show the commands.
+- **Stopped sessions show 🚨 too.** A stopped session still carries the flags Start will relaunch it with, so if those include auto-approve the row says so — and its tooltip spells out that Start will bring it back in YOLO mode. Clicking a stopped row starts it immediately with no further prompt, so the warning has to be visible beforehand.
+- **`terminalSessions.confirmYoloSwitch`** (default `true`) gates the confirmation shown when entering YOLO mode; the modal offers a "don't ask again" that flips it. Leaving YOLO mode is never gated — but a session that is *actively working* is always confirmed first in both directions, since relaunching interrupts whatever step it's on. Where a flag has to be dropped for the CLI to accept the auto-approve flag (Codex refuses `--yolo` next to `--ask-for-approval`), the confirmation names it and warns that switching back will not restore it.
+
+### Fixed
+- **Restart no longer races the launch-flag capture.** The captured flags are now read at the moment the resume command is built rather than before the session is killed, so a Restart clicked seconds after the agent's last hook event can't relaunch without `--model`, `--add-dir` or the flags it was started with.
+
 ## [0.20.25] — 2026-07-26
 
 ### Added

@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel, GroupLabel, BranchSet } from './types';
 import type { AgentId } from './agents/types';
-import { isForkableAgent } from './agents/registry';
+import { isForkableAgent, yoloFlagsFor, yoloSpecFor } from './agents/registry';
 import * as tmux from './tmux';
 import { parseSessionName } from './workspace-id';
 
@@ -708,6 +708,9 @@ export async function enrichSessions(
     const bset = meta?.branchSetId ? ws?.branchSets?.[meta.branchSetId] : undefined;
     const latestAgent: AgentId | undefined = meta?.agentSessions?.[0]?.agent
       ?? ((meta?.lastClaudeSessionId || meta?.claudeSessionHistory?.length) ? 'claude' : undefined);
+    const yoloHits = latestAgent
+      ? yoloFlagsFor(latestAgent, meta?.resumeFlags?.[latestAgent] ?? [])
+      : [];
     out.push({
       name: row.name,
       workspaceHash: parsed.hash,
@@ -731,6 +734,9 @@ export async function enrichSessions(
       branchColorId: bset?.colorId,
       branchBaseLabel: bset ? (bset.baseLabel ?? bset.name.replace(/\s*⑂\s*$/, '')) : undefined,
       forkable: isForkableAgent(latestAgent),
+      yolo: yoloHits.length > 0,
+      yoloCapable: Boolean(yoloSpecFor(latestAgent)),
+      yoloFlags: yoloHits,
       folderPath: meta?.folderPath,
     });
   }
@@ -747,6 +753,12 @@ export async function enrichSessions(
       const bset = meta.branchSetId ? ws.branchSets?.[meta.branchSetId] : undefined;
       const latestAgent: AgentId | undefined = meta.agentSessions?.[0]?.agent
         ?? ((meta.lastClaudeSessionId || meta.claudeSessionHistory?.length) ? 'claude' : undefined);
+      // Stopped rows don't render the chip (they early-return with their own
+      // description), but the flags still describe what Start will relaunch, so
+      // the fields are populated rather than left misleadingly false.
+      const yoloHits = latestAgent
+        ? yoloFlagsFor(latestAgent, meta.resumeFlags?.[latestAgent] ?? [])
+        : [];
       out.push({
         name: sessionName,
         workspaceHash: hash,
@@ -769,6 +781,9 @@ export async function enrichSessions(
         branchName: bset?.name,
         branchColorId: bset?.colorId,
         forkable: isForkableAgent(latestAgent),
+        yolo: yoloHits.length > 0,
+        yoloCapable: Boolean(yoloSpecFor(latestAgent)),
+        yoloFlags: yoloHits,
         folderPath: meta.folderPath,
       });
     }

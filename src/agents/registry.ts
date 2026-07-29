@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { AgentId, AgentProvider } from './types';
+import { AgentId, AgentProvider, YoloSpec } from './types';
+import { isYolo, matchedYoloFlags } from './launch-flags';
 import { claudeProvider } from './claude';
 import { codexProvider } from './codex/provider';
 import { agyProvider } from './agy/provider';
@@ -18,6 +19,28 @@ const FORKABLE_AGENTS: ReadonlySet<AgentId> = new Set(
  *  instance so enrichment can call it without a live registry. */
 export function isForkableAgent(id: AgentId | undefined): boolean {
   return !!id && FORKABLE_AGENTS.has(id);
+}
+
+const YOLO_SPECS: ReadonlyMap<AgentId, YoloSpec> = new Map(
+  ALL.filter(p => p.yolo).map(p => [p.id, p.yolo as YoloSpec]),
+);
+
+/** The agent's YOLO definition, or undefined when it has no auto-approve mode
+ *  we know how to drive. Decoupled from any registry instance so enrichment can
+ *  call it without one (mirrors `isForkableAgent`). */
+export function yoloSpecFor(id: AgentId | undefined): YoloSpec | undefined {
+  return id ? YOLO_SPECS.get(id) : undefined;
+}
+
+/** Whether a session's captured launch flags put it in YOLO mode. Drives the
+ *  🚨 chip and the `yolo` contextValue token. */
+export function isYoloSession(id: AgentId | undefined, flags: readonly string[]): boolean {
+  return isYolo(flags, yoloSpecFor(id));
+}
+
+/** The captured flags responsible for a session's YOLO state, for the tooltip. */
+export function yoloFlagsFor(id: AgentId | undefined, flags: readonly string[]): string[] {
+  return matchedYoloFlags(flags, yoloSpecFor(id));
 }
 
 export class AgentRegistry {

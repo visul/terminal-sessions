@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.25",
+  "version": "0.20.26",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -216,6 +216,11 @@
           "default": true,
           "description": "When you focus a terminal, highlight (select) its matching session in the sidebar so it's easy to locate among many tabs. This only selects an already-visible row — it never expands a collapsed group or scrolls to a hidden one. Set to false if you don't want the sidebar selection to follow the active terminal."
         },
+        "terminalSessions.confirmYoloSwitch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ask for confirmation before switching a session into YOLO mode, where the agent stops asking you to approve tool use, file writes and shell commands. Switching back to normal mode is never gated. A session that is actively working is always confirmed regardless of this setting, since restarting interrupts it."
+        },
         "terminalSessions.claudeNoFlicker": {
           "type": "string",
           "enum": [
@@ -417,6 +422,22 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "terminalSessions.switchToYolo",
+        "title": "Switch to YOLO Mode (auto-approve)",
+        "icon": "$(zap)"
+      },
+      {
+        "command": "terminalSessions.switchToNormal",
+        "title": "Switch to Normal Mode (ask before acting)",
+        "icon": "$(shield)"
+      },
+      {
+        "command": "terminalSessions.toggleYolo",
+        "title": "Toggle YOLO Mode",
+        "category": "Terminal Sessions",
+        "icon": "$(zap)"
+      },
+      {
         "command": "terminalSessions.stop",
         "title": "Stop Session (keep in sidebar)",
         "icon": "$(debug-pause)"
@@ -553,6 +574,8 @@
         { "command": "terminalSessions.unmuteSession", "when": "false" },
         { "command": "terminalSessions.lockSession", "when": "false" },
         { "command": "terminalSessions.unlockSession", "when": "false" },
+        { "command": "terminalSessions.switchToYolo", "when": "false" },
+        { "command": "terminalSessions.switchToNormal", "when": "false" },
         { "command": "terminalSessions.lockedHint", "when": "false" },
         { "command": "terminalSessions.moveSessionToGroup", "when": "false" },
         { "command": "terminalSessions.moveGroupToMaster", "when": "false" },
@@ -682,38 +705,48 @@
       "view/item/context": [
         {
           "command": "terminalSessions.viewConversation",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "inline@1"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "inline@3"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "inline@4"
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.yoloO(n|ff))?$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.lockedHint",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?\\.locked$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?\\.locked(\\.yoloO(n|ff))?$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "danger@0"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "danger@0"
+        },
+        {
+          "command": "terminalSessions.switchToYolo",
+          "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOff$/",
+          "group": "danger@0.2"
+        },
+        {
+          "command": "terminalSessions.switchToNormal",
+          "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOn$/",
+          "group": "danger@0.2"
         },
         {
           "command": "terminalSessions.rename",
@@ -822,27 +855,27 @@
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
           "group": "danger@1"
         },
         {
           "command": "terminalSessions.muteSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.unmuteSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.muted(\\.forkable)?(\\.branched)?(\\.locked)?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.muted(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.lockSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
           "group": "danger@0.5"
         },
         {
           "command": "terminalSessions.unlockSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.locked$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.locked(\\.yoloO(n|ff))?$/",
           "group": "danger@0.5"
         },
         {

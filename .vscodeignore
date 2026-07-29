@@ -1,5 +1,9 @@
 .vscode/**
 .vscode-test/**
+# Agent tooling and its caches: .claude/council-cache holds full review
+# transcripts, which vsce would otherwise ship inside the extension (.gitignore
+# does not apply here — vsce reads this file only).
+.claude/**
 _other_extensions/**
 src/**
 docs/**

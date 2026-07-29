@@ -35,6 +35,16 @@ export interface SessionInfo {
   // True when this session's latest agent conversation can be forked (Claude).
   // Drives the `forkable` contextValue token that gates the Fork command.
   forkable?: boolean;
+  // True when the latest agent's captured launch flags put it in auto-approve
+  // ("YOLO") mode. Drives the 🚨 chip and the `yolo` contextValue token that
+  // picks between Switch to YOLO Mode and Switch to Normal Mode.
+  yolo?: boolean;
+  // True when the latest agent declares a YOLO mode at all. Agents without one
+  // hide both switch commands rather than offering a mode we can't set.
+  yoloCapable?: boolean;
+  // The captured flags that made `yolo` true, shown verbatim in the tooltip so
+  // the badge names the actual reason instead of a hardcoded flag.
+  yoloFlags?: string[];
   // Actual cwd the tmux session was started in. Set for subfolder sessions
   // (right-click → New Persistent in Folder); differs from the workspace root.
   folderPath?: string;

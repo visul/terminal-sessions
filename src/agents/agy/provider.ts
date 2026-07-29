@@ -224,6 +224,12 @@ export const agyProvider: AgentProvider = {
     return captureFlags(argv, AGY_FLAGS);
   },
 
+  // agy exposes exactly one auto-approve switch and no `--permission-mode`.
+  yolo: {
+    on: ['--dangerously-skip-permissions'],
+    off: ['--dangerously-skip-permissions'],
+  },
+
   buildResumeCommand(
     sessionId: string,
     terminalCwd: string,

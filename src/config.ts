@@ -35,6 +35,7 @@ export interface Config {
   showCompletedSubagents: boolean;
   claudeNoFlicker: boolean;
   revealActiveSession: boolean;
+  confirmYoloSwitch: boolean;
 }
 
 export function getConfig(): Config {
@@ -84,6 +85,7 @@ export function getConfig(): Config {
       return true;
     })(),
     revealActiveSession: c.get('revealActiveSession', true),
+    confirmYoloSwitch: c.get('confirmYoloSwitch', true),
   };
 }
 
@@ -135,6 +137,9 @@ export const COMMAND = {
   installClaudeHook: 'terminalSessions.installClaudeHook',
   uninstallClaudeHook: 'terminalSessions.uninstallClaudeHook',
   restart: 'terminalSessions.restart',
+  switchToYolo: 'terminalSessions.switchToYolo',
+  switchToNormal: 'terminalSessions.switchToNormal',
+  toggleYolo: 'terminalSessions.toggleYolo',
   stop: 'terminalSessions.stop',
   forkConversation: 'terminalSessions.forkConversation',
   unlinkBranch: 'terminalSessions.unlinkBranch',

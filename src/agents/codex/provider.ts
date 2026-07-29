@@ -163,6 +163,25 @@ export const codexProvider: AgentProvider = {
     return captureFlags(argv, CODEX_FLAGS);
   },
 
+  // `--yolo` is the live spelling (a hidden alias of the long form); `--full-auto`
+  // was removed from the CLI and is listed only so a flag set captured from an
+  // older Codex is still recognized and stripped. Neither `--sandbox` nor
+  // `--ask-for-approval` is yolo on its own — neither alone removes both the
+  // sandbox and the prompts.
+  //
+  // Only `--ask-for-approval` is a conflict, and that is verified against the
+  // installed CLI rather than assumed: `codex --yolo -a never doctor` fails with
+  // "the argument '--dangerously-bypass-approvals-and-sandbox' cannot be used
+  // with '--ask-for-approval'", while `codex --yolo -s workspace-write doctor`
+  // exits 0. Listing `--sandbox` here too would silently discard a user's
+  // deliberately restrictive `--sandbox read-only` for no reason, and nothing
+  // restores a dropped value on the way back to normal mode.
+  yolo: {
+    on: ['--yolo'],
+    off: ['--yolo', '--full-auto', '--dangerously-bypass-approvals-and-sandbox'],
+    conflicts: ['--ask-for-approval'],
+  },
+
   buildResumeCommand(
     sessionId: string,
     _terminalCwd: string,

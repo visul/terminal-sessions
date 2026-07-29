@@ -141,6 +141,28 @@ export const claudeProvider: AgentProvider = {
     return captureFlags(argv, CLAUDE_FLAGS);
   },
 
+  // `--allow-dangerously-skip-permissions` is deliberately absent: it only makes
+  // the bypass *available* ("without it being enabled by default"), so its
+  // presence does not mean the session is running unattended.
+  //
+  // Of the `--permission-mode` values only `bypassPermissions` is auto-approve.
+  // `dontAsk` is the OPPOSITE — Claude's own help text reads "Don't prompt for
+  // permissions, deny if not pre-approved", i.e. a hardening mode for headless
+  // runs — so treating it as yolo would slap the 🚨 on the most cautious users.
+  // `acceptEdits` only covers file edits (shell commands still ask).
+  //
+  // `bypassPermissions` is kept even though on its own it is inert (the binary
+  // refuses it with "the session was not launched with
+  // --dangerously-skip-permissions"): combined with the
+  // `--allow-dangerously-skip-permissions` gate it IS an effective bypass with
+  // no bool flag present, and that combination would otherwise read as normal —
+  // the one direction we must never get wrong.
+  yolo: {
+    on: ['--dangerously-skip-permissions'],
+    off: ['--dangerously-skip-permissions'],
+    offValues: { '--permission-mode': ['bypassPermissions'] },
+  },
+
   buildResumeCommand(
     sessionId: string,
     terminalCwd: string,
