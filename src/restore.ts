@@ -117,12 +117,23 @@ export async function maybeOfferRestore(
   const resumes: Array<{
     term: vscode.Terminal;
     provider: AgentProvider;
+    sessionName: string;
     sessionId: string;
     label: string;
     transcriptPath?: string;
     cwd: string;
     flags: string[];
   }> = [];
+
+  // Decide up front which conversation each pane resumes. A conversation runs in
+  // ONE pane at a time — two panes resuming one id append to a single transcript
+  // — and the cwd guard below cannot catch that, since sibling tabs on the same
+  // folder both pass it. Two passes: every pane first takes only a conversation
+  // it actually owns (held as its resume head, most recently recorded), then any
+  // pane still empty takes whatever is left. Owner-first stops a tab that merely
+  // glanced at a conversation from outranking the tab it belongs to; the second
+  // pass stops a conversation nobody claimed from going unused.
+  const plan = planResumes(index, registry, claudeTracker, toRecreate, ws.hash, wsEntry.path, cfg.sessionPrefix);
 
   for (const c of toRecreate) {
     try {
@@ -149,35 +160,15 @@ export async function maybeOfferRestore(
         const parsed = parseSessionName(c.sessionName, cfg.sessionPrefix);
         const agent = parsed ? index.getLastAgent(parsed.hash, c.sessionName) : 'claude';
         const provider = registry.providerForAgent(agent);
-        const liveSid = claudeTracker?.getSessionId(c.sessionName);
-        const recorded = parsed ? index.getAgentSessionHistory(parsed.hash, c.sessionName, agent) : [];
-        const seen = new Set<string>();
-        const ids: string[] = [];
-        for (const id of [liveSid, ...recorded]) {
-          if (id && !seen.has(id)) { seen.add(id); ids.push(id); }
-        }
-        // Resolve to the conversation that actually belongs to THIS pane's folder.
-        // Scope guard (same intent as resolveResumeFromHistory): an in-scope
-        // transcript (cwd under this session's folder) wins; a candidate whose cwd
-        // is KNOWN to be a different workspace is rejected (polluted history from a
-        // cross-workspace `claude --resume` glance — resuming it here is the "wrong
-        // session restored" bug). An unreadable-cwd transcript is a last resort only.
-        let resolvedSid: string | undefined;
-        let resolvedTp: string | undefined;
-        let fallbackSid: string | undefined;
-        let fallbackTp: string | undefined;
-        for (const sid of ids) {
-          const tp = provider.resolveTranscriptPath(sid, cwd, undefined);
-          if (!tp || !fs.existsSync(tp)) continue;
-          const tcwd = readTranscriptCwd(tp);
-          if (tcwd && isCwdUnder(cwd, tcwd)) { resolvedSid = sid; resolvedTp = tp; break; }
-          if (!tcwd && !fallbackSid) { fallbackSid = sid; fallbackTp = tp; }
-          // known-foreign cwd → skip (do not restore a stranger's conversation)
-        }
-        if (!resolvedSid && fallbackSid) { resolvedSid = fallbackSid; resolvedTp = fallbackTp; }
+        // Which conversation this pane gets was decided before any terminal was
+        // created (see planResumes) so ownership can be weighed across the whole
+        // batch rather than by whoever this loop reaches first.
+        const planned = plan.get(c.sessionName);
+        const resolvedSid = planned?.sessionId;
+        const resolvedTp = planned?.transcriptPath;
         if (resolvedSid) {
           const flags = parsed ? index.getResumeFlags(parsed.hash, c.sessionName, agent) : [];
-          resumes.push({ term, provider, sessionId: resolvedSid, label: c.label, transcriptPath: resolvedTp, cwd, flags });
+          resumes.push({ term, provider, sessionName: c.sessionName, sessionId: resolvedSid, label: c.label, transcriptPath: resolvedTp, cwd, flags });
         }
       }
       await sleep(150);
@@ -198,6 +189,9 @@ export async function maybeOfferRestore(
       try {
         // The provider builds its own resume command and handles cd-to-recorded
         // -cwd when it's cwd-sensitive (Claude is; Codex restores cwd itself).
+        // Hold each conversation for its pane until the agent boots, so a manual
+        // Restart/Start moments after a restore can't resolve the same id.
+        claudeTracker?.reserveResume(r.sessionId, r.sessionName);
         r.term.sendText(r.provider.buildResumeCommand(r.sessionId, r.cwd, r.transcriptPath, r.flags));
         resumed++;
       } catch (e) {
@@ -212,4 +206,68 @@ export async function maybeOfferRestore(
   vscode.window.showInformationMessage(summary);
   refreshSidebar();
   return { ran: true, recreated, attached };
+}
+
+interface PlannedResume { sessionId: string; transcriptPath?: string }
+
+/** Assign each candidate pane a distinct conversation. Owner-preferred first
+ *  pass, then a free-for-all over what remains. Pure: reads the index and the
+ *  filesystem, creates nothing. */
+function planResumes(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker | undefined,
+  candidates: readonly Candidate[],
+  wsHash: string,
+  wsPath: string,
+  prefix: string,
+): Map<string, PlannedResume> {
+  const owners = index.conversationOwners(wsHash, candidates.map(c => c.sessionName));
+  // Per pane: its ordered candidate ids and the transcript each resolves to.
+  const viable = new Map<string, Array<{ sid: string; tp?: string; inScope: boolean; agent: string }>>();
+  for (const c of candidates) {
+    const cwd = c.meta.folderPath || wsPath;
+    const parsed = parseSessionName(c.sessionName, prefix);
+    const agent = parsed ? index.getLastAgent(parsed.hash, c.sessionName) : 'claude';
+    const provider = registry.providerForAgent(agent);
+    const liveSid = claudeTracker?.getSessionId(c.sessionName);
+    const recorded = parsed ? index.getAgentSessionHistory(parsed.hash, c.sessionName, agent) : [];
+    const seen = new Set<string>();
+    const list: Array<{ sid: string; tp?: string; inScope: boolean; agent: string }> = [];
+    for (const sid of [liveSid, ...recorded]) {
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+      const tp = provider.resolveTranscriptPath(sid, cwd, undefined);
+      if (!tp || !fs.existsSync(tp)) continue;
+      const tcwd = readTranscriptCwd(tp);
+      // In-scope (transcript cwd under this pane's folder) is the real match; an
+      // unreadable cwd is a last resort; a known-foreign cwd is never restored.
+      if (tcwd && isCwdUnder(cwd, tcwd)) list.push({ sid, tp, inScope: true, agent });
+      else if (!tcwd) list.push({ sid, tp, inScope: false, agent });
+    }
+    viable.set(c.sessionName, list);
+  }
+
+  const plan = new Map<string, PlannedResume>();
+  const claimed = new Set<string>();
+  const take = (name: string, ownedOnly: boolean): void => {
+    if (plan.has(name)) return;
+    const list = viable.get(name) ?? [];
+    for (const pass of [true, false]) {           // in-scope first, then cwd-unknown
+      for (const cand of list) {
+        if (cand.inScope !== pass) continue;
+        if (claimed.has(cand.sid)) continue;
+        if (ownedOnly) {
+          const owner = owners.get(`${cand.agent} ${cand.sid}`);
+          if (owner && owner !== name) continue;
+        }
+        claimed.add(cand.sid);
+        plan.set(name, { sessionId: cand.sid, transcriptPath: cand.tp });
+        return;
+      }
+    }
+  };
+  for (const c of candidates) take(c.sessionName, true);
+  for (const c of candidates) take(c.sessionName, false);
+  return plan;
 }

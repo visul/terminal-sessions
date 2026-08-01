@@ -4,6 +4,14 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.27] — 2026-08-01
+
+### Fixed
+- **Two tabs can no longer be resumed into the same conversation.** A conversation legitimately moves between tabs (resume it elsewhere and it follows), but the old tab kept it as its resume head forever. Once two tabs shared a head, every bulk resume — post-reboot restore and *Reattach All* — handed both panes the *same* conversation, and the two agents then appended to one transcript. It was self-sustaining: both panes emitted hooks for it, both re-recorded it, and the next restore repeated the pairing. Restore and Reattach All now claim each conversation exclusively for the first pane that takes it, so a second pane falls through to its own next-most-recent conversation instead. The per-session folder check could never catch this on its own, since sibling tabs on the same folder both pass it.
+- **Recording a conversation now releases it from other tabs.** When a conversation starts running in one tab it is demoted out of every other tab's resume head, so the index stops accumulating tabs that all point at one conversation. Histories are left intact — a tab keeps every conversation it has ever run as a fallback; only the head is exclusive.
+- **Rapid successive Start/Restart no longer double-books a conversation.** Resolving which conversation a pane resumes reads the index, but the index only learns the truth once the relaunched agent boots and fires its first hook — seconds later. Restarting one tab and then another within that window had both resolve the same conversation. A dispatched resume now reserves its conversation until the agent confirms ownership, and Start, Restart, the YOLO switch, Reattach All and post-reboot restore all skip conversations another pane already holds.
+- **Conversation bookkeeping no longer loses a fallback.** `agentSessions` is capped at 20 across every agent, so heavy Codex/Grok use in one pane could evict older Claude entries while the Claude-only history still held them — leaving those conversations unreachable, and after a release even pointing a tab at the conversation just handed to another pane. The two lists are now read and updated together, and the batch ownership ranking covers every agent rather than Claude alone.
+
 ## [0.20.26] — 2026-07-29
 
 ### Added

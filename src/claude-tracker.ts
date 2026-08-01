@@ -210,6 +210,53 @@ export class ClaudeTracker {
   }
 
   /** Look up the session-id most recently seen in a tmux session. */
+  /**
+   * Conversations a resume command has just been dispatched for, before the
+   * relaunched agent's first hook event lands. tmuxSession → when.
+   *
+   * Without this, two resume actions a few seconds apart both read an index that
+   * has not caught up yet and point two panes at one conversation: Restart tab A
+   * (sends `--resume C`), then Restart tab B before A's agent has booted and
+   * fired SessionStart, and B resolves C too. The live `map` only learns the
+   * truth once hooks arrive, which is seconds later.
+   */
+  private pendingResumes = new Map<string, { tmuxSession: string; at: number }>();
+
+  /** How long a dispatched-but-unconfirmed resume blocks other panes. Long enough
+   *  to cover shell init + agent boot, short enough that a resume that never
+   *  started (user closed the tab, command failed) frees the conversation again. */
+  private static readonly RESUME_RESERVATION_MS = 90_000;
+
+  /** Record that `tmuxSession` is about to resume `sessionId`. */
+  reserveResume(sessionId: string, tmuxSession: string): void {
+    this.pendingResumes.set(sessionId, { tmuxSession, at: Date.now() });
+  }
+
+  /**
+   * The tmux session currently holding `sessionId`, or undefined when it is free.
+   * Confirmed live ownership (hook events) wins; otherwise a still-fresh
+   * reservation counts, so rapid successive user actions can't double-book one
+   * conversation.
+   */
+  conversationHolder(sessionId: string): string | undefined {
+    for (const [tmuxSession, m] of this.map.entries()) {
+      if (m.sessionId === sessionId) return tmuxSession;
+    }
+    const pending = this.pendingResumes.get(sessionId);
+    if (!pending) return undefined;
+    if (Date.now() - pending.at > ClaudeTracker.RESUME_RESERVATION_MS) {
+      this.pendingResumes.delete(sessionId);
+      return undefined;
+    }
+    return pending.tmuxSession;
+  }
+
+  /** True when another pane already holds this conversation. */
+  isConversationTaken(sessionId: string, byTmuxSession: string): boolean {
+    const holder = this.conversationHolder(sessionId);
+    return !!holder && holder !== byTmuxSession;
+  }
+
   getSessionId(tmuxSession: string): string | undefined {
     return this.map.get(tmuxSession)?.sessionId;
   }

@@ -254,24 +254,148 @@ export class SessionIndex {
       s.claudeSessionHistory = [sessionId, ...deduped].slice(0, 10);
       s.lastClaudeSessionId = sessionId;
     }
+    // A conversation lives in exactly ONE tmux session at a time, so claiming it
+    // here must un-claim it everywhere else. Without this the old tab keeps it as
+    // its resume head forever, and every bulk resume (post-reboot restore,
+    // Reattach All) hands the SAME conversation to two panes — which then both
+    // emit hooks for it, both re-record it, and the tangle re-forms on the next
+    // restore. Each loser falls back to its own next-most-recent conversation.
+    // Only reached when the head actually changes (the early return above covers
+    // the per-hook-event hot path), so this is not a per-event sweep.
+    this.releaseConversationElsewhere(ws, sessionName, agent, sessionId);
     this.save();
   }
 
+  /**
+   * Demote `(agent, sessionId)` out of the resume HEAD of every session in `ws`
+   * except `keepName`. Returns true if anything moved.
+   *
+   * Only the head is exclusive, never the history. Two tabs may legitimately
+   * have glanced at the same conversation, and deleting it outright cost a tab
+   * its whole fallback chain (observed: a session left with no conversation at
+   * all). Demoting frees the head — which is the only thing a resume reads —
+   * while every id a tab has ever run stays available behind it.
+   */
+  private releaseConversationElsewhere(
+    ws: WorkspaceEntry,
+    keepName: string,
+    agent: AgentId,
+    sessionId: string,
+  ): boolean {
+    let changed = false;
+    for (const [name, other] of Object.entries(ws.sessions)) {
+      if (name === keepName) continue;
+      // Whether this session has ANY other conversation for this agent to fall
+      // back to. Judged across BOTH lists: they have different caps (agentSessions
+      // is 20 shared across agents, claudeSessionHistory is 10 claude-only), so
+      // checking either alone let one list get demoted while the other kept the
+      // released id at its front — leaving the session pointing at a conversation
+      // that now belongs to someone else.
+      const list = other.agentSessions;
+      const alternatives = new Set<string>();
+      for (const e of list ?? []) if (e.agent === agent && e.id !== sessionId) alternatives.add(e.id);
+      if (agent === 'claude') {
+        for (const id of other.claudeSessionHistory ?? []) if (id !== sessionId) alternatives.add(id);
+      }
+      if (alternatives.size === 0) continue; // nothing to fall back to — leave it alone
+
+      if (list) {
+        const i = list.findIndex(e => e.agent === agent && e.id === sessionId);
+        const firstOfAgent = list.findIndex(e => e.agent === agent);
+        if (i >= 0 && i === firstOfAgent) {
+          const [entry] = list.splice(i, 1);
+          list.push(entry);
+          changed = true;
+        }
+      }
+      if (agent !== 'claude') continue;
+      const hist = other.claudeSessionHistory;
+      if (hist && hist[0] === sessionId) {
+        other.claudeSessionHistory = [...hist.slice(1), sessionId];
+        changed = true;
+      }
+      if (other.lastClaudeSessionId === sessionId) {
+        const next = other.claudeSessionHistory?.find(id => id !== sessionId)
+          ?? other.agentSessions?.find(e => e.agent === 'claude' && e.id !== sessionId)?.id;
+        // Never leave a tab headless: with nothing else to fall back to it keeps
+        // what it had, and the batch-level claim at resume time stops the clash.
+        if (next) { other.lastClaudeSessionId = next; changed = true; }
+      }
+    }
+    return changed;
+  }
+
+  /**
+   * For every conversation reachable from `sessionNames`, the session with the
+   * strongest claim on it. Keys are `"<agent> <conversationId>"`.
+   *
+   * Bulk resume must hand each conversation to ONE pane, but "first in iteration
+   * order wins" picks arbitrarily — a tab that merely glanced at a conversation
+   * once can outrank the tab that owns it purely because it sits earlier in
+   * index.json. Rank instead: holding it as the resume HEAD beats having it
+   * buried in history, and ties go to the most recent record.
+   *
+   * Covers EVERY agent, not just Claude: the tangle this guards against is a
+   * property of the shared history model, and Codex/Antigravity/Grok panes are
+   * exposed to it identically.
+   */
+  conversationOwners(hash: string, sessionNames: readonly string[]): Map<string, string> {
+    const best = new Map<string, { name: string; head: boolean; rank: number }>();
+    const ws = this.data.workspaces[hash];
+    if (!ws) return new Map();
+    for (const name of sessionNames) {
+      const s = ws.sessions[name];
+      if (!s) continue;
+      const agents = new Set<AgentId>((s.agentSessions ?? []).map(e => e.agent));
+      if (s.lastClaudeSessionId || s.claudeSessionHistory?.length) agents.add('claude');
+      for (const agent of agents) {
+        const ids = this.getAgentSessionHistory(hash, name, agent);
+        const head = ids[0];
+        ids.forEach((id, i) => {
+          // A real timestamp always outranks a positional guess: entries that fell
+          // out of the shared-cap `agentSessions` have no `ts`, and scoring those
+          // as 0 let a stale claimant with any real timestamp beat the true owner.
+          const ts = s.agentSessions?.find(e => e.agent === agent && e.id === id)?.ts;
+          const rank = ts ?? -(i + 1);
+          const isHead = head === id;
+          const key = `${agent} ${id}`;
+          const prev = best.get(key);
+          if (!prev
+            || (isHead && !prev.head)
+            || (isHead === prev.head && rank > prev.rank)) {
+            best.set(key, { name, head: isHead, rank });
+          }
+        });
+      }
+    }
+    const out = new Map<string, string>();
+    for (const [key, v] of best) out.set(key, v.name);
+    return out;
+  }
   /** Ordered (most-recent-first) session-id history for one agent in a tmux
    *  session. Falls back to the legacy Claude fields when no agent-tagged
    *  history exists yet (index files written before the agent dimension). */
   getAgentSessionHistory(hash: string, sessionName: string, agent: AgentId): string[] {
     const s = this.data.workspaces[hash]?.sessions[sessionName];
     if (!s) return [];
-    if (s.agentSessions && s.agentSessions.length > 0) {
-      return s.agentSessions.filter(e => e.agent === agent).map(e => e.id);
-    }
-    if (agent === 'claude') {
-      const legacy = s.claudeSessionHistory ?? [];
-      if (legacy.length) return legacy;
-      if (s.lastClaudeSessionId) return [s.lastClaudeSessionId];
-    }
-    return [];
+    const tagged = (s.agentSessions ?? []).filter(e => e.agent === agent).map(e => e.id);
+    if (agent !== 'claude') return tagged;
+    // `agentSessions` is capped at 20 across ALL agents, so heavy Codex/Grok use
+    // in the same pane can evict older Claude entries while `claudeSessionHistory`
+    // (claude-only, cap 10) still holds them. Returning only the tagged list there
+    // made those conversations unreachable — and after a demotion could even
+    // return the id that was just handed to another pane, with no path to the
+    // fallback. Merge, head first, so every conversation this pane ran stays
+    // resumable exactly once.
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const push = (id: string | undefined): void => {
+      if (id && !seen.has(id)) { seen.add(id); out.push(id); }
+    };
+    push(s.lastClaudeSessionId);
+    for (const id of s.claudeSessionHistory ?? []) push(id);
+    for (const id of tagged) push(id);
+    return out;
   }
 
   /** Record the "character" launch flags seen on a live agent process, per agent,

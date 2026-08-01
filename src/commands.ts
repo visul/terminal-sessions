@@ -902,7 +902,16 @@ async function resolveRelaunchTarget(
   // lives one or two slots deeper).
   const { provider, history } =
     resumeContextFor(index, registry, claudeTracker, parsed.hash, name);
-  const resumeInfo = resolveResumeFromHistory(provider, history, restartCwd, ws.path);
+  // Skip conversations another pane already holds — confirmed live, or a resume
+  // dispatched moments ago that hasn't booted yet. Two Restarts a few seconds
+  // apart would otherwise both resolve the same id from a not-yet-updated index
+  // and point both panes at one conversation.
+  const resumeInfo = resolveResumeFromHistory(
+    provider,
+    history.filter(id => !claudeTracker.isConversationTaken(id, name)),
+    restartCwd,
+    ws.path,
+  );
 
   return {
     name,
@@ -931,6 +940,7 @@ async function relaunchSession(
   tmuxPath: string,
   target: RelaunchTarget,
   index: SessionIndex,
+  claudeTracker: ClaudeTracker,
   flags: readonly string[] | (() => readonly string[]),
   failureLabel: string,
 ): Promise<boolean> {
@@ -960,6 +970,10 @@ async function relaunchSession(
       // closed the tab manually. Verify liveness before firing into the void.
       if (vscode.window.terminals.includes(term)) {
         try {
+          // Hold the conversation for this pane until its agent boots and the
+          // hooks confirm ownership, so a second Restart moments later can't
+          // resolve the same id from an index that hasn't caught up.
+          claudeTracker.reserveResume(target.sessionId, name);
           term.sendText(buildResumeCommand(
             target.provider, target.sessionId, target.transcriptPath, cwd,
             typeof flags === 'function' ? flags() : flags,
@@ -1002,7 +1016,7 @@ async function cmdRestart(
   // is what cmdSwitchYolo is for. Read the flags late (thunk) so a capture still
   // in flight when Restart was clicked isn't missed.
   await relaunchSession(
-    tmuxPath, target, index,
+    tmuxPath, target, index, claudeTracker,
     () => index.getResumeFlags(target.hash, target.name, target.provider.id),
     'Restart',
   );
@@ -1115,7 +1129,7 @@ async function cmdSwitchYolo(
   // the mode the user just chose.
   index.recordResumeFlags(target.hash, target.name, target.provider.id, next);
 
-  const ok = await relaunchSession(tmuxPath, target, index, next, 'Mode switch');
+  const ok = await relaunchSession(tmuxPath, target, index, claudeTracker, next, 'Mode switch');
   if (!ok) return;
   vscode.window.showInformationMessage(
     want
@@ -1357,7 +1371,11 @@ async function cmdStart(
     resumeContextFor(index, registry, claudeTracker, parsed.hash, name);
   const startResume = resolveResumeFromHistory(
     startProvider,
-    startHistory,
+    // Don't start on a conversation another pane already holds (live, or a resume
+    // dispatched seconds ago that hasn't booted). Starting two tangled tabs one
+    // after the other is the ordinary cleanup workflow and used to land both on
+    // the same conversation.
+    startHistory.filter(id => !claudeTracker.isConversationTaken(id, name)),
     startCwd,
     ws.path,
   );
@@ -1374,6 +1392,8 @@ async function cmdStart(
       await sleep(SHELL_INIT_DELAY_MS);
       if (vscode.window.terminals.includes(term)) {
         try {
+  // Hold it for this pane until its agent boots (see reserveResume).
+  claudeTracker.reserveResume(claudeSessionId, name);
           term.sendText(buildResumeCommand(
             startProvider, claudeSessionId, claudeTranscriptPath, startCwd,
             index.getResumeFlags(parsed.hash, name, startProvider.id),
@@ -1613,12 +1633,26 @@ async function cmdReattachAll(
   const resumes: Array<{
     term: vscode.Terminal;
     provider: AgentProvider;
+    sessionName: string;
     sessionId: string;
     label: string;
     transcriptPath?: string;
     cwd: string;
     flags: string[];
   }> = [];
+
+  // Conversations already claimed by a pane in THIS reattach (see below).
+  const claimed = new Set<string>();
+  // Strongest claim per conversation, so the winner is decided by evidence (held
+  // as the resume head, most recently recorded) and not by loop order.
+  const ownersByWs = new Map<string, Map<string, string>>();
+  for (const { session: s } of toReattach) {
+    if (ownersByWs.has(s.workspaceHash)) continue;
+    ownersByWs.set(s.workspaceHash, index.conversationOwners(
+      s.workspaceHash,
+      toReattach.filter(t => t.session.workspaceHash === s.workspaceHash).map(t => t.session.name),
+    ));
+  }
 
   for (const { session: s, ghost, softReconnect } of toReattach) {
     try {
@@ -1641,17 +1675,37 @@ async function cmdReattachAll(
           resumeContextFor(index, registry, claudeTracker, s.workspaceHash, s.name);
         const reattachResume = resolveResumeFromHistory(
           rProvider,
-          rHistory,
+          // Drop conversations already handed to an earlier pane in this batch so
+          // this one resolves to its own next-most-recent instead. Sibling tabs on
+          // the same folder share a history head often enough that without this
+          // they both resume the same id and interleave into one transcript.
+          rHistory.filter(id => {
+            if (claimed.has(id)) return false;
+            const owner = ownersByWs.get(s.workspaceHash)?.get(`${rProvider.id} ${id}`);
+            return !owner || owner === s.name;
+          }),
           cwd,
           s.workspacePath,
         );
-        if (reattachResume) {
+        // Owner-gated pass found nothing — retry over anything still unclaimed, so
+        // a conversation whose assigned owner can't actually use it (cwd scope,
+        // pruned transcript) still gets picked up. restore.ts does the same; this
+        // keeps the two batch paths on one policy.
+        const finalResume = reattachResume ?? resolveResumeFromHistory(
+          rProvider,
+          rHistory.filter(id => !claimed.has(id)),
+          cwd,
+          s.workspacePath,
+        );
+        if (finalResume) {
+          claimed.add(finalResume.sessionId);
           resumes.push({
             term,
             provider: rProvider,
-            sessionId: reattachResume.sessionId,
+            sessionName: s.name,
+            sessionId: finalResume.sessionId,
             label: s.label || s.name,
-            transcriptPath: reattachResume.transcriptPath,
+            transcriptPath: finalResume.transcriptPath,
             cwd,
             flags: index.getResumeFlags(s.workspaceHash, s.name, rProvider.id),
           });
@@ -1674,6 +1728,7 @@ async function cmdReattachAll(
     for (const r of resumes) {
       if (!vscode.window.terminals.includes(r.term)) continue;
       try {
+        claudeTracker.reserveResume(r.sessionId, r.sessionName);
         r.term.sendText(buildResumeCommand(r.provider, r.sessionId, r.transcriptPath, r.cwd, r.flags));
         resumed++;
       } catch (e) {
