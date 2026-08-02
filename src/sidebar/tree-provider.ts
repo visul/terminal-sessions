@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, buildClaudeDetails } from './items';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
 
@@ -34,6 +34,17 @@ class BranchSetDecorationProvider implements vscode.FileDecorationProvider {
       tooltip: `Branch: ${name}`,
     };
   }
+}
+
+/** Sessions Activity ordering: running first (most recently active on top),
+ *  then stopped ones by stop recency. stoppedAt is stamped by Stop since
+ *  0.20.29; older entries fall back to lastActiveAt, then createdAt. Pure. */
+export function activityOrder(list: readonly SessionInfo[]): SessionInfo[] {
+  const key = (s: SessionInfo): number =>
+    (s.stopped ? (s.stoppedAt ?? s.lastActiveAt ?? s.createdAt) : (s.lastActiveAt ?? s.lastAttached)).getTime();
+  const running = list.filter(s => !s.stopped).sort((a, b) => key(b) - key(a));
+  const stopped = list.filter(s => s.stopped).sort((a, b) => key(b) - key(a));
+  return [...running, ...stopped];
 }
 
 export function sortSessions(group: SessionInfo[], mode: SidebarSortMode): SessionInfo[] {
@@ -240,12 +251,35 @@ class SessionsTreeProvider
     s: SessionInfo,
     cfg: ReturnType<typeof getConfig>,
     inCluster = false,
+    cache = true,
   ): SessionTreeItem {
     const item = new SessionTreeItem(
       s, this.claude.getSnapshot(s.name), cfg.claudeSidebarDetails, cfg.contextWarnPct, inCluster,
     );
-    this.lastSessionItems.set(s.name, item);
+    // Mirror rows (Sessions Activity) skip the cache: reveal/getParent must
+    // keep resolving to the canonical row inside its group.
+    if (cache) this.lastSessionItems.set(s.name, item);
     return item;
+  }
+
+  /** The two pinned virtual folders at the top of a workspace: Sessions
+   *  Activity (flat recency list) and Sessions Killed (graveyard). Each is
+   *  gated by its setting; Killed also hides while empty. */
+  private specialFolders(
+    hash: string,
+    allWsSessions: SessionInfo[],
+    cfg: ReturnType<typeof getConfig>,
+  ): vscode.TreeItem[] {
+    const out: vscode.TreeItem[] = [];
+    if (cfg.showActivityFolder) {
+      const list = activityOrder(allWsSessions).slice(0, Math.max(1, cfg.activityLimit));
+      out.push(new ActivityFolderItem(hash, list));
+    }
+    if (cfg.showKilledFolder) {
+      const entries = this.index.getKilled(hash).slice(0, Math.max(1, cfg.killedLimit));
+      if (entries.length > 0) out.push(new KilledFolderItem(hash, entries));
+    }
+    return out;
   }
 
   /** Fold branch-set members within one container's ordered rows into fork
@@ -470,7 +504,24 @@ class SessionsTreeProvider
       // Root container: top-level masters + top-level normal groups + ungrouped
       // sessions, all sharing one sortOrder pool (interleaved via drag-drop).
       const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);
-      return this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg);
+      return [
+        ...this.specialFolders(el.workspaceHash, allWsSessions, cfg),
+        ...this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg),
+      ];
+    }
+    if (el instanceof ActivityFolderItem) {
+      // Flat recency list. Rows are ordinary SessionTreeItems so every action
+      // works, but they are NOT cached in lastSessionItems (the canonical row
+      // in its group below owns reveal/getParent) and carry a distinct id so
+      // the tree never sees the same id twice.
+      return el.sessions.map(s => {
+        const item = this.makeSessionItem(s, cfg, false, false);
+        item.id = `act:${item.id}`;
+        return item;
+      });
+    }
+    if (el instanceof KilledFolderItem) {
+      return el.entries.map(e => new KilledSessionItem(el.workspaceHash, e));
     }
     if (el instanceof GroupTreeItem) {
       const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);

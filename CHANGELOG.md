@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.29] — 2026-08-02
+
+### Added
+- **Recent Sessions folder.** A pinned virtual folder at the top of each workspace with a flat, group-free list of sessions ordered by recency: running ones first (most recently active on top), then stopped ones by stop time. Rows are ordinary session rows — every action works — and mirror the sessions in their groups below. Capped at 50 (`terminalSessions.activityLimit`). Stop now records *when* a session was stopped so the ordering is by stop recency, not last focus; older entries fall back to their last-active time.
+- **Killed Sessions folder + Restore.** Killing a session now moves its entry (label, folder, resume flags, full conversation history) into a per-workspace graveyard instead of deleting it, so Kill is finally reversible: right-click a killed row → *Restore Session* recreates it under a fresh tab id and resumes its conversation (also available from the Command Palette — the only way back when a workspace's last session was killed). Graveyard keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) are not kept, and the folder hides while empty.
+- **Enable/Disable toggles in the view's ⋯ menu.** Both folders can be turned off and back on from the Terminal Sessions title menu — exactly one of Enable/Disable shows per folder, tracking the current state — or via the `showActivityFolder` / `showKilledFolder` settings; right-clicking a folder row offers Disable too. Both default to on.
+
+## [0.20.28] — 2026-08-02
+
+### Fixed
+- **Sessions that were running at reboot no longer vanish from the sidebar.** The sidebar rendered live tmux rows plus index entries explicitly marked stopped — but a session that was running when the machine shut down is neither: its tmux is gone and its stopped flag was never set. If the post-reboot restore offer wasn't taken (it only appears while the workspace has zero live sessions, so recreating even one session by hand dismisses it for good), those entries became invisible while still sitting in the index with their full conversation history. Every index entry without a live tmux session now renders as a stopped row, so Start brings it back with its conversation; the index itself is untouched.
+
 ## [0.20.27] — 2026-08-01
 
 ### Fixed

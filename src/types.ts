@@ -25,6 +25,7 @@ export interface SessionInfo {
   muted?: boolean;  // when true, notifications are suppressed for this session
   locked?: boolean;  // when true, the session is protected from Kill (padlock shown; unlock to remove)
   stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
+  stoppedAt?: Date;   // when it was stopped (Sessions Activity ordering); may be unset on old entries
   groupId?: string;  // when set, session lives inside a custom group at workspace level
   // Fork branch-set membership, resolved at enrichment time so the tree item can
   // build the chip resourceUri without a second index lookup.
@@ -74,6 +75,21 @@ export interface WorkspaceEntry {
   // and members carry `branchSetId`. Membership is orthogonal to `groups`: a
   // linked session keeps its position (root or inside a manual group).
   branchSets?: Record<string, BranchSet>;
+  // Graveyard: sessions the user killed, most recent first, capped (default 50).
+  // A Kill moves the entry here instead of dropping it, so the Sessions Killed
+  // folder can list it and Restore can bring it back with its conversation
+  // history. Entries with nothing restorable (no label, no agent history) are
+  // not kept.
+  killed?: KilledEntry[];
+}
+
+/** One killed session preserved in the workspace graveyard. `meta` is the full
+ *  SessionLabel snapshot at kill time, so Restore reinstates labels, resume
+ *  flags and conversation history verbatim. */
+export interface KilledEntry {
+  name: string;      // original tmux session name (its tab id may be reused by then)
+  killedAt: string;  // ISO timestamp of the Kill
+  meta: SessionLabel;
 }
 
 export interface BranchSet {
@@ -123,6 +139,10 @@ export interface SessionLabel {
   // the VS Code workspace root.
   folderPath?: string;
   stopped?: boolean;  // persisted: tmux session is intentionally killed but entry kept
+  // When the session was last stopped (ISO). Drives the Sessions Activity
+  // ordering (most recently stopped first); older entries without it fall back
+  // to lastActiveAt. Cleared when the session starts again.
+  stoppedAt?: string;
   // Last Claude session id that ran in this tmux session. Survives the live
   // claude-map cleanup that fires when a Claude conversation moves to another
   // tmux (claude --resume in a different tab), so Stop -> Start can still

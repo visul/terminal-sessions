@@ -36,6 +36,10 @@ export interface Config {
   claudeNoFlicker: boolean;
   revealActiveSession: boolean;
   confirmYoloSwitch: boolean;
+  showActivityFolder: boolean;
+  showKilledFolder: boolean;
+  activityLimit: number;
+  killedLimit: number;
 }
 
 export function getConfig(): Config {
@@ -86,6 +90,10 @@ export function getConfig(): Config {
     })(),
     revealActiveSession: c.get('revealActiveSession', true),
     confirmYoloSwitch: c.get('confirmYoloSwitch', true),
+    showActivityFolder: c.get('showActivityFolder', true),
+    showKilledFolder: c.get('showKilledFolder', true),
+    activityLimit: Math.max(1, c.get<number>('activityLimit', 50)),
+    killedLimit: Math.max(1, c.get<number>('killedLimit', 50)),
   };
 }
 
@@ -169,4 +177,9 @@ export const COMMAND = {
   revealSessionInSidebar: 'terminalSessions.revealSessionInSidebar',
   copySessionId: 'terminalSessions.copySessionId',
   copySessionPath: 'terminalSessions.copySessionPath',
+  enableActivityFolder: 'terminalSessions.enableActivityFolder',
+  disableActivityFolder: 'terminalSessions.disableActivityFolder',
+  enableKilledFolder: 'terminalSessions.enableKilledFolder',
+  disableKilledFolder: 'terminalSessions.disableKilledFolder',
+  restoreKilled: 'terminalSessions.restoreKilled',
 } as const;

@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.27",
+  "version": "0.20.29",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -267,6 +267,28 @@
           ],
           "default": "all",
           "description": "Filter the sidebar by session state. Click the filter icon in the sidebar title bar to switch interactively."
+        },
+        "terminalSessions.showActivityFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the pinned \"Sessions Activity\" folder at the top of each workspace: a flat list of sessions ordered by recency (running first, then most recently stopped). Toggle also available in the view's ⋯ menu."
+        },
+        "terminalSessions.showKilledFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the pinned \"Sessions Killed\" folder: recently killed sessions kept in a graveyard so they can be restored (right-click → Restore Session). Hidden while empty. Toggle also available in the view's ⋯ menu."
+        },
+        "terminalSessions.activityLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum sessions listed in the Sessions Activity folder."
+        },
+        "terminalSessions.killedLimit": {
+          "type": "number",
+          "default": 50,
+          "minimum": 1,
+          "description": "Maximum killed sessions kept in the graveyard (older entries fall off as new kills arrive)."
         }
       }
     },
@@ -560,35 +582,152 @@
         "command": "terminalSessions.revealSessionInSidebar",
         "title": "Reveal in Terminal Sessions View",
         "icon": "$(list-tree)"
+      },
+      {
+        "command": "terminalSessions.enableActivityFolder",
+        "title": "Enable Recent Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.disableActivityFolder",
+        "title": "Disable Recent Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.enableKilledFolder",
+        "title": "Enable Killed Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.disableKilledFolder",
+        "title": "Disable Killed Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.restoreKilled",
+        "title": "Restore Session",
+        "category": "Terminal Sessions",
+        "icon": "$(debug-restart)"
       }
     ],
     "menus": {
       "commandPalette": [
-        { "command": "terminalSessions.forkConversation", "when": "false" },
-        { "command": "terminalSessions.unlinkBranch", "when": "false" },
-        { "command": "terminalSessions.kill", "when": "false" },
-        { "command": "terminalSessions.rename", "when": "false" },
-        { "command": "terminalSessions.setIcon", "when": "false" },
-        { "command": "terminalSessions.setColor", "when": "false" },
-        { "command": "terminalSessions.muteSession", "when": "false" },
-        { "command": "terminalSessions.unmuteSession", "when": "false" },
-        { "command": "terminalSessions.lockSession", "when": "false" },
-        { "command": "terminalSessions.unlockSession", "when": "false" },
-        { "command": "terminalSessions.switchToYolo", "when": "false" },
-        { "command": "terminalSessions.switchToNormal", "when": "false" },
-        { "command": "terminalSessions.lockedHint", "when": "false" },
-        { "command": "terminalSessions.moveSessionToGroup", "when": "false" },
-        { "command": "terminalSessions.moveGroupToMaster", "when": "false" },
-        { "command": "terminalSessions.renameGroup", "when": "false" },
-        { "command": "terminalSessions.deleteGroup", "when": "false" },
-        { "command": "terminalSessions.setGroupColor", "when": "false" },
-        { "command": "terminalSessions.nameSession", "when": "false" },
-        { "command": "terminalSessions.viewConversation", "when": "false" },
-        { "command": "terminalSessions.openSubagentTranscript", "when": "false" },
-        { "command": "terminalSessions.copySessionId", "when": "false" },
-        { "command": "terminalSessions.copySessionPath", "when": "false" },
-        { "command": "terminalSessions.revealSessionFolder", "when": "false" },
-        { "command": "terminalSessions.revealSessionFolderFinder", "when": "false" }
+        {
+          "command": "terminalSessions.forkConversation",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.unlinkBranch",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.kill",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.rename",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.setIcon",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.setColor",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.muteSession",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.unmuteSession",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.lockSession",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.unlockSession",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.switchToYolo",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.switchToNormal",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.lockedHint",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.moveSessionToGroup",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.moveGroupToMaster",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.renameGroup",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.deleteGroup",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.setGroupColor",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.nameSession",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.viewConversation",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.openSubagentTranscript",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.copySessionId",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.copySessionPath",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolder",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.revealSessionFolderFinder",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.enableActivityFolder",
+          "when": "!terminalSessions.activityFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.disableActivityFolder",
+          "when": "terminalSessions.activityFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.enableKilledFolder",
+          "when": "!terminalSessions.killedFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.disableKilledFolder",
+          "when": "terminalSessions.killedFolderEnabled"
+        }
       ],
       "explorer/context": [
         {
@@ -700,6 +839,26 @@
           "command": "terminalSessions.collapseSessions",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@9"
+        },
+        {
+          "command": "terminalSessions.disableActivityFolder",
+          "when": "view == terminalSessions.sessions && terminalSessions.activityFolderEnabled",
+          "group": "2_folders@1"
+        },
+        {
+          "command": "terminalSessions.enableActivityFolder",
+          "when": "view == terminalSessions.sessions && !terminalSessions.activityFolderEnabled",
+          "group": "2_folders@1"
+        },
+        {
+          "command": "terminalSessions.disableKilledFolder",
+          "when": "view == terminalSessions.sessions && terminalSessions.killedFolderEnabled",
+          "group": "2_folders@2"
+        },
+        {
+          "command": "terminalSessions.enableKilledFolder",
+          "when": "view == terminalSessions.sessions && !terminalSessions.killedFolderEnabled",
+          "group": "2_folders@2"
         }
       ],
       "view/item/context": [
@@ -912,6 +1071,26 @@
           "command": "terminalSessions.start",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session\\.stopped(\\.locked)?$/",
           "group": "open@0"
+        },
+        {
+          "command": "terminalSessions.restoreKilled",
+          "when": "view == terminalSessions.sessions && viewItem == killedSession",
+          "group": "inline@1"
+        },
+        {
+          "command": "terminalSessions.restoreKilled",
+          "when": "view == terminalSessions.sessions && viewItem == killedSession",
+          "group": "1_actions@1"
+        },
+        {
+          "command": "terminalSessions.disableActivityFolder",
+          "when": "view == terminalSessions.sessions && viewItem == activityFolder",
+          "group": "9_manage@1"
+        },
+        {
+          "command": "terminalSessions.disableKilledFolder",
+          "when": "view == terminalSessions.sessions && viewItem == killedFolder",
+          "group": "9_manage@1"
         }
       ]
     },
@@ -1099,42 +1278,74 @@
       {
         "id": "terminalSessions.branchColor1",
         "description": "Fork branch-set chip color 1.",
-        "defaults": { "dark": "#E2C08D", "light": "#B8860B", "highContrast": "#FFE082" }
+        "defaults": {
+          "dark": "#E2C08D",
+          "light": "#B8860B",
+          "highContrast": "#FFE082"
+        }
       },
       {
         "id": "terminalSessions.branchColor2",
         "description": "Fork branch-set chip color 2.",
-        "defaults": { "dark": "#75BEFF", "light": "#007ACC", "highContrast": "#75BEFF" }
+        "defaults": {
+          "dark": "#75BEFF",
+          "light": "#007ACC",
+          "highContrast": "#75BEFF"
+        }
       },
       {
         "id": "terminalSessions.branchColor3",
         "description": "Fork branch-set chip color 3.",
-        "defaults": { "dark": "#73C991", "light": "#389E0D", "highContrast": "#81C784" }
+        "defaults": {
+          "dark": "#73C991",
+          "light": "#389E0D",
+          "highContrast": "#81C784"
+        }
       },
       {
         "id": "terminalSessions.branchColor4",
         "description": "Fork branch-set chip color 4.",
-        "defaults": { "dark": "#D291E2", "light": "#8E24AA", "highContrast": "#E1BEE7" }
+        "defaults": {
+          "dark": "#D291E2",
+          "light": "#8E24AA",
+          "highContrast": "#E1BEE7"
+        }
       },
       {
         "id": "terminalSessions.branchColor5",
         "description": "Fork branch-set chip color 5.",
-        "defaults": { "dark": "#FF9E2D", "light": "#D97706", "highContrast": "#FFB74D" }
+        "defaults": {
+          "dark": "#FF9E2D",
+          "light": "#D97706",
+          "highContrast": "#FFB74D"
+        }
       },
       {
         "id": "terminalSessions.branchColor6",
         "description": "Fork branch-set chip color 6.",
-        "defaults": { "dark": "#4DD0C7", "light": "#00897B", "highContrast": "#80CBC4" }
+        "defaults": {
+          "dark": "#4DD0C7",
+          "light": "#00897B",
+          "highContrast": "#80CBC4"
+        }
       },
       {
         "id": "terminalSessions.branchColor7",
         "description": "Fork branch-set chip color 7.",
-        "defaults": { "dark": "#F48FB1", "light": "#D81B60", "highContrast": "#F8BBD0" }
+        "defaults": {
+          "dark": "#F48FB1",
+          "light": "#D81B60",
+          "highContrast": "#F8BBD0"
+        }
       },
       {
         "id": "terminalSessions.branchColor8",
         "description": "Fork branch-set chip color 8.",
-        "defaults": { "dark": "#9FA8DA", "light": "#3949AB", "highContrast": "#C5CAE9" }
+        "defaults": {
+          "dark": "#9FA8DA",
+          "light": "#3949AB",
+          "highContrast": "#C5CAE9"
+        }
       }
     ]
   },

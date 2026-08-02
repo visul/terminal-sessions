@@ -7,7 +7,7 @@ import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
-import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem } from './sidebar/items';
+import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem } from './sidebar/items';
 import { refreshSidebar, collapseAllSessions, revealSessionInSidebar } from './sidebar/tree-provider';
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
@@ -285,7 +285,14 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
     vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem) => cmdCopySessionPath(index, registry, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
+    vscode.commands.registerCommand(COMMAND.enableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', true)),
+    vscode.commands.registerCommand(COMMAND.disableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', false)),
+    vscode.commands.registerCommand(COMMAND.enableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', true)),
+    vscode.commands.registerCommand(COMMAND.disableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', false)),
+    vscode.commands.registerCommand(COMMAND.restoreKilled, (item?: KilledSessionItem) => cmdRestoreKilled(index, registry, claudeTracker, item)),
   );
+  // Seed the ⋯-menu Enable/Disable labels for the two special folders.
+  void syncSpecialFolderContexts();
 
   // Keep a VS Code context var in sync with the global alert setting so the
   // view-title icon can toggle its appearance via "when" clauses.
@@ -1326,11 +1333,12 @@ async function cmdStart(
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
   item?: SessionTreeItem,
+  explicitName?: string,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
-  let name = item?.session.name;
+  let name = explicitName ?? item?.session.name;
   if (!name) {
     const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
     interface Pick extends vscode.QuickPickItem { sessionName: string }
@@ -2473,8 +2481,85 @@ async function cmdKill(
   );
   if (confirm !== 'Kill') return;
   await tmux.killSession(tmuxPath, name);
-  if (parsedForLabel) index.removeSession(parsedForLabel.hash, name);
+  if (parsedForLabel) index.removeSession(parsedForLabel.hash, name, cfg.killedLimit);
   refreshSidebar();
+}
+
+/** Mirror the two special-folder settings into context keys so the view's ⋯
+ *  menu shows exactly one of Enable/Disable per folder. Called at activation
+ *  and whenever the settings change (incl. edits in the Settings UI). */
+export async function syncSpecialFolderContexts(): Promise<void> {
+  const cfg = getConfig();
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.activityFolderEnabled', cfg.showActivityFolder);
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
+}
+
+async function cmdSetSpecialFolder(key: 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
+  const c = vscode.workspace.getConfiguration('terminalSessions');
+  // Write to the scope that currently defines the value: a workspace override
+  // would shadow a Global write and make the toggle appear dead.
+  const insp = c.inspect<boolean>(key);
+  const target = insp?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
+    : insp?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
+  await c.update(key, value, target);
+  await syncSpecialFolderContexts();
+  refreshSidebar();
+}
+
+/** Bring a killed session back from the graveyard: reinstate its index entry
+ *  under a fresh tab id (the old one may be reused by now), then run the normal
+ *  Start path, which recreates tmux and resumes its recorded conversation. */
+async function cmdRestoreKilled(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  item?: KilledSessionItem,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  let hash = item?.workspaceHash;
+  let entry = item?.entry;
+  if (!hash || !entry) {
+    // Command Palette path. This is also the ONLY way back when a workspace's
+    // last session was killed: with zero sessions the workspace row (and its
+    // Killed Sessions folder) doesn't render, so the graveyard must stay
+    // reachable without the sidebar.
+    interface Pick extends vscode.QuickPickItem { hash: string; entry: import('./types').KilledEntry }
+    const picks: Pick[] = [];
+    for (const [h, ws] of Object.entries(index.getAllWorkspaces())) {
+      for (const e of ws.killed ?? []) {
+        picks.push({
+          label: e.meta.label || e.name,
+          description: `${ws.label} · killed ${humanAge(new Date(e.killedAt))}`,
+          hash: h,
+          entry: e,
+        });
+      }
+    }
+    if (picks.length === 0) {
+      vscode.window.showInformationMessage('No killed sessions to restore.');
+      return;
+    }
+    const pick = await vscode.window.showQuickPick<Pick>(picks, { placeHolder: 'Restore which killed session?' });
+    if (!pick) return;
+    hash = pick.hash;
+    entry = pick.entry;
+  }
+  const tabId = await nextSafeTabId(index, tmuxPath, cfg.sessionPrefix, hash);
+  const newName = buildSessionName(cfg.sessionPrefix, hash, tabId);
+  // restoreKilled re-checks the slot after reloading the index and may bump the
+  // tab id (two windows restoring at once can preallocate the same one) — start
+  // the name it actually used, not the one we proposed.
+  const restored = index.restoreKilled(hash, entry.name, entry.killedAt, newName);
+  if (!restored) {
+    // Raced with another window that already restored it — just repaint.
+    refreshSidebar();
+    return;
+  }
+  refreshSidebar();
+  await cmdStart(index, registry, claudeTracker, undefined, restored.name);
 }
 
 async function cmdKillWorkspace(index: SessionIndex): Promise<void> {
@@ -2503,7 +2588,7 @@ async function cmdKillWorkspace(index: SessionIndex): Promise<void> {
   if (confirm !== 'Kill All') return;
   for (const s of mine) {
     await tmux.killSession(tmuxPath, s.name);
-    index.removeSession(s.workspaceHash, s.name);
+    index.removeSession(s.workspaceHash, s.name, cfg.killedLimit);
   }
   refreshSidebar();
 }
@@ -2531,7 +2616,7 @@ async function cmdKillStale(index: SessionIndex): Promise<void> {
   if (confirm !== 'Prune') return;
   for (const s of stale) {
     await tmux.killSession(tmuxPath, s.name);
-    index.removeSession(s.workspaceHash, s.name);
+    index.removeSession(s.workspaceHash, s.name, cfg.killedLimit);
   }
   refreshSidebar();
 }

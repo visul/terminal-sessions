@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { SessionInfo } from '../types';
+import { SessionInfo, KilledEntry } from '../types';
 import { humanAge } from '../util';
 import { ClaudeSnapshot } from '../claude-tracker';
 import { SubagentSnapshot } from '../claude-transcript';
@@ -655,3 +655,60 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+
+/** Pinned virtual folder "Sessions Activity": a flat, group-free list of the
+ *  workspace's sessions ordered by recency — running first (most recently
+ *  active on top), then stopped ones by stop time. Rows are ordinary
+ *  SessionTreeItems (all actions work); they mirror sessions that also appear
+ *  in their groups below, so this is a shortcut, not a move. */
+export class ActivityFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly sessions: SessionInfo[],
+  ) {
+    super('Recent Sessions', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `actf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('pulse', new vscode.ThemeColor('charts.yellow'));
+    this.description = String(sessions.length);
+    this.contextValue = 'activityFolder';
+    this.tooltip = 'Most recent sessions — running first, then by stop time. Right-click (or the view\'s ⋯ menu) to disable.';
+  }
+}
+
+/** Pinned virtual folder "Sessions Killed": the workspace graveyard. Killed
+ *  sessions land here (capped) instead of vanishing; right-click → Restore
+ *  brings one back with its conversation history. */
+export class KilledFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly entries: KilledEntry[],
+  ) {
+    super('Killed Sessions', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `kilf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('trash', new vscode.ThemeColor('descriptionForeground'));
+    this.description = String(entries.length);
+    this.contextValue = 'killedFolder';
+    this.tooltip = 'Recently killed sessions. Right-click one to restore it (with its conversation). Right-click this folder (or the view\'s ⋯ menu) to disable.';
+  }
+}
+
+/** One killed session inside the graveyard folder. Restore-only row. */
+export class KilledSessionItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly entry: KilledEntry,
+  ) {
+    super(entry.meta.label || entry.name, vscode.TreeItemCollapsibleState.None);
+    this.id = `kil:${workspaceHash}:${entry.name}:${entry.killedAt}`;
+    this.description = `killed ${humanAge(new Date(entry.killedAt))}`;
+    this.iconPath = new vscode.ThemeIcon('circle-slash', new vscode.ThemeColor('disabledForeground'));
+    this.contextValue = 'killedSession';
+    const convs = entry.meta.agentSessions?.length ?? entry.meta.claudeSessionHistory?.length ?? 0;
+    this.tooltip = new vscode.MarkdownString(
+      `**${entry.meta.label || entry.name}**\n\n`
+      + `Killed ${humanAge(new Date(entry.killedAt))}`
+      + (convs ? ` · ${convs} recorded conversation${convs === 1 ? '' : 's'}` : '')
+      + '\n\nRight-click → Restore Session to bring it back; Start then resumes its conversation.',
+    );
+  }
+}

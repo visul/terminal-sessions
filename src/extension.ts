@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
-import { registerCommands, syncActiveTerminalLockedContext } from './commands';
+import { registerCommands, syncActiveTerminalLockedContext, syncSpecialFolderContexts } from './commands';
 import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
@@ -97,8 +97,16 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
         e.affectsConfiguration('terminalSessions.sidebarSortMode') ||
-        e.affectsConfiguration('terminalSessions.claudeSidebarDetails')
+        e.affectsConfiguration('terminalSessions.claudeSidebarDetails') ||
+        e.affectsConfiguration('terminalSessions.activityLimit') ||
+        e.affectsConfiguration('terminalSessions.killedLimit')
       ) refreshSidebar();
+      // Settings-UI edits must move the ⋯-menu Enable/Disable labels too, not
+      // just our own toggle commands.
+      if (
+        e.affectsConfiguration('terminalSessions.showActivityFolder') ||
+        e.affectsConfiguration('terminalSessions.showKilledFolder')
+      ) { void syncSpecialFolderContexts(); refreshSidebar(); }
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {
         void applyNoFlickerChange();
       }

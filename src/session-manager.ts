@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel, GroupLabel, BranchSet } from './types';
+import { WorkspaceIndex, WorkspaceEntry, SessionInfo, SessionLabel, GroupLabel, BranchSet, KilledEntry } from './types';
 import type { AgentId } from './agents/types';
 import { isForkableAgent, yoloFlagsFor, yoloSpecFor } from './agents/registry';
 import * as tmux from './tmux';
@@ -202,8 +202,15 @@ export class SessionIndex {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
-    if (stopped) ws.sessions[sessionName].stopped = true;
-    else delete ws.sessions[sessionName].stopped;
+    if (stopped) {
+      ws.sessions[sessionName].stopped = true;
+      // Stamp when it happened so Sessions Activity can order stopped rows by
+      // stop recency rather than by last focus.
+      ws.sessions[sessionName].stoppedAt = new Date().toISOString();
+    } else {
+      delete ws.sessions[sessionName].stopped;
+      delete ws.sessions[sessionName].stoppedAt;
+    }
     this.save();
   }
 
@@ -444,17 +451,67 @@ export class SessionIndex {
     this.save();
   }
 
-  removeSession(hash: string, sessionName: string): void {
+  removeSession(hash: string, sessionName: string, graveyardCap = 50): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws) return;
     // Capture branch-set membership before deleting so a Kill dissolves an
     // orphaned set the same way Unlink does — otherwise the lone survivor keeps
     // its branchSetId and stays chip-colored forever (a set of one is dead).
-    const setId = ws.sessions[sessionName]?.branchSetId;
+    const meta = ws.sessions[sessionName];
+    const setId = meta?.branchSetId;
     delete ws.sessions[sessionName];
     if (setId) this.dissolveBranchSetIfOrphaned(ws, setId);
+    // Graveyard: keep a snapshot so Sessions Killed can list it and Restore can
+    // bring it back. Entries with nothing restorable (no label, no conversation
+    // history) would only be noise — those stay hard-deleted.
+    const restorable = meta && (meta.label || meta.lastClaudeSessionId
+      || meta.claudeSessionHistory?.length || meta.agentSessions?.length);
+    if (restorable && graveyardCap > 0) {
+      // The snapshot leaves the group/fork links behind: the group may be gone
+      // by restore time (a dead groupId would hide the row), and the branch set
+      // was just dissolved above.
+      const { groupId: _g, branchSetId: _b, sortOrder: _s, ...snap } = meta;
+      const killed = ws.killed ?? [];
+      killed.unshift({ name: sessionName, killedAt: new Date().toISOString(), meta: snap });
+      ws.killed = killed.slice(0, graveyardCap);
+    }
     this.save();
+  }
+
+  getKilled(hash: string): KilledEntry[] {
+    return this.data.workspaces[hash]?.killed ?? [];
+  }
+
+  /** Move a graveyard entry back into live sessions under a fresh session name
+   *  (allocated by the caller — tab ids are only unique against live tmux).
+   *  Returns the restored name + meta, or undefined when the entry is gone
+   *  (e.g. restored from another window). The entry comes back stopped, so it
+   *  renders as a startable row and Start resumes its recorded conversation.
+   *
+   *  The caller's preallocated name is re-checked here AFTER the disk reload:
+   *  two windows restoring at the same moment can both compute the same next
+   *  tab id, and blindly overwriting would silently drop whichever entry landed
+   *  first. If the slot is taken by then, the trailing tab id is bumped until
+   *  free — hence the name is part of the return value, not assumed. */
+  restoreKilled(hash: string, killedName: string, killedAt: string, newSessionName: string): { name: string; meta: SessionLabel } | undefined {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.killed) return undefined;
+    const i = ws.killed.findIndex(k => k.name === killedName && k.killedAt === killedAt);
+    if (i < 0) return undefined;
+    let name = newSessionName;
+    while (ws.sessions[name]) {
+      const bumped = name.replace(/-(\d+)$/, (_m, n: string) => `-${parseInt(n, 10) + 1}`);
+      if (bumped === name) return undefined; // malformed name — refuse rather than overwrite
+      name = bumped;
+    }
+    const [entry] = ws.killed.splice(i, 1);
+    if (ws.killed.length === 0) delete ws.killed;
+    const meta: SessionLabel = { ...entry.meta, stopped: true, stoppedAt: entry.killedAt };
+    ws.sessions[name] = meta;
+    this.save();
+    return { name, meta };
   }
 
   getWorkspace(hash: string): WorkspaceEntry | undefined {
@@ -865,10 +922,16 @@ export async function enrichSessions(
     });
   }
 
-  // 2. Stopped index entries that have no live tmux row
+  // 2. Index entries that have no live tmux row. Most carry stopped=true (an
+  // explicit Stop), but an entry can also be stopped=false with its tmux gone:
+  // it was RUNNING when the machine rebooted (or the tmux server died) and the
+  // restore offer wasn't taken. Skipping those made sessions silently vanish
+  // from the sidebar — the entry, with its full conversation history, was
+  // still in the index but rendered nowhere. Any non-live entry now renders as
+  // a stopped row (Start resumes it); the flag itself is left untouched so
+  // this stays a pure read with no cross-window index writes.
   for (const [hash, ws] of Object.entries(index.getAllWorkspaces())) {
     for (const [sessionName, meta] of Object.entries(ws.sessions)) {
-      if (!meta.stopped) continue;
       if (liveNames.has(sessionName)) continue;
       const parsed = parseSessionName(sessionName, prefix);
       if (!parsed) continue;
@@ -900,6 +963,7 @@ export async function enrichSessions(
         muted: meta.muted,
         locked: meta.locked,
         stopped: true,
+        stoppedAt: meta.stoppedAt ? new Date(meta.stoppedAt) : undefined,
         groupId: meta.groupId,
         branchSetId: meta.branchSetId,
         branchName: bset?.name,
