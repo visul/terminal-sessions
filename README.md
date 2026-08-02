@@ -57,6 +57,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 | Reload window (`Cmd+R` / `Ctrl+R`) | kept | kept | kept | kept |
 | Quit Cursor (`Cmd+Q` / `Ctrl+Q`) | kept | kept | kept | kept |
 | Restart Session command | killed | killed | killed | kept (auto-resumed) |
+| Kill Session | killed | killed | killed | kept — entry moves to the **Killed Sessions** graveyard; *Restore Session* brings it back |
 | Machine reboot | killed | killed | killed | kept (recreate from index) |
 
 ## Features
@@ -71,6 +72,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
 - **Auto-prune** stale sessions after configurable days (default 14)
+- **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
 
 ### UI integration
@@ -94,6 +96,16 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Creation order** — oldest first (default, backward-compatible)
 - **Alphabetical** — by session label
 - Toggle via the `$(list-ordered)` icon in the sidebar title bar; dragging automatically switches to Custom
+
+### Recent & Killed sessions (pinned folders)
+- **Recent Sessions** — a pinned virtual folder at the top of each workspace with a flat, group-free list of sessions ordered by recency: running ones first (most recently active on top), then stopped ones by when they were stopped. Rows are ordinary session rows — every action (Start, Restart, View Conversation, …) works — and mirror the sessions in their groups below, so it's a shortcut, not a move. Capped at 50 (`terminalSessions.activityLimit`)
+- **Killed Sessions** — killing a session no longer deletes it: the entry (label, folder, resume flags, full conversation history) moves into a per-workspace graveyard, so Kill is reversible. Right-click a killed row → **Restore Session** recreates it under a fresh tab id and resumes its conversation. Also available from the Command Palette — the only way back when a workspace's last session was killed. Keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) aren't kept, and the folder hides while empty
+- **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showActivityFolder` / `showKilledFolder` settings. Both default to on
+
+### YOLO mode switch (auto-approve)
+- **Switch to YOLO Mode / Switch to Normal Mode** — right-click a session to relaunch its agent with (or without) auto-approve flags, continuing the **same conversation**: `--dangerously-skip-permissions` for Claude, `--yolo` for Codex/Antigravity, the equivalent for Grok. The flag set is per-agent and allowlisted, so nothing else about the launch command changes
+- **🚨 chip** — sessions running in YOLO mode show a 🚨 in their sidebar description (stopped sessions too, meaning "will start in YOLO mode"); the tooltip names the actual flags
+- **Confirmation prompt** before switching into YOLO (`terminalSessions.confirmYoloSwitch`, default on)
 
 ### Filter, groups & navigation
 - **Filter modes** — show `all`, only `running`, or only `stopped` sessions via the `$(filter)` icon in the title bar (`terminalSessions.sidebarFilterMode`)
@@ -242,7 +254,7 @@ cursor --install-extension visul.terminal-sessions    # Cursor
 
 ### From VSIX
 ```bash
-cursor --install-extension terminal-sessions-0.20.25.vsix --force
+cursor --install-extension terminal-sessions-0.20.29.vsix --force
 ```
 Or in Cursor: Extensions panel → `⋯` → **Install from VSIX...**
 
@@ -311,6 +323,9 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Right-click on sidebar session → `View Conversation` | Render the session's transcript as Markdown (reads the `.jsonl` directly — works on stopped sessions too) |
 | Right-click on sidebar session → `Name Conversation...` | Give the session a friendly name (shown in the archive picker) |
 | Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
+| Right-click on sidebar session → `Switch to YOLO Mode` / `Switch to Normal Mode` | Relaunch the same conversation with (or without) the agent's auto-approve flags; 🚨 chip marks YOLO sessions |
+| Right-click on killed row (or Command Palette) → `Restore Session` | Bring a killed session back from the graveyard and resume its conversation |
+| View `⋯` menu / folder right-click → `Enable/Disable Recent Sessions Folder`, `Enable/Disable Killed Sessions Folder` | Toggle the two pinned virtual folders |
 | Right-click on sidebar session → `Copy Last Conversation ID` / `Copy Last Conversation Path` | Clipboard the agent conversation's UUID or the full path to its transcript `.jsonl` |
 | Right-click on sidebar session → `Reveal Session Folder` | Open the session's working directory in Finder/Explorer |
 | Right-click on sidebar session → `Fork Conversation (new parallel branch)` | Continue the same Claude conversation on an independent branch in a new session |
@@ -349,6 +364,11 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.pruneAfterDays` | `14` | Offer to prune sessions idle longer than this (`0` to disable) |
 | `terminalSessions.sidebarSortMode` | `"created"` | `custom`, `mru`, `created`, or `alphabetical` |
 | `terminalSessions.sidebarFilterMode` | `"all"` | Filter sidebar by state: `all`, `running`, or `stopped` |
+| `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
+| `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
+| `terminalSessions.activityLimit` | `50` | Max sessions listed in Recent Sessions |
+| `terminalSessions.killedLimit` | `50` | Max killed sessions kept in the graveyard (older entries fall off) |
+| `terminalSessions.confirmYoloSwitch` | `true` | Ask for confirmation before switching a session into YOLO (auto-approve) mode |
 | `terminalSessions.revealActiveSession` | `true` | Focusing a terminal selects its matching sidebar row. Only ever selects an already-visible row (never expands a collapsed group or scrolls to a hidden one). Set `false` to stop the selection following your active tab |
 | `terminalSessions.claudeSidebarDetails` | `"auto"` | Expand the nested rows under a Claude session: `auto`/`always`/`collapsed`/`off` |
 | `terminalSessions.claudeNoFlicker` | `"auto"` | `CLAUDE_CODE_NO_FLICKER` mode. `auto` = off on Cursor (conversation copyable), on in VS Code (clean alt-screen). `on` = always clean, no copy from live view. `off` = always copyable, slight flicker |

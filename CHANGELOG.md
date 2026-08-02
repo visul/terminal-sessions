@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.30] — 2026-08-02
+
+### Changed
+- **README brought up to date** with everything shipped since 0.20.24: the YOLO mode switch (🚨), the Recent Sessions and Killed Sessions pinned folders with Restore, reboot-safe rows, plus the new commands and settings tables. Marketplace listings pick this up with the version bump; no code changes.
+
 ## [0.20.29] — 2026-08-02
 
 ### Added
