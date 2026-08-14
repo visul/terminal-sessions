@@ -58,6 +58,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 | Quit Cursor (`Cmd+Q` / `Ctrl+Q`) | kept | kept | kept | kept |
 | Restart Session command | killed | killed | killed | kept (auto-resumed) |
 | Kill Session | killed | killed | killed | kept — entry moves to the **Killed Sessions** graveyard; *Restore Session* brings it back |
+| Kill & Delete Data | killed | killed | killed | **deleted forever** — transcripts, sidecar files, todos, and scratchpads are removed from disk; conversations still used by other sessions are kept |
 | Machine reboot | killed | killed | killed | kept (recreate from index) |
 
 ## Features
@@ -71,6 +72,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Max age filter** — skip auto-restore for sessions older than N hours (default 72h)
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
+- **Kill & Delete Data…** — right-click a session to kill it AND permanently delete its conversations' on-disk data across every agent (Claude/Codex/Antigravity/Grok): transcripts, Claude sidecar dirs (subagents/tool-results/workflows), todos files, and per-session scratchpads under `/tmp/claude-*`. A modal confirmation shows exactly what's about to go (conversation count, file count, size on disk). Safety first: conversations still used by other sessions — live in another pane, or recorded as another session's resume history — are skipped and kept; every path is validated (strict UUID-named artifacts inside your home or the claude tmp dir only) and re-checked at delete time; symlinks are never followed. The session skips the graveyard — regular Kill stays reversible, this one doesn't
 - **Auto-prune** stale sessions after configurable days (default 14)
 - **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
@@ -99,7 +101,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 ### Recent & Killed sessions (pinned folders)
 - **Recent Sessions** — a pinned virtual folder at the top of each workspace with a flat, group-free list of sessions ordered by recency: running ones first (most recently active on top), then stopped ones by when they were stopped. Rows are ordinary session rows — every action (Start, Restart, View Conversation, …) works — and mirror the sessions in their groups below, so it's a shortcut, not a move. Capped at 50 (`terminalSessions.activityLimit`)
-- **Killed Sessions** — killing a session no longer deletes it: the entry (label, folder, resume flags, full conversation history) moves into a per-workspace graveyard, so Kill is reversible. Right-click a killed row → **Restore Session** recreates it under a fresh tab id and resumes its conversation. Also available from the Command Palette — the only way back when a workspace's last session was killed. Keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) aren't kept, and the folder hides while empty
+- **Killed Sessions** — killing a session no longer deletes it: the entry (label, folder, resume flags, full conversation history) moves into a per-workspace graveyard, so Kill is reversible. Right-click a killed row → **Restore Session** recreates it under a fresh tab id and resumes its conversation. Also available from the Command Palette — the only way back when a workspace's last session was killed. Keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) aren't kept, and the folder hides while empty. To kill *without* keeping anything — and free the disk space too — use **Kill & Delete Data…** instead
 - **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showActivityFolder` / `showKilledFolder` settings. Both default to on
 
 ### YOLO mode switch (auto-approve)
@@ -254,7 +256,7 @@ cursor --install-extension visul.terminal-sessions    # Cursor
 
 ### From VSIX
 ```bash
-cursor --install-extension terminal-sessions-0.20.29.vsix --force
+cursor --install-extension terminal-sessions-0.20.31.vsix --force
 ```
 Or in Cursor: Extensions panel → `⋯` → **Install from VSIX...**
 
@@ -339,6 +341,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Right-click on sidebar session → `Mute Notifications` / `Unmute Notifications` | Per-session silencing |
 | Right-click on sidebar session → `Lock (Protect from Kill)` / `Unlock (Allow Kill)` | Protect a session from Kill (padlock takes the Kill slot); Unlock to allow killing again |
 | Right-click on sidebar session → `Kill` | Terminate that session (hidden while the session is locked) |
+| Right-click on sidebar session → `Kill & Delete Data...` | Kill AND permanently delete the session's conversation data from disk, all agents (transcripts, sidecar dirs, todos, scratchpads). Shows what's deleted before confirming; conversations used by other sessions are kept; skips the Killed Sessions graveyard |
 | Right-click on folder in Explorer → `Open in Integrated Terminal - Persistent` | New tmux session rooted at that folder |
 
 ## Keyboard (tmux prefix `Ctrl+A`)
@@ -431,6 +434,10 @@ If you started Claude in a session before the v3 config was applied, the env var
 - **From the Claude conversation:** press `Ctrl+O` then `[` inside Claude. That dumps the current conversation view into the main tmux scrollback. From there, drag-select normally. Press `Ctrl+O` then `/` for Claude's own in-view search
 - **Cmd+F / tmux copy-mode search** only sees content in the main buffer. The live Claude view lives in alt-screen, so it is not searchable that way — use `Ctrl+O` `/` inside Claude instead
 - **Over Remote-SSH:** an agent's own copy (Claude/Codex "copied to clipboard") reaches your **local** machine's clipboard with correct UTF-8, accents included. A headless remote has no clipboard tool (`xclip`/`pbcopy` fail) and Cursor's terminal mis-decodes OSC 52 for non-ASCII, so the extension installs a tiny writer on the remote and bridges what it captures to the local clipboard through the VS Code API. No setup on the remote
+
+## Related
+
+- **[Terminal Path Links](https://marketplace.visualstudio.com/items?itemName=visul.terminal-path-links)** — companion extension by the same author: makes file paths **containing spaces** Cmd+Clickable in the integrated terminal, including paths hard-wrapped across lines by tmux or TUI agents (exactly what Claude Code prints all day). Terminal Sessions keeps your terminals alive; Terminal Path Links keeps every printed path clickable.
 
 ## Changelog
 

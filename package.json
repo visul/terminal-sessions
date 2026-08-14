@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.30",
+  "version": "0.20.31",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -309,6 +309,11 @@
       {
         "command": "terminalSessions.kill",
         "title": "Kill Session",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "terminalSessions.killDelete",
+        "title": "Kill & Delete Data...",
         "icon": "$(trash)"
       },
       {
@@ -622,6 +627,10 @@
         },
         {
           "command": "terminalSessions.kill",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.killDelete",
           "when": "false"
         },
         {
@@ -1016,6 +1025,11 @@
           "command": "terminalSessions.kill",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
           "group": "danger@1"
+        },
+        {
+          "command": "terminalSessions.killDelete",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped|(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
+          "group": "danger@2"
         },
         {
           "command": "terminalSessions.muteSession",

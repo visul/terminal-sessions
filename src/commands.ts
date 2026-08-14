@@ -18,6 +18,7 @@ import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
 import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
+import { planTrash, executeTrash, formatBytes } from './trash';
 import { AgentRegistry } from './agents/registry';
 import { isYolo, setYolo } from './agents/launch-flags';
 import type { AgentProvider, AgentId } from './agents/types';
@@ -224,6 +225,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.newPersistentInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri)),
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
     vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal) => cmdKill(index, item)),
+    vscode.commands.registerCommand(COMMAND.killDelete, (item?: SessionTreeItem | vscode.Terminal) => cmdKillDelete(index, claudeTracker, registry, item)),
     vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
     vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
     vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, item)),
@@ -2483,6 +2485,83 @@ async function cmdKill(
   await tmux.killSession(tmuxPath, name);
   if (parsedForLabel) index.removeSession(parsedForLabel.hash, name, cfg.killedLimit);
   refreshSidebar();
+}
+
+/** Kill a session AND permanently delete its conversations' on-disk data
+ *  (transcripts, sidecar dirs, todos, scratchpads) across every agent. The
+ *  session is hard-removed from the index — no graveyard entry, since Restore
+ *  without a conversation would be meaningless. Conversations that another
+ *  session still uses (live in its pane, or recorded as its resume history)
+ *  are skipped so we never destroy someone else's discussion. */
+async function cmdKillDelete(
+  index: SessionIndex,
+  claudeTracker: ClaudeTracker,
+  registry: AgentRegistry,
+  item?: SessionTreeItem | vscode.Terminal,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  const name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
+  if (!name) return; // context-menu only — no picker for a destructive command
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
+  if (!parsed) return;
+  const ws = index.getWorkspace(parsed.hash);
+  const meta = ws?.sessions[name];
+  const label = meta?.label;
+  const displayName = label ? `"${label}" (${name})` : name;
+  if (index.isSessionLocked(parsed.hash, name)) {
+    vscode.window.showWarningMessage(
+      `🔒 "${label || name}" is locked. Right-click → Unlock it first.`,
+    );
+    return;
+  }
+  // Ownership guards: a conversation is only deletable when THIS session is
+  // its strongest claimant in the index and no other live pane is running it.
+  const owners = ws
+    ? index.conversationOwners(parsed.hash, Object.keys(ws.sessions))
+    : new Map<string, string>();
+  const shouldSkip = (agent: AgentId, id: string): string | undefined => {
+    if (claudeTracker.isConversationTaken(id, name)) return 'live in another session';
+    const owner = owners.get(`${agent} ${id}`);
+    if (owner && owner !== name) return `used by ${owner}`;
+    return undefined;
+  };
+  const cwd = meta?.folderPath || ws?.path || '';
+  const plan = meta
+    ? planTrash(
+      meta,
+      cwd,
+      (agent, id, c) => registry.getProvider(agent)?.resolveTranscriptPath(id, c),
+      shouldSkip,
+    )
+    : { targets: [], skipped: [], totalBytes: 0, fileCount: 0 };
+  const convCount = plan.targets.length;
+  const skippedNote = plan.skipped.length > 0
+    ? `\n${plan.skipped.length} conversation(s) will be kept — still used by other sessions.`
+    : '';
+  const detail = convCount > 0
+    ? `Deletes ${convCount} conversation(s), ${plan.fileCount} file(s), ${formatBytes(plan.totalBytes)} from disk.${skippedNote}`
+    : `No conversation data found on disk.${skippedNote}`;
+  const confirm = await vscode.window.showWarningMessage(
+    `Kill ${displayName} and permanently delete its data?\n\n${detail}\n\nThis cannot be undone. The session will NOT appear in Killed Sessions.`,
+    { modal: true }, 'Delete Data & Kill',
+  );
+  if (confirm !== 'Delete Data & Kill') return;
+  await tmux.killSession(tmuxPath, name);
+  claudeTracker.forgetSession(name);
+  const result = executeTrash(plan);
+  index.removeSession(parsed.hash, name, 0); // cap 0 = hard delete, no graveyard
+  refreshSidebar();
+  if (result.failures.length > 0) {
+    vscode.window.showWarningMessage(
+      `Session killed; freed ${formatBytes(result.freedBytes)}, but ${result.failures.length} item(s) could not be deleted: ${result.failures[0]}`,
+    );
+  } else if (result.deletedPaths > 0) {
+    vscode.window.showInformationMessage(
+      `Session killed. Deleted ${result.deletedPaths} item(s), freed ${formatBytes(result.freedBytes)}.`,
+    );
+  }
 }
 
 /** Mirror the two special-folder settings into context keys so the view's ⋯

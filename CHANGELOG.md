@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.31] — 2026-08-14
+
+### Added
+- **Kill & Delete Data…** Right-click a session → *Kill & Delete Data…* kills it AND permanently deletes its conversations' on-disk data across every agent (Claude/Codex/Antigravity/Grok): transcripts, Claude sidecar dirs (subagents/tool-results/workflows), todos files, and per-session scratchpads under `/tmp/claude-*`. A modal confirmation shows exactly how much is about to go (conversation count, file count, size). The session is hard-removed — it does NOT go to Killed Sessions, since Restore without a conversation is meaningless. Regular Kill is unchanged and stays reversible.
+- **Safety guards.** Conversations still used by other sessions (live in another pane, or recorded as another session's resume history) are skipped and kept. Every deleted path must be a strict UUID-named artifact inside `~` or the claude tmp root, and is re-validated at delete time; anything suspicious is left alone. Symlinks are never followed.
+
 ## [0.20.30] — 2026-08-02
 
 ### Changed

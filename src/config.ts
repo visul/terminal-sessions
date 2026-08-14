@@ -129,6 +129,7 @@ export const COMMAND = {
   newPersistentInFolder: 'terminalSessions.newPersistentInFolder',
   attachTo: 'terminalSessions.attachTo',
   kill: 'terminalSessions.kill',
+  killDelete: 'terminalSessions.killDelete',
   killAllStale: 'terminalSessions.killAllStale',
   killWorkspace: 'terminalSessions.killWorkspace',
   refreshSidebar: 'terminalSessions.refreshSidebar',
