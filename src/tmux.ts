@@ -513,7 +513,11 @@ export async function listSessions(tmux: string, prefix: string): Promise<TmuxSe
     return rows;
   } catch (e: unknown) {
     const err = e as { stderr?: string };
-    if ((err.stderr || '').includes('no server running')) return [];
+    // "no server running on <socket>" — server exited normally.
+    // "error connecting to <socket> (No such file or directory | Connection refused)"
+    // — socket file missing or stale. All mean the same thing: zero sessions.
+    const stderr = err.stderr || '';
+    if (stderr.includes('no server running') || stderr.includes('error connecting to')) return [];
     throw e;
   }
 }

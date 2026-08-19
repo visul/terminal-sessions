@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.32] — 2026-08-19
+
+### Fixed
+- **Startup error toast when no tmux server exists.** `tmux list-sessions` reports "no server" with two different stderr messages: `no server running on <socket>` and `error connecting to <socket> (No such file or directory / Connection refused)` — the second appears when the socket file is missing or stale. Only the first was treated as "zero sessions"; the second surfaced as a "Command failed" error on activation. Both are now handled as an empty session list.
+
 ## [0.20.31] — 2026-08-14
 
 ### Added
