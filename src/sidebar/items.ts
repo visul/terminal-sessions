@@ -685,6 +685,22 @@ export class FavoritesFolderItem extends vscode.TreeItem {
   }
 }
 
+/** Pinned virtual folder "Open Sessions": sessions with a terminal tab open in
+ *  THIS window, in panel order. Hidden while empty. */
+export class OpenFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly sessions: SessionInfo[],
+  ) {
+    super('Open Sessions', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `openf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('terminal', new vscode.ThemeColor('charts.green'));
+    this.description = String(sessions.length);
+    this.contextValue = 'openFolder';
+    this.tooltip = 'Sessions currently open as terminal tabs in this window, in tab order. Right-click (or the view\'s ⋯ menu) to disable.';
+  }
+}
+
 export class ActivityFolderItem extends vscode.TreeItem {
   constructor(
     public readonly workspaceHash: string,

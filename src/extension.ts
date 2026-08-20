@@ -105,6 +105,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       // just our own toggle commands.
       if (
         e.affectsConfiguration('terminalSessions.showFavoritesFolder') ||
+        e.affectsConfiguration('terminalSessions.showOpenFolder') ||
         e.affectsConfiguration('terminalSessions.showActivityFolder') ||
         e.affectsConfiguration('terminalSessions.showKilledFolder')
       ) { void syncSpecialFolderContexts(); refreshSidebar(); }

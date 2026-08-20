@@ -37,6 +37,7 @@ export interface Config {
   revealActiveSession: boolean;
   confirmYoloSwitch: boolean;
   showFavoritesFolder: boolean;
+  showOpenFolder: boolean;
   showActivityFolder: boolean;
   showKilledFolder: boolean;
   activityLimit: number;
@@ -92,6 +93,7 @@ export function getConfig(): Config {
     revealActiveSession: c.get('revealActiveSession', true),
     confirmYoloSwitch: c.get('confirmYoloSwitch', true),
     showFavoritesFolder: c.get('showFavoritesFolder', true),
+    showOpenFolder: c.get('showOpenFolder', true),
     showActivityFolder: c.get('showActivityFolder', true),
     showKilledFolder: c.get('showKilledFolder', true),
     activityLimit: Math.max(1, c.get<number>('activityLimit', 50)),
@@ -126,6 +128,7 @@ export const COMMAND = {
   unmuteSession: 'terminalSessions.unmuteSession',
   favoriteOn: 'terminalSessions.favoriteOn',
   favoriteOff: 'terminalSessions.favoriteOff',
+  toggleFavorite: 'terminalSessions.toggleFavorite',
   lockSession: 'terminalSessions.lockSession',
   unlockSession: 'terminalSessions.unlockSession',
   lockedHint: 'terminalSessions.lockedHint',
@@ -184,6 +187,8 @@ export const COMMAND = {
   copySessionPath: 'terminalSessions.copySessionPath',
   enableFavoritesFolder: 'terminalSessions.enableFavoritesFolder',
   disableFavoritesFolder: 'terminalSessions.disableFavoritesFolder',
+  enableOpenFolder: 'terminalSessions.enableOpenFolder',
+  disableOpenFolder: 'terminalSessions.disableOpenFolder',
   enableActivityFolder: 'terminalSessions.enableActivityFolder',
   disableActivityFolder: 'terminalSessions.disableActivityFolder',
   enableKilledFolder: 'terminalSessions.enableKilledFolder',

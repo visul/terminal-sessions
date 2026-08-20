@@ -4,6 +4,14 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.34] — 2026-08-20
+
+### Added
+- **Open Sessions folder.** A new pinned folder between Favorites and Recent Sessions listing the sessions currently open as terminal tabs in this window, in tab order. Tabs restored by a window reload (the ⚠ "disconnected" ones) are included too — they lose their launch arguments, so their tmux session is recovered from the live process (cached per tab; misses retried every 15s). Mirror rows with full actions; hidden while empty. Toggle via the view's `⋯` menu, right-click on the folder, or `terminalSessions.showOpenFolder`.
+- **Favorite from the terminal tab.** Right-click a terminal tab (tab list or terminal area) → **Add/Remove Favorite** — a single toggle that flips the star for that tab's session and confirms what it did. (The tab menus can't reflect per-tab state, so one always-correct toggle replaces the Add/Remove pair used in the sidebar.)
+- **Multi-select in the sidebar + Favorites in the right-click menu.** **Add to Favorites** / **Remove from Favorites** now also appear in a session row's right-click menu (top of the edit group, showing whichever applies). Select several rows (Cmd/Ctrl- or Shift-click) → the command stars or unstars every selected session at once. **Stop Session** and **Start Session** work on a multi-selection too — stop runs on the selected running rows, start on the selected stopped rows (each Claude-is-working stop still asks first). Drag-and-drop can also move several rows together.
+- **Bulk everything else.** Nearly every session action now understands a multi-selection: **Kill** (one aggregate confirmation; locked rows kept), **Kill & Delete Data…** (one confirmation with the combined size across the selection; per-conversation ownership guards unchanged), **Restart** (one confirmation, each session resumes its own conversation), **Move to Group…** / **Change Icon…** / **Change Color…** (pick once, applied to the whole selection), **Mute/Unmute**, **Lock/Unlock**. **Switch to YOLO / Normal Mode** also accepts a selection but deliberately keeps its per-session confirmation — auto-approve is too sharp for one blanket yes. Mirror rows in the pinned folders dedup by session, so nothing runs twice.
+
 ## [0.20.33] — 2026-08-19
 
 ### Added

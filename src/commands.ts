@@ -224,8 +224,16 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.newPersistent, () => cmdNewPersistent(index)),
     vscode.commands.registerCommand(COMMAND.newPersistentInFolder, (uri?: vscode.Uri) => cmdNewPersistent(index, uri)),
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
-    vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal) => cmdKill(index, item)),
-    vscode.commands.registerCommand(COMMAND.killDelete, (item?: SessionTreeItem | vscode.Terminal) => cmdKillDelete(index, claudeTracker, registry, item)),
+    vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      return many ? cmdKillMany(index, many) : cmdKill(index, item);
+    }),
+    vscode.commands.registerCommand(COMMAND.killDelete, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      return many
+        ? cmdKillDeleteMany(index, claudeTracker, registry, many)
+        : cmdKillDelete(index, claudeTracker, registry, item);
+    }),
     vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
     vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
     vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, item)),
@@ -240,20 +248,52 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.setAsDefaultProfile, () => cmdSetDefaultProfile()),
     vscode.commands.registerCommand(COMMAND.openTmuxConfig, () => cmdOpenTmuxConfig()),
     vscode.commands.registerCommand(COMMAND.reloadTmuxConfig, () => cmdReloadTmuxConfig()),
-    vscode.commands.registerCommand(COMMAND.setIcon, (item?: SessionTreeItem) => cmdSetIcon(index, item)),
-    vscode.commands.registerCommand(COMMAND.setColor, (item?: SessionTreeItem) => cmdSetColor(index, item)),
+    vscode.commands.registerCommand(COMMAND.setIcon, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetIcon(index, item, selection)),
+    vscode.commands.registerCommand(COMMAND.setColor, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetColor(index, item, selection)),
     vscode.commands.registerCommand(COMMAND.restoreFromIndex, () => cmdRestoreFromIndex(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.testNotification, () => cmdTestNotification()),
     vscode.commands.registerCommand(COMMAND.installClaudeHook, () => cmdInstallClaudeHook(claudeTracker)),
     vscode.commands.registerCommand(COMMAND.uninstallClaudeHook, () => cmdUninstallClaudeHook(registry)),
-    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal) => cmdRestart(index, registry, claudeTracker, item)),
-    vscode.commands.registerCommand(COMMAND.switchToYolo, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, true, item)),
-    vscode.commands.registerCommand(COMMAND.switchToNormal, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, false, item)),
+    vscode.commands.registerCommand(COMMAND.restart, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      return many ? cmdRestartMany(index, registry, claudeTracker, many) : cmdRestart(index, registry, claudeTracker, item);
+    }),
+    vscode.commands.registerCommand(COMMAND.switchToYolo, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      // Bulk YOLO stays deliberately per-session: each row runs the full
+      // single-session flow with its own confirmation — auto-approve is too
+      // sharp for one blanket "yes" over N sessions.
+      const many = selectionTargets(selection);
+      if (!many) return cmdSwitchYolo(index, registry, claudeTracker, true, item);
+      // eslint-disable-next-line no-await-in-loop
+      for (const r of many) await cmdSwitchYolo(index, registry, claudeTracker, true, r);
+    }),
+    vscode.commands.registerCommand(COMMAND.switchToNormal, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      if (!many) return cmdSwitchYolo(index, registry, claudeTracker, false, item);
+      // eslint-disable-next-line no-await-in-loop
+      for (const r of many) await cmdSwitchYolo(index, registry, claudeTracker, false, r);
+    }),
     vscode.commands.registerCommand(COMMAND.toggleYolo, (item?: SessionTreeItem | vscode.Terminal) => cmdSwitchYolo(index, registry, claudeTracker, undefined, item)),
-    vscode.commands.registerCommand(COMMAND.stop, (item?: SessionTreeItem | vscode.Terminal) => cmdStop(index, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.stop, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      if (!many) return cmdStop(index, claudeTracker, item);
+      for (const r of many) {
+        if (r.session.stopped) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await cmdStop(index, claudeTracker, r);
+      }
+    }),
     vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
-    vscode.commands.registerCommand(COMMAND.start, (item?: SessionTreeItem) => cmdStart(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.start, async (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      if (!many) return cmdStart(index, registry, claudeTracker, item);
+      for (const r of many) {
+        if (!r.session.stopped) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await cmdStart(index, registry, claudeTracker, r);
+      }
+    }),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
@@ -261,12 +301,21 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts()),
     vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(true)),
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
-    vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
-    vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
-    vscode.commands.registerCommand(COMMAND.favoriteOn, (item?: SessionTreeItem) => cmdSetSessionFavorite(index, item, true)),
-    vscode.commands.registerCommand(COMMAND.favoriteOff, (item?: SessionTreeItem) => cmdSetSessionFavorite(index, item, false)),
-    vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem | vscode.Terminal) => cmdSetSessionLocked(index, item, true)),
-    vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem | vscode.Terminal) => cmdSetSessionLocked(index, item, false)),
+    vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
+    vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
+    vscode.commands.registerCommand(COMMAND.favoriteOn, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionFavorite(index, item, selection, true)),
+    vscode.commands.registerCommand(COMMAND.favoriteOff, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionFavorite(index, item, selection, false)),
+    vscode.commands.registerCommand(COMMAND.toggleFavorite, (item?: SessionTreeItem | vscode.Terminal) => cmdToggleFavorite(index, item)),
+    vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      if (!many) return cmdSetSessionLocked(index, item, true);
+      bulkApply(many, (hash, name) => index.setSessionLocked(hash, name, true), n => `${n} sessions locked (protected from Kill).`);
+    }),
+    vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      const many = selectionTargets(selection);
+      if (!many) return cmdSetSessionLocked(index, item, false);
+      bulkApply(many, (hash, name) => index.setSessionLocked(hash, name, false), n => `${n} sessions unlocked.`);
+    }),
     vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
     vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
@@ -280,7 +329,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.renameGroup, (item?: GroupTreeItem) => cmdRenameGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.deleteGroup, (item?: GroupTreeItem) => cmdDeleteGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.setGroupColor, (item?: GroupTreeItem) => cmdSetGroupColor(index, item)),
-    vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem) => cmdMoveSessionToGroup(index, item)),
+    vscode.commands.registerCommand(COMMAND.moveSessionToGroup, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdMoveSessionToGroup(index, item, selection)),
     vscode.commands.registerCommand(COMMAND.resumeOtherClaude, (item?: SessionTreeItem) => cmdResumeOtherClaude(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.resumeFromArchive, () => cmdResumeFromArchive(index, registry)),
     vscode.commands.registerCommand(COMMAND.cleanupSessions, () => cmdCleanupSessions(index, registry)),
@@ -291,6 +340,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
     vscode.commands.registerCommand(COMMAND.enableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', false)),
+    vscode.commands.registerCommand(COMMAND.enableOpenFolder, () => cmdSetSpecialFolder('showOpenFolder', true)),
+    vscode.commands.registerCommand(COMMAND.disableOpenFolder, () => cmdSetSpecialFolder('showOpenFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', true)),
@@ -498,8 +549,18 @@ async function cmdToggleShowCompletedSubagents(): Promise<void> {
 async function cmdSetSessionMuted(
   index: SessionIndex,
   item: SessionTreeItem | undefined,
+  selection: vscode.TreeItem[] | undefined,
   muted: boolean,
 ): Promise<void> {
+  const many = selectionTargets(selection);
+  if (many) {
+    bulkApply(
+      many,
+      (hash, name) => index.setSessionMuted(hash, name, muted),
+      n => `${n} sessions: notifications ${muted ? 'muted' : 'unmuted'}.`,
+    );
+    return;
+  }
   if (!item) {
     vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
     return;
@@ -514,24 +575,60 @@ async function cmdSetSessionMuted(
   );
 }
 
-/** Toggle the favorite star. Persisted in the index; drives the .fav
+/** Set the favorite star. Persisted in the index; drives the .fav
  *  contextValue token (which star action shows), the ★ description hint and
  *  membership in the Favorite Sessions folder. Works from mirror rows in the
- *  special folders too — they are ordinary SessionTreeItems. */
+ *  special folders too — they are ordinary SessionTreeItems. With the tree's
+ *  canSelectMany, a context-menu invocation passes the full selection as the
+ *  second argument, so starring a multi-selection stars every selected row. */
 async function cmdSetSessionFavorite(
   index: SessionIndex,
   item: SessionTreeItem | undefined,
+  selection: vscode.TreeItem[] | undefined,
   favorite: boolean,
 ): Promise<void> {
-  if (!item) {
+  // Dedup by session name: the same session can be selected twice via its
+  // canonical row and a mirror row in a pinned folder.
+  const targets = new Map<string, SessionTreeItem>();
+  const all = (selection?.length ? selection : [item]).filter(
+    (i): i is SessionTreeItem => i instanceof SessionTreeItem,
+  );
+  for (const i of all) targets.set(i.session.name, i);
+  if (targets.size === 0) {
     vscode.window.showErrorMessage('Use the star on a session row in the sidebar.');
     return;
   }
-  const name = item.session.name;
-  const parsed = parseSessionName(name, getConfig().sessionPrefix);
-  if (!parsed) return;
-  index.setSessionFavorite(parsed.hash, name, favorite);
+  const prefix = getConfig().sessionPrefix;
+  for (const name of targets.keys()) {
+    const parsed = parseSessionName(name, prefix);
+    if (parsed) index.setSessionFavorite(parsed.hash, name, favorite);
+  }
   refreshSidebar();
+}
+
+/** Terminal-tab variant: one entry that flips the star for the clicked tab.
+ *  The tab menus have no per-tab state for `when` clauses (only the ACTIVE
+ *  terminal can drive a context key, which would mislabel right-clicks on
+ *  inactive tabs), so a single always-correct toggle beats an Add/Remove pair. */
+async function cmdToggleFavorite(
+  index: SessionIndex,
+  item: SessionTreeItem | vscode.Terminal | undefined,
+): Promise<void> {
+  const cfg = getConfig();
+  const name = await resolveSessionNameFromInvocation(item, index, cfg.sessionPrefix);
+  if (!name) {
+    vscode.window.showErrorMessage('Not a Terminal Sessions tab.');
+    return;
+  }
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
+  if (!parsed) return;
+  const next = !index.isSessionFavorite(parsed.hash, name);
+  index.setSessionFavorite(parsed.hash, name, next);
+  refreshSidebar();
+  const label = index.getSessionMeta(parsed.hash, name)?.label || name;
+  vscode.window.showInformationMessage(
+    next ? `★ ${label} added to Favorites.` : `${label} removed from Favorites.`,
+  );
 }
 
 /** Toggle the per-session Kill lock. When locked, the sidebar hides the Kill
@@ -843,6 +940,37 @@ async function cmdPickFilterMode(): Promise<void> {
  * for stop/restart, silently targeting a different session than the one the user
  * right-clicked would be destructive.
  */
+/** Expand a context-menu invocation into unique session-row targets when a
+ *  real multi-selection exists (2+ session rows; mirror rows in the pinned
+ *  folders dedup by session name). Returns undefined for a single row so the
+ *  command's own resolution path (clicked row / terminal / quick pick) runs
+ *  unchanged. */
+function selectionTargets(selection: vscode.TreeItem[] | undefined): SessionTreeItem[] | undefined {
+  const rows = (selection ?? []).filter((i): i is SessionTreeItem => i instanceof SessionTreeItem);
+  if (rows.length < 2) return undefined;
+  const seen = new Map<string, SessionTreeItem>();
+  for (const r of rows) if (!seen.has(r.session.name)) seen.set(r.session.name, r);
+  return [...seen.values()];
+}
+
+/** Apply a per-session index mutation over a multi-selection, then refresh
+ *  once and report once. Backs the simple bulk actions (mute, lock, icon,
+ *  color, group) where the operation itself cannot fail per session. */
+function bulkApply(
+  rows: SessionTreeItem[],
+  apply: (hash: string, name: string) => void,
+  doneMsg: (n: number) => string,
+): void {
+  const prefix = getConfig().sessionPrefix;
+  let n = 0;
+  for (const r of rows) {
+    const parsed = parseSessionName(r.session.name, prefix);
+    if (parsed) { apply(parsed.hash, r.session.name); n++; }
+  }
+  refreshSidebar();
+  if (n > 0) vscode.window.showInformationMessage(doneMsg(n));
+}
+
 async function resolveSessionNameFromInvocation(
   arg: SessionTreeItem | vscode.Terminal | undefined,
   index: SessionIndex,
@@ -1956,29 +2084,38 @@ async function cmdDeleteGroup(index: SessionIndex, item?: GroupTreeItem): Promis
   refreshSidebar();
 }
 
-async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem, selection?: vscode.TreeItem[]): Promise<void> {
   if (!item) return;
   const hash = item.session.workspaceHash;
+  // Bulk: pick the destination once, move the whole selection. Groups are
+  // workspace-scoped, so rows from other workspaces are left alone.
+  const many = selectionTargets(selection)?.filter(r => r.session.workspaceHash === hash);
+  const targets = many && many.length > 1 ? many : [item];
   const groups = index.getGroups(hash);
   // `action` instead of `kind` — `kind` collides with QuickPickItem.kind
   // (QuickPickItemKind.Separator etc.) and breaks the type extension.
   interface Pick extends vscode.QuickPickItem { action: 'group' | 'new' | 'remove'; groupId?: string }
   const picks: Pick[] = [];
   for (const [gid, g] of Object.entries(groups)) {
-    if (item.session.groupId === gid) continue; // already in this group
+    // Single-target: hide the group it's already in. Multi: offer everything —
+    // members already there just stay put.
+    if (targets.length === 1 && targets[0].session.groupId === gid) continue;
     if (g.kind === 'master') continue; // masters hold only groups; a session moved
     // into one would render nowhere and vanish from the sidebar (drag-drop already
     // rejects this; the picker must too).
     picks.push({ action: 'group', groupId: gid, label: `$(folder-library) ${g.name}` });
   }
   picks.push({ action: 'new', label: '$(add) New group...' });
-  if (item.session.groupId) {
+  if (targets.some(t => t.session.groupId)) {
     picks.push({ action: 'remove', label: '$(circle-slash) Remove from group (move to root)' });
   }
   const pick = await vscode.window.showQuickPick<Pick>(picks, {
-    placeHolder: `Move "${item.session.label || item.session.name}" to:`,
+    placeHolder: targets.length > 1
+      ? `Move ${targets.length} sessions to:`
+      : `Move "${item.session.label || item.session.name}" to:`,
   });
   if (!pick) return;
+  let destGroupId: string | undefined;
   if (pick.action === 'new') {
     const name = await vscode.window.showInputBox({
       prompt: 'New group name',
@@ -1986,12 +2123,12 @@ async function cmdMoveSessionToGroup(index: SessionIndex, item?: SessionTreeItem
     });
     if (!name) return;
     const gid = index.createGroup(hash, name);
-    if (gid) index.setSessionGroup(hash, item.session.name, gid);
-  } else if (pick.action === 'remove') {
-    index.setSessionGroup(hash, item.session.name, undefined);
+    if (!gid) return;
+    destGroupId = gid;
   } else if (pick.action === 'group' && pick.groupId) {
-    index.setSessionGroup(hash, item.session.name, pick.groupId);
-  }
+    destGroupId = pick.groupId;
+  } // 'remove' leaves destGroupId undefined → move to root
+  for (const t of targets) index.setSessionGroup(hash, t.session.name, destGroupId);
   refreshSidebar();
 }
 
@@ -2511,6 +2648,39 @@ async function cmdKill(
   refreshSidebar();
 }
 
+/** Bulk Kill over a multi-selection: one aggregate confirmation, then each
+ *  session goes to the graveyard exactly like a single Kill. Locked rows are
+ *  skipped (and said so), never silently killed. */
+async function cmdKillMany(index: SessionIndex, rows: SessionTreeItem[]): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  const targets: { hash: string; name: string }[] = [];
+  let lockedSkipped = 0;
+  for (const r of rows) {
+    const parsed = parseSessionName(r.session.name, cfg.sessionPrefix);
+    if (!parsed) continue;
+    if (index.isSessionLocked(parsed.hash, r.session.name)) { lockedSkipped++; continue; }
+    targets.push({ hash: parsed.hash, name: r.session.name });
+  }
+  if (targets.length === 0) {
+    if (lockedSkipped > 0) vscode.window.showWarningMessage('All selected sessions are locked. Unlock them first to kill.');
+    return;
+  }
+  const lockedNote = lockedSkipped > 0 ? `\n\n${lockedSkipped} locked session(s) will be kept.` : '';
+  const confirm = await vscode.window.showWarningMessage(
+    `Kill ${targets.length} sessions? All processes inside them will terminate.${lockedNote}`,
+    { modal: true }, 'Kill All',
+  );
+  if (confirm !== 'Kill All') return;
+  for (const t of targets) {
+    // eslint-disable-next-line no-await-in-loop
+    try { await tmux.killSession(tmuxPath, t.name); } catch { /* already dead — still remove below */ }
+    index.removeSession(t.hash, t.name, cfg.killedLimit);
+  }
+  refreshSidebar();
+}
+
 /** Kill a session AND permanently delete its conversations' on-disk data
  *  (transcripts, sidecar dirs, todos, scratchpads) across every agent. The
  *  session is hard-removed from the index — no graveyard entry, since Restore
@@ -2540,26 +2710,7 @@ async function cmdKillDelete(
     );
     return;
   }
-  // Ownership guards: a conversation is only deletable when THIS session is
-  // its strongest claimant in the index and no other live pane is running it.
-  const owners = ws
-    ? index.conversationOwners(parsed.hash, Object.keys(ws.sessions))
-    : new Map<string, string>();
-  const shouldSkip = (agent: AgentId, id: string): string | undefined => {
-    if (claudeTracker.isConversationTaken(id, name)) return 'live in another session';
-    const owner = owners.get(`${agent} ${id}`);
-    if (owner && owner !== name) return `used by ${owner}`;
-    return undefined;
-  };
-  const cwd = meta?.folderPath || ws?.path || '';
-  const plan = meta
-    ? planTrash(
-      meta,
-      cwd,
-      (agent, id, c) => registry.getProvider(agent)?.resolveTranscriptPath(id, c),
-      shouldSkip,
-    )
-    : { targets: [], skipped: [], totalBytes: 0, fileCount: 0 };
+  const plan = buildTrashPlan(index, claudeTracker, registry, parsed.hash, name);
   const convCount = plan.targets.length;
   const skippedNote = plan.skipped.length > 0
     ? `\n${plan.skipped.length} conversation(s) will be kept — still used by other sessions.`
@@ -2588,17 +2739,153 @@ async function cmdKillDelete(
   }
 }
 
+/** Ownership-guarded deletion plan for one session's conversations — shared by
+ *  the single and bulk Kill & Delete paths. A conversation is only deletable
+ *  when THIS session is its strongest claimant in the index and no other live
+ *  pane is running it. */
+function buildTrashPlan(
+  index: SessionIndex,
+  claudeTracker: ClaudeTracker,
+  registry: AgentRegistry,
+  hash: string,
+  name: string,
+): ReturnType<typeof planTrash> {
+  const ws = index.getWorkspace(hash);
+  const meta = ws?.sessions[name];
+  const owners = ws
+    ? index.conversationOwners(hash, Object.keys(ws.sessions))
+    : new Map<string, string>();
+  const shouldSkip = (agent: AgentId, id: string): string | undefined => {
+    if (claudeTracker.isConversationTaken(id, name)) return 'live in another session';
+    const owner = owners.get(`${agent} ${id}`);
+    if (owner && owner !== name) return `used by ${owner}`;
+    return undefined;
+  };
+  const cwd = meta?.folderPath || ws?.path || '';
+  return meta
+    ? planTrash(
+      meta,
+      cwd,
+      (agent, id, c) => registry.getProvider(agent)?.resolveTranscriptPath(id, c),
+      shouldSkip,
+    )
+    : { targets: [], skipped: [], totalBytes: 0, fileCount: 0 };
+}
+
+/** Bulk Kill & Delete Data: per-session ownership-guarded plans, ONE aggregate
+ *  confirmation with the combined size, then each session is killed and
+ *  hard-removed exactly like the single-session path. Locked rows are skipped.
+ *  Plans are re-validated path-by-path at execute time (see executeTrash), so
+ *  a stale plan can refuse, never mis-delete. */
+async function cmdKillDeleteMany(
+  index: SessionIndex,
+  claudeTracker: ClaudeTracker,
+  registry: AgentRegistry,
+  rows: SessionTreeItem[],
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  interface Target { hash: string; name: string; plan: ReturnType<typeof planTrash> }
+  const targets: Target[] = [];
+  let lockedSkipped = 0;
+  for (const r of rows) {
+    const parsed = parseSessionName(r.session.name, cfg.sessionPrefix);
+    if (!parsed) continue;
+    if (index.isSessionLocked(parsed.hash, r.session.name)) { lockedSkipped++; continue; }
+    targets.push({
+      hash: parsed.hash,
+      name: r.session.name,
+      plan: buildTrashPlan(index, claudeTracker, registry, parsed.hash, r.session.name),
+    });
+  }
+  if (targets.length === 0) {
+    if (lockedSkipped > 0) vscode.window.showWarningMessage('All selected sessions are locked. Unlock them first.');
+    return;
+  }
+  const convCount = targets.reduce((a, t) => a + t.plan.targets.length, 0);
+  const fileCount = targets.reduce((a, t) => a + t.plan.fileCount, 0);
+  const totalBytes = targets.reduce((a, t) => a + t.plan.totalBytes, 0);
+  const keptCount = targets.reduce((a, t) => a + t.plan.skipped.length, 0);
+  const notes = [
+    keptCount > 0 ? `${keptCount} conversation(s) will be kept — still used by other sessions.` : '',
+    lockedSkipped > 0 ? `${lockedSkipped} locked session(s) will be kept.` : '',
+  ].filter(Boolean).join('\n');
+  const detail = convCount > 0
+    ? `Deletes ${convCount} conversation(s), ${fileCount} file(s), ${formatBytes(totalBytes)} from disk.${notes ? `\n${notes}` : ''}`
+    : `No conversation data found on disk.${notes ? `\n${notes}` : ''}`;
+  const confirm = await vscode.window.showWarningMessage(
+    `Kill ${targets.length} sessions and permanently delete their data?\n\n${detail}\n\nThis cannot be undone. The sessions will NOT appear in Killed Sessions.`,
+    { modal: true }, 'Delete Data & Kill All',
+  );
+  if (confirm !== 'Delete Data & Kill All') return;
+  let freed = 0;
+  let deleted = 0;
+  const failures: string[] = [];
+  for (const t of targets) {
+    // eslint-disable-next-line no-await-in-loop
+    try { await tmux.killSession(tmuxPath, t.name); } catch { /* already dead */ }
+    claudeTracker.forgetSession(t.name);
+    const result = executeTrash(t.plan);
+    freed += result.freedBytes;
+    deleted += result.deletedPaths;
+    failures.push(...result.failures);
+    index.removeSession(t.hash, t.name, 0); // cap 0 = hard delete, no graveyard
+  }
+  refreshSidebar();
+  if (failures.length > 0) {
+    vscode.window.showWarningMessage(
+      `${targets.length} sessions killed; freed ${formatBytes(freed)}, but ${failures.length} item(s) could not be deleted: ${failures[0]}`,
+    );
+  } else if (deleted > 0) {
+    vscode.window.showInformationMessage(
+      `${targets.length} sessions killed. Deleted ${deleted} item(s), freed ${formatBytes(freed)}.`,
+    );
+  }
+}
+
+/** Bulk Restart: one aggregate confirmation, then each selected session is
+ *  relaunched with its own preserved flags and resumed conversation, exactly
+ *  like a single Restart (whose per-session modal is what the aggregate
+ *  confirmation replaces). */
+async function cmdRestartMany(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  rows: SessionTreeItem[],
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const confirm = await vscode.window.showWarningMessage(
+    `Restart ${rows.length} sessions?\n\nKills each tmux session (any running program in it, including Claude Code) and recreates it with the same name, workspace, icon, and color; detected agent conversations auto-resume.`,
+    { modal: true }, 'Restart All',
+  );
+  if (confirm !== 'Restart All') return;
+  for (const r of rows) {
+    // eslint-disable-next-line no-await-in-loop
+    const target = await resolveRelaunchTarget(tmuxPath, index, registry, claudeTracker, r, '');
+    if (!target) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await relaunchSession(
+      tmuxPath, target, index, claudeTracker,
+      () => index.getResumeFlags(target.hash, target.name, target.provider.id),
+      'Restart',
+    );
+  }
+}
+
 /** Mirror the special-folder settings into context keys so the view's ⋯
  *  menu shows exactly one of Enable/Disable per folder. Called at activation
  *  and whenever the settings change (incl. edits in the Settings UI). */
 export async function syncSpecialFolderContexts(): Promise<void> {
   const cfg = getConfig();
   await vscode.commands.executeCommand('setContext', 'terminalSessions.favoritesFolderEnabled', cfg.showFavoritesFolder);
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.openFolderEnabled', cfg.showOpenFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.activityFolderEnabled', cfg.showActivityFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
 }
 
-async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
+async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showOpenFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
   // Write to the scope that currently defines the value: a workspace override
   // would shadow a Global write and make the toggle appear dead.
@@ -2811,15 +3098,26 @@ const COLOR_CHOICES: { label: string; id: string }[] = [
   { label: '$(circle-filled) Bright Cyan',    id: 'terminal.ansiBrightCyan' },
 ];
 
-async function cmdSetIcon(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+async function cmdSetIcon(index: SessionIndex, item?: SessionTreeItem, selection?: vscode.TreeItem[]): Promise<void> {
   if (!item) {
     vscode.window.showInformationMessage('Right-click a session in the sidebar to set its icon.');
     return;
   }
+  const many = selectionTargets(selection);
   interface IconPick extends vscode.QuickPickItem { iconId: string }
   const picks: IconPick[] = ICON_CHOICES.map(c => ({ label: c.label, description: c.desc, iconId: c.id }));
-  const pick = await vscode.window.showQuickPick<IconPick>(picks, { placeHolder: 'Pick an icon for this session' });
+  const pick = await vscode.window.showQuickPick<IconPick>(picks, {
+    placeHolder: many ? `Pick an icon for ${many.length} sessions` : 'Pick an icon for this session',
+  });
   if (!pick) return;
+  if (many) {
+    bulkApply(
+      many,
+      (hash, name) => index.setSessionIcon(hash, name, pick.iconId || undefined),
+      n => `Icon ${pick.iconId ? `set to "${pick.iconId}"` : 'cleared'} on ${n} sessions. Will apply on next attach/create.`,
+    );
+    return;
+  }
   index.setSessionIcon(item.session.workspaceHash, item.session.name, pick.iconId || undefined);
   refreshSidebar();
   vscode.window.showInformationMessage(
@@ -2827,15 +3125,26 @@ async function cmdSetIcon(index: SessionIndex, item?: SessionTreeItem): Promise<
   );
 }
 
-async function cmdSetColor(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+async function cmdSetColor(index: SessionIndex, item?: SessionTreeItem, selection?: vscode.TreeItem[]): Promise<void> {
   if (!item) {
     vscode.window.showInformationMessage('Right-click a session in the sidebar to set its color.');
     return;
   }
+  const many = selectionTargets(selection);
   interface ColorPick extends vscode.QuickPickItem { colorId: string }
   const picks: ColorPick[] = COLOR_CHOICES.map(c => ({ label: c.label, colorId: c.id }));
-  const pick = await vscode.window.showQuickPick<ColorPick>(picks, { placeHolder: 'Pick a color for this session' });
+  const pick = await vscode.window.showQuickPick<ColorPick>(picks, {
+    placeHolder: many ? `Pick a color for ${many.length} sessions` : 'Pick a color for this session',
+  });
   if (!pick) return;
+  if (many) {
+    bulkApply(
+      many,
+      (hash, name) => index.setSessionColor(hash, name, pick.colorId || undefined),
+      n => `Color ${pick.colorId ? `set to "${pick.colorId}"` : 'cleared'} on ${n} sessions. Will apply on next attach/create.`,
+    );
+    return;
+  }
   index.setSessionColor(item.session.workspaceHash, item.session.name, pick.colorId || undefined);
   refreshSidebar();
   vscode.window.showInformationMessage(

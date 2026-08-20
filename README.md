@@ -89,7 +89,8 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Custom icon & color per session** — pick from codicons (robot, rocket, flame, database, server, bug, etc.) and ANSI colors; applied to the terminal tab icon and sidebar
 - **Restart session** (with agent auto-resume) — kill the current tmux session (any program in it, incl. Claude Code) and respawn a fresh shell; keeps the label, icon, color, and workspace. If Claude was running, the extension auto-detects its session ID, verifies the transcript is still on disk, and runs `claude --resume <id>` in the new shell. Conversation context survives, Ink renderer state is clean
 - **Smart click behavior** — clicking a session that's already attached focuses its existing terminal tab instead of opening a duplicate
-- **Right-click context menu** on sidebar items — View Conversation, Restart, Stop/Start, Rename, Icon, Color, Mute notifications, Lock/Unlock, Kill
+- **Right-click context menu** on sidebar items — Add/Remove Favorites, View Conversation, Restart, Stop/Start, Move to Group, Rename, Icon, Color, Mute notifications, Lock/Unlock, Kill, Kill & Delete Data
+- **Multi-select + bulk actions** — Cmd/Ctrl- or Shift-click several session rows, then right-click: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock and Add/Remove Favorites all apply to the whole selection. Destructive ones ask once for the batch (Kill & Delete Data shows the combined size); locked rows are always kept; the YOLO switch stays per-session on purpose
 - **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name, not the workspace root
 
 ### Sidebar sort modes
@@ -99,11 +100,12 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Alphabetical** — by session label
 - Toggle via the `$(list-ordered)` icon in the sidebar title bar; dragging automatically switches to Custom
 
-### Favorite, Recent & Killed sessions (pinned folders)
-- **Favorite Sessions** — star any session with the ☆ button on its row (hover; one click to add, one to remove — the button becomes a filled star on starred rows, and a `★` shows in the row description). Starred sessions appear in a pinned **Favorite Sessions** folder above Recent Sessions. Rows mirror the real sessions — every action works. Hidden while empty
+### Favorite, Open, Recent & Killed sessions (pinned folders)
+- **Favorite Sessions** — star any session with the ☆ button on its row (hover; one click to add, one to remove — the button becomes a filled star on starred rows, and a `★` shows in the row description). Starred sessions appear in a pinned **Favorite Sessions** folder above Recent Sessions. Rows mirror the real sessions — every action works. Hidden while empty. Also available from a terminal tab's right-click menu (**Add/Remove Favorite**), and multi-select in the sidebar stars several sessions at once
+- **Open Sessions** — a pinned folder listing the sessions currently open as terminal tabs in this window, in tab order. Tabs restored by a window reload (the ⚠ disconnected ones) are included too — their session is recovered from the live process. Hidden while empty
 - **Recent Sessions** — a pinned virtual folder at the top of each workspace with a flat, group-free list of sessions ordered by recency: running ones first (most recently active on top), then stopped ones by when they were stopped. Rows are ordinary session rows — every action (Start, Restart, View Conversation, …) works — and mirror the sessions in their groups below, so it's a shortcut, not a move. Capped at 50 (`terminalSessions.activityLimit`)
 - **Killed Sessions** — killing a session no longer deletes it: the entry (label, folder, resume flags, full conversation history) moves into a per-workspace graveyard, so Kill is reversible. Right-click a killed row → **Restore Session** recreates it under a fresh tab id and resumes its conversation. Also available from the Command Palette — the only way back when a workspace's last session was killed. Keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) aren't kept, and the folder hides while empty. To kill *without* keeping anything — and free the disk space too — use **Kill & Delete Data…** instead
-- **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showFavoritesFolder` / `showActivityFolder` / `showKilledFolder` settings. All default to on
+- **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showFavoritesFolder` / `showOpenFolder` / `showActivityFolder` / `showKilledFolder` settings. All default to on
 
 ### YOLO mode switch (auto-approve)
 - **Switch to YOLO Mode / Switch to Normal Mode** — right-click a session to relaunch its agent with (or without) auto-approve flags, continuing the **same conversation**: `--dangerously-skip-permissions` for Claude, `--yolo` for Codex/Antigravity, the equivalent for Grok. The flag set is per-agent and allowlisted, so nothing else about the launch command changes
@@ -328,8 +330,10 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
 | Right-click on sidebar session → `Switch to YOLO Mode` / `Switch to Normal Mode` | Relaunch the same conversation with (or without) the agent's auto-approve flags; 🚨 chip marks YOLO sessions |
 | Right-click on killed row (or Command Palette) → `Restore Session` | Bring a killed session back from the graveyard and resume its conversation |
-| ☆ / ★ button on a session row | Add/remove the session from **Favorite Sessions** (one click, toggles) |
-| View `⋯` menu / folder right-click → `Enable/Disable Favorite Sessions Folder`, `Enable/Disable Recent Sessions Folder`, `Enable/Disable Killed Sessions Folder` | Toggle the pinned virtual folders |
+| ☆ / ★ button on a session row | Add/remove the session from **Favorite Sessions** (one click, toggles; with multi-select, applies to every selected row) |
+| Multi-select (Cmd/Ctrl- or Shift-click) + right-click | Bulk actions on the whole selection: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock, Add/Remove Favorites (destructive ones confirm once for the batch; YOLO switch stays per-session) |
+| Right-click on a terminal tab → `Add/Remove Favorite` | Toggle the star for that tab's session |
+| View `⋯` menu / folder right-click → `Enable/Disable Favorite Sessions Folder`, `Enable/Disable Open Sessions Folder`, `Enable/Disable Recent Sessions Folder`, `Enable/Disable Killed Sessions Folder` | Toggle the pinned virtual folders |
 | Right-click on sidebar session → `Copy Last Conversation ID` / `Copy Last Conversation Path` | Clipboard the agent conversation's UUID or the full path to its transcript `.jsonl` |
 | Right-click on sidebar session → `Reveal Session Folder` | Open the session's working directory in Finder/Explorer |
 | Right-click on sidebar session → `Fork Conversation (new parallel branch)` | Continue the same Claude conversation on an independent branch in a new session |
@@ -370,6 +374,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.sidebarSortMode` | `"created"` | `custom`, `mru`, `created`, or `alphabetical` |
 | `terminalSessions.sidebarFilterMode` | `"all"` | Filter sidebar by state: `all`, `running`, or `stopped` |
 | `terminalSessions.showFavoritesFolder` | `true` | Show the pinned **Favorite Sessions** folder (starred sessions); hidden while empty |
+| `terminalSessions.showOpenFolder` | `true` | Show the pinned **Open Sessions** folder (terminal tabs open in this window, in tab order); hidden while empty |
 | `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
 | `terminalSessions.activityLimit` | `50` | Max sessions listed in Recent Sessions |

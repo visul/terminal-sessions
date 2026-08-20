@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, buildClaudeDetails } from './items';
+import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
 
@@ -263,18 +264,55 @@ class SessionsTreeProvider
   }
 
   /** The pinned virtual folders at the top of a workspace: Favorites (starred
-   *  sessions), Sessions Activity (flat recency list) and Sessions Killed
-   *  (graveyard). Each is gated by its setting; Favorites and Killed also hide
-   *  while empty. */
-  private specialFolders(
+   *  sessions), Open (terminal tabs in this window), Sessions Activity (flat
+   *  recency list) and Sessions Killed (graveyard). Each is gated by its
+   *  setting; all but Activity also hide while empty. */
+  /** Terminal → tmux-name results from the PID walk, keyed by terminal object
+   *  (a reattach disposes the old terminal, so entries die with their tab).
+   *  Successes are permanent for that object; misses are retried at most every
+   *  15s — the sidebar refreshes often and a `ps` walk per ghost tab per
+   *  refresh would add up, but a tmux client can also appear a moment after a
+   *  reload while the pty host reconnects. */
+  private openNameCache = new WeakMap<vscode.Terminal, { name?: string; at: number }>();
+
+  private async resolveOpenName(t: vscode.Terminal): Promise<string | undefined> {
+    const hit = this.openNameCache.get(t);
+    if (hit && (hit.name !== undefined || Date.now() - hit.at < 15_000)) return hit.name;
+    const cfg = getConfig();
+    let name: string | undefined;
+    try { name = await resolveTmuxNameForTerminalLive(t, this.index, cfg.sessionPrefix); }
+    catch { name = undefined; }
+    this.openNameCache.set(t, { name, at: Date.now() });
+    return name;
+  }
+
+  private async specialFolders(
     hash: string,
     allWsSessions: SessionInfo[],
     cfg: ReturnType<typeof getConfig>,
-  ): vscode.TreeItem[] {
+  ): Promise<vscode.TreeItem[]> {
     const out: vscode.TreeItem[] = [];
     if (cfg.showFavoritesFolder) {
       const favs = activityOrder(allWsSessions.filter(s => s.favorite));
       if (favs.length > 0) out.push(new FavoritesFolderItem(hash, favs));
+    }
+    if (cfg.showOpenFolder) {
+      // Sessions with a terminal tab open in THIS window, in panel order.
+      const pos = new Map<string, number>();
+      for (const t of vscode.window.terminals) {
+        if (t.exitStatus) continue;
+        // Cheap sync mapping first (shellArgs of tabs we created). Tabs
+        // restored by a window reload lose their creationOptions, so they
+        // fall back to the PID walk (tmux client is still alive under the
+        // pty host) — cached per terminal object, see resolveOpenName.
+        // eslint-disable-next-line no-await-in-loop
+        const n = sessionNameForTerminal(t) ?? await this.resolveOpenName(t);
+        if (n && !pos.has(n)) pos.set(n, pos.size);
+      }
+      const open = allWsSessions
+        .filter(s => pos.has(s.name))
+        .sort((a, b) => (pos.get(a.name)! - pos.get(b.name)!));
+      if (open.length > 0) out.push(new OpenFolderItem(hash, open));
     }
     if (cfg.showActivityFolder) {
       const list = activityOrder(allWsSessions).slice(0, Math.max(1, cfg.activityLimit));
@@ -510,7 +548,7 @@ class SessionsTreeProvider
       // sessions, all sharing one sortOrder pool (interleaved via drag-drop).
       const allWsSessions = sessions.filter(s => s.workspaceHash === el.workspaceHash);
       return [
-        ...this.specialFolders(el.workspaceHash, allWsSessions, cfg),
+        ...(await this.specialFolders(el.workspaceHash, allWsSessions, cfg)),
         ...this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg),
       ];
     }
@@ -520,6 +558,13 @@ class SessionsTreeProvider
       return el.sessions.map(s => {
         const item = this.makeSessionItem(s, cfg, false, false);
         item.id = `fav:${item.id}`;
+        return item;
+      });
+    }
+    if (el instanceof OpenFolderItem) {
+      return el.sessions.map(s => {
+        const item = this.makeSessionItem(s, cfg, false, false);
+        item.id = `open:${item.id}`;
         return item;
       });
     }
@@ -867,6 +912,10 @@ export function registerSidebar(
     treeDataProvider: provider,
     showCollapseAll: false,
     dragAndDropController: provider,
+    // Multi-select: lets batch actions (Add/Remove Favorites) and drag-drop
+    // operate on several rows at once. Commands that don't understand a
+    // selection keep acting on the clicked row only.
+    canSelectMany: true,
   });
   ctx.subscriptions.push(treeView);
   ctx.subscriptions.push(
