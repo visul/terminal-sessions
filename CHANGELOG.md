@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.35] — 2026-08-20
+
+### Changed
+- **Marketplace listing.** Now listed under the **AI** category (plus Other) with keywords for all four agents — Claude, Codex, Antigravity, Grok — so it shows up where people look for agent tooling. No functional change.
+
 ## [0.20.34] — 2026-08-20
 
 ### Added
