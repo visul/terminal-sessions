@@ -263,6 +263,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem) => cmdSetSessionMuted(index, item, false)),
+    vscode.commands.registerCommand(COMMAND.favoriteOn, (item?: SessionTreeItem) => cmdSetSessionFavorite(index, item, true)),
+    vscode.commands.registerCommand(COMMAND.favoriteOff, (item?: SessionTreeItem) => cmdSetSessionFavorite(index, item, false)),
     vscode.commands.registerCommand(COMMAND.lockSession, (item?: SessionTreeItem | vscode.Terminal) => cmdSetSessionLocked(index, item, true)),
     vscode.commands.registerCommand(COMMAND.unlockSession, (item?: SessionTreeItem | vscode.Terminal) => cmdSetSessionLocked(index, item, false)),
     vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
@@ -287,6 +289,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
     vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem) => cmdCopySessionPath(index, registry, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
+    vscode.commands.registerCommand(COMMAND.enableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', true)),
+    vscode.commands.registerCommand(COMMAND.disableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', true)),
@@ -508,6 +512,26 @@ async function cmdSetSessionMuted(
   vscode.window.showInformationMessage(
     `${item.session.label || name}: notifications ${muted ? 'muted' : 'unmuted'}.`,
   );
+}
+
+/** Toggle the favorite star. Persisted in the index; drives the .fav
+ *  contextValue token (which star action shows), the ★ description hint and
+ *  membership in the Favorite Sessions folder. Works from mirror rows in the
+ *  special folders too — they are ordinary SessionTreeItems. */
+async function cmdSetSessionFavorite(
+  index: SessionIndex,
+  item: SessionTreeItem | undefined,
+  favorite: boolean,
+): Promise<void> {
+  if (!item) {
+    vscode.window.showErrorMessage('Use the star on a session row in the sidebar.');
+    return;
+  }
+  const name = item.session.name;
+  const parsed = parseSessionName(name, getConfig().sessionPrefix);
+  if (!parsed) return;
+  index.setSessionFavorite(parsed.hash, name, favorite);
+  refreshSidebar();
 }
 
 /** Toggle the per-session Kill lock. When locked, the sidebar hides the Kill
@@ -2564,16 +2588,17 @@ async function cmdKillDelete(
   }
 }
 
-/** Mirror the two special-folder settings into context keys so the view's ⋯
+/** Mirror the special-folder settings into context keys so the view's ⋯
  *  menu shows exactly one of Enable/Disable per folder. Called at activation
  *  and whenever the settings change (incl. edits in the Settings UI). */
 export async function syncSpecialFolderContexts(): Promise<void> {
   const cfg = getConfig();
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.favoritesFolderEnabled', cfg.showFavoritesFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.activityFolderEnabled', cfg.showActivityFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
 }
 
-async function cmdSetSpecialFolder(key: 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
+async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
   // Write to the scope that currently defines the value: a workspace override
   // would shadow a Global write and make the toggle appear dead.

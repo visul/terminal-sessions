@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, buildClaudeDetails } from './items';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
 
@@ -262,15 +262,20 @@ class SessionsTreeProvider
     return item;
   }
 
-  /** The two pinned virtual folders at the top of a workspace: Sessions
-   *  Activity (flat recency list) and Sessions Killed (graveyard). Each is
-   *  gated by its setting; Killed also hides while empty. */
+  /** The pinned virtual folders at the top of a workspace: Favorites (starred
+   *  sessions), Sessions Activity (flat recency list) and Sessions Killed
+   *  (graveyard). Each is gated by its setting; Favorites and Killed also hide
+   *  while empty. */
   private specialFolders(
     hash: string,
     allWsSessions: SessionInfo[],
     cfg: ReturnType<typeof getConfig>,
   ): vscode.TreeItem[] {
     const out: vscode.TreeItem[] = [];
+    if (cfg.showFavoritesFolder) {
+      const favs = activityOrder(allWsSessions.filter(s => s.favorite));
+      if (favs.length > 0) out.push(new FavoritesFolderItem(hash, favs));
+    }
     if (cfg.showActivityFolder) {
       const list = activityOrder(allWsSessions).slice(0, Math.max(1, cfg.activityLimit));
       out.push(new ActivityFolderItem(hash, list));
@@ -508,6 +513,15 @@ class SessionsTreeProvider
         ...this.specialFolders(el.workspaceHash, allWsSessions, cfg),
         ...this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg),
       ];
+    }
+    if (el instanceof FavoritesFolderItem) {
+      // Mirror rows, same rules as the Activity folder below: full actions,
+      // uncached, distinct id prefix so the tree never sees a duplicate id.
+      return el.sessions.map(s => {
+        const item = this.makeSessionItem(s, cfg, false, false);
+        item.id = `fav:${item.id}`;
+        return item;
+      });
     }
     if (el instanceof ActivityFolderItem) {
       // Flat recency list. Rows are ordinary SessionTreeItems so every action

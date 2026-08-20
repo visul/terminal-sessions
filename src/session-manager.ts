@@ -185,6 +185,19 @@ export class SessionIndex {
     return this.data.workspaces[hash]?.sessions[sessionName]?.muted === true;
   }
 
+  setSessionFavorite(hash: string, sessionName: string, favorite: boolean): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (favorite) ws.sessions[sessionName].favorite = true;
+    else delete ws.sessions[sessionName].favorite;
+    this.save();
+  }
+
+  isSessionFavorite(hash: string, sessionName: string): boolean {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.favorite === true;
+  }
+
   setSessionLocked(hash: string, sessionName: string, locked: boolean): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
@@ -907,6 +920,7 @@ export async function enrichSessions(
       sortOrder: meta?.sortOrder,
       attached: row.attached,
       muted: meta?.muted,
+      favorite: meta?.favorite,
       locked: meta?.locked,
       stopped: false,
       groupId: meta?.groupId,
@@ -961,6 +975,7 @@ export async function enrichSessions(
         sortOrder: meta.sortOrder,
         attached: false,
         muted: meta.muted,
+        favorite: meta.favorite,
         locked: meta.locked,
         stopped: true,
         stoppedAt: meta.stoppedAt ? new Date(meta.stoppedAt) : undefined,

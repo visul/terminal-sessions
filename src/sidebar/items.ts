@@ -262,7 +262,11 @@ export class SessionTreeItem extends vscode.TreeItem {
     // Stopped session: muted icon + greyed label via FileDecorationProvider,
     // single-click row to start, no Claude details (process is dead).
     if (session.stopped) {
-      this.contextValue = session.locked ? 'session.stopped.locked' : 'session.stopped';
+      // Stopped scheme: session.stopped(.fav)?(.locked)? — fav first, matching
+      // the running rows where .fav directly follows the base token.
+      this.contextValue = 'session.stopped'
+        + (session.favorite ? '.fav' : '')
+        + (session.locked ? '.locked' : '');
       this.iconPath = new vscode.ThemeIcon(
         'debug-stop',
         new vscode.ThemeColor('disabledForeground'),
@@ -271,7 +275,7 @@ export class SessionTreeItem extends vscode.TreeItem {
       // A stopped session still carries the flags Start will relaunch with, so a
       // yolo one must say so BEFORE the click — clicking this row runs Start
       // directly, with no confirmation anywhere on that path.
-      this.description = `stopped · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
+      this.description = `${session.favorite ? '★ ' : ''}stopped · idle ${ageHint}${session.locked ? ' · 🔒' : ''}`
         + (session.yolo ? ' · 🚨' : '');
       this.collapsibleState = vscode.TreeItemCollapsibleState.None;
       this.resourceUri = vscode.Uri.parse(
@@ -308,9 +312,9 @@ export class SessionTreeItem extends vscode.TreeItem {
       return;
     }
     // contextValue drives view/item/context menus. Flags are appended in a FIXED
-    // order — muted, forkable, branched, locked, yolo — so menu `when` regexes
-    // can match any combination, e.g. "session", "session.muted",
-    // "session.forkable", "session.muted.forkable.branched.locked.yoloOn".
+    // order — fav, muted, forkable, branched, locked, yolo — so menu `when`
+    // regexes can match any combination, e.g. "session", "session.fav",
+    // "session.muted", "session.fav.muted.forkable.branched.locked.yoloOn".
     // Any change to this order requires updating every session `when` regex in
     // package.json (they are anchored). `forkable` = latest agent supports fork
     // (Claude), gating the Fork command; `branched` = in a branch set, gating
@@ -320,6 +324,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     // token rather than two keeps the other regexes to a single extra group.
     // Stopped rows use a separate scheme and carry none of these.
     let cv = 'session';
+    if (session.favorite) cv += '.fav';
     if (session.muted) cv += '.muted';
     if (session.forkable) cv += '.forkable';
     if (session.branchSetId) cv += '.branched';
@@ -343,6 +348,9 @@ export class SessionTreeItem extends vscode.TreeItem {
 
     // Attached state is now encoded in the icon (filled vs outline) instead
     // of a trailing " · attached" text, which was just noise on every row.
+    // ★ leads the description so the favorite state is visible at rest — the
+    // inline star action itself only appears on hover.
+    const favHint = session.favorite ? '★ ' : '';
     const mutedHint = session.muted ? ' · 🔕' : '';
     const lockHint = session.locked ? ' · 🔒' : '';
     // Auto-approve sessions act without asking, so the row says so at a glance.
@@ -356,8 +364,8 @@ export class SessionTreeItem extends vscode.TreeItem {
       : undefined;
     const ageHint = humanAge(session.lastAttached);
     this.description = stateDesc
-      ? `${stateDesc}${mutedHint}${lockHint}${yoloHint}`
-      : `${ageHint}${mutedHint}${lockHint}${yoloHint}`;
+      ? `${favHint}${stateDesc}${mutedHint}${lockHint}${yoloHint}`
+      : `${favHint}${ageHint}${mutedHint}${lockHint}${yoloHint}`;
 
     const customized = Boolean(session.icon || session.color || session.label);
     const claudeIcon = claude ? STATE_ICONS[claude.state] : '';
@@ -661,6 +669,22 @@ function formatTokens(n: number): string {
  *  active on top), then stopped ones by stop time. Rows are ordinary
  *  SessionTreeItems (all actions work); they mirror sessions that also appear
  *  in their groups below, so this is a shortcut, not a move. */
+/** Pinned virtual folder "Favorite Sessions": starred sessions of the
+ *  workspace, running and stopped alike. Hidden while empty. */
+export class FavoritesFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly sessions: SessionInfo[],
+  ) {
+    super('Favorite Sessions', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `favf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('star-full', new vscode.ThemeColor('charts.yellow'));
+    this.description = String(sessions.length);
+    this.contextValue = 'favoritesFolder';
+    this.tooltip = 'Starred sessions. Click the ☆ on any session row to add or remove it. Right-click (or the view\'s ⋯ menu) to disable.';
+  }
+}
+
 export class ActivityFolderItem extends vscode.TreeItem {
   constructor(
     public readonly workspaceHash: string,

@@ -4,6 +4,14 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.33] — 2026-08-19
+
+### Added
+- **Favorite Sessions.** Star any session with the one-click ☆ button on its row (first inline action, running and stopped rows alike) — click again to unstar. Starred sessions get a `★` in their description and appear in a new pinned **Favorite Sessions** folder above Recent Sessions (mirror rows, every action works; hidden while empty). Toggle the folder via the view's `⋯` menu, right-click on the folder, or `terminalSessions.showFavoritesFolder`. The star is persisted in the session index, so it survives restarts and reboots.
+
+### Changed
+- **View Conversation is right-click only.** The inline 📖 button is gone from session rows (running and stopped) to make room for the star; the command stays in the right-click menu for every session row.
+
 ## [0.20.32] — 2026-08-19
 
 ### Fixed
