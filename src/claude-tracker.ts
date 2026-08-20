@@ -13,6 +13,7 @@ import type { AgentId, AgentProvider } from './agents/types';
 import type { AgentRegistry } from './agents/registry';
 
 import { notify, macosAlert, armToastAction } from './notifications';
+import { classifyOutcome, outcomeIsBad, outcomeLabel, type TurnOutcome } from './outcome';
 import { getConfig } from './config';
 import {
   TranscriptTailer,
@@ -62,6 +63,14 @@ export interface ClaudeSnapshot {
    *  resumed after the wait (new assistant/user activity newer than this) and
    *  clear the stuck waiting state. Cleared on Stop/UserPromptSubmit. */
   waitingSince?: Date;
+  /** How the last turn ended (only meaningful while `state` is 'idle'). */
+  outcome?: TurnOutcome;
+  /** Set while the session finished since the user last focused its terminal.
+   *  Drives the green/red/amber "unread" row look; cleared by markSeen. */
+  unread?: 'done' | 'error' | 'asked';
+  /** True when a 'waiting' state is being shown as idle because the user
+   *  dismissed it; any newer agent activity un-dismisses automatically. */
+  dismissed?: boolean;
 }
 
 interface ClaudeEvent {
@@ -158,6 +167,14 @@ export class ClaudeTracker {
   private grokPolling = false;   // re-entrancy guard: a slow poll must not stack
   private watchers: fs.FSWatcher[] = [];
   private transcript = new TranscriptTailer();
+  /** Last DERIVED state per tmux session, so getSnapshot can spot the
+   *  working→idle edge even when no Stop hook fired (transcript-only idle). */
+  private lastDerived = new Map<string, ClaudeState>();
+  /** tmux → Date.now() when the user dismissed a waiting/unread row. A waiting
+   *  state whose activity is older than this renders as idle. */
+  private dismissedAt = new Map<string, number>();
+  /** tmux session behind the currently active terminal tab (fed by extension.ts). */
+  private activeTmux?: string;
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
 
@@ -280,6 +297,8 @@ export class ClaudeTracker {
     this.snapshots.delete(tmuxSession);
     this.lastWaitingNotifyPerSession.delete(tmuxSession);
     this.flagCapTried.delete(tmuxSession);
+    this.lastDerived.delete(tmuxSession);
+    this.dismissedAt.delete(tmuxSession);
     // Stop tailing the transcript so a killed session stops doing 3s stat/parse
     // work (and holding an fs.watch) forever — but only when no OTHER tmux still
     // owns the same sessionId (ownership can transfer via resume in another tab).
@@ -291,19 +310,98 @@ export class ClaudeTracker {
     this._onChange.fire();
   }
 
-  /** Waiting/working counts for the activity-bar badge, computed only over the
-   *  tracker's live snapshot map (the only sessions that can be waiting/working)
-   *  instead of statSync-ing every session ever recorded in the index. */
-  attentionCounts(): { waiting: number; working: number } {
+  /** Waiting/working/unread counts for the activity-bar badge, computed only
+   *  over the tracker's live snapshot map (the only sessions that can be
+   *  waiting/working) instead of statSync-ing every session ever recorded. */
+  attentionCounts(): { waiting: number; working: number; unread: number } {
     let waiting = 0;
     let working = 0;
+    let unread = 0;
     for (const name of this.snapshots.keys()) {
       const snap = this.getSnapshot(name);
       if (!snap) continue;
       if (snap.state === 'waiting') waiting++;
       else if (snap.state === 'working' || snap.state === 'tool') working++;
+      if (snap.unread) unread++;
     }
-    return { waiting, working };
+    return { waiting, working, unread };
+  }
+
+  // ───────────────────────── unread / dismiss ─────────────────────────
+
+  private parsedOf(tmuxSession: string): { hash: string } | undefined {
+    return parseSessionName(tmuxSession, getConfig().sessionPrefix) ?? undefined;
+  }
+
+  /** Called by extension.ts whenever the active terminal changes. Focusing a
+   *  session's terminal is what "reads" it. */
+  setActiveTmuxSession(name: string | undefined): void {
+    this.activeTmux = name;
+    if (name && vscode.window.state.focused) this.markSeen(name);
+  }
+
+  /** Re-apply "seen" for the active tab when the window regains focus. */
+  onWindowFocused(): void {
+    if (this.activeTmux) this.markSeen(this.activeTmux);
+  }
+
+  private isLookingAt(tmuxSession: string): boolean {
+    return vscode.window.state.focused && this.activeTmux === tmuxSession;
+  }
+
+  markSeen(tmuxSession: string): void {
+    const parsed = this.parsedOf(tmuxSession);
+    if (!parsed || !this.index) return;
+    if (!this.index.getSessionUnread(parsed.hash, tmuxSession)) return;
+    this.index.setSessionUnread(parsed.hash, tmuxSession, undefined);
+    this._onChange.fire();
+  }
+
+  /** Clear every unread marker in the index (palette command). */
+  markAllSeen(): number {
+    if (!this.index) return 0;
+    let n = 0;
+    for (const name of this.snapshots.keys()) {
+      const parsed = this.parsedOf(name);
+      if (parsed && this.index.getSessionUnread(parsed.hash, name)) {
+        this.index.setSessionUnread(parsed.hash, name, undefined);
+        n++;
+      }
+    }
+    if (n) this._onChange.fire();
+    return n;
+  }
+
+  /** Silence a waiting/unread row: the unread marker is cleared and a current
+   *  'waiting' state renders as idle until the agent does something new. */
+  dismiss(tmuxSession: string): void {
+    if (this.snapshots.get(tmuxSession)?.state === 'waiting') {
+      this.dismissedAt.set(tmuxSession, Date.now());
+    }
+    this.markSeen(tmuxSession);
+    this._onChange.fire();
+  }
+
+  private unreadOf(tmuxSession: string): { kind: 'done' | 'error' | 'asked'; hint?: string } | undefined {
+    if (!getConfig().unreadBadges) return undefined; // toggle off hides existing markers too
+    const parsed = this.parsedOf(tmuxSession);
+    if (!parsed || !this.index) return undefined;
+    const u = this.index.getSessionUnread(parsed.hash, tmuxSession);
+    return u ? { kind: u.kind, hint: u.hint } : undefined;
+  }
+
+  /** A turn just ended for `tmuxSession`. Flag it unread unless the user is
+   *  looking at that very terminal right now. */
+  private noteFinished(tmuxSession: string, outcome: TurnOutcome | undefined): void {
+    if (!getConfig().unreadBadges) return;
+    if (this.isLookingAt(tmuxSession)) return;
+    const parsed = this.parsedOf(tmuxSession);
+    if (!parsed || !this.index) return;
+    const kind = outcomeIsBad(outcome) ? 'error' : outcome?.kind === 'asked-user' ? 'asked' : 'done';
+    const hint = outcome?.kind === 'ok' ? undefined : outcome?.hint;
+    this.index.setSessionUnread(parsed.hash, tmuxSession, { kind, at: new Date().toISOString(), hint });
+    this.dismissedAt.delete(tmuxSession);
+    this._onChange.fire();
   }
 
   /**
@@ -328,6 +426,9 @@ export class ClaudeTracker {
       if (!owner || owner.sessionId !== snap.sessionId) {
         snap.sessionId = undefined;
         snap.state = 'none';
+        // Keep the edge detector honest: a later re-acquired idle must not
+        // pair with a pre-transfer 'working' and flag a phantom result.
+        this.lastDerived.set(tmuxSession, 'none');
         return snap;
       }
     }
@@ -513,6 +614,51 @@ export class ClaudeTracker {
       snap.subagents = snap.subagents.map((s) =>
         s.state === 'done' ? s : { ...s, state: 'done' as const, completedAt: s.completedAt || new Date() },
       );
+    }
+
+    // Outcome of the last turn — only meaningful once the agent has stopped.
+    if (snap.state === 'idle' && snap.sessionId) {
+      const t = this.transcript.getSnapshot(snap.sessionId);
+      if (t) snap.outcome = classifyOutcome(t);
+    }
+
+    // Dismissed waiting: render as idle while nothing newer than the dismissal
+    // happened. Any fresh activity (new Notification, assistant chunk, prompt)
+    // un-dismisses so a real follow-up block is never hidden.
+    const dismissed = this.dismissedAt.get(tmuxSession);
+    if (dismissed !== undefined) {
+      const lastActivity = Math.max(
+        snap.waitingSince?.getTime() ?? 0,
+        snap.lastAssistantMessageAt?.getTime() ?? 0,
+        snap.lastPromptAt?.getTime() ?? 0,
+        snap.toolSince?.getTime() ?? 0,
+      );
+      if (lastActivity > dismissed) {
+        this.dismissedAt.delete(tmuxSession);
+      } else if (snap.state === 'waiting') {
+        snap.state = 'idle';
+        snap.dismissed = true;
+      }
+    }
+
+    // working/tool → idle edge without a Stop hook (Esc, missed hook, transcript-
+    // only tracking): flag it unread here. Stop-hook edges are flagged in
+    // handleLine so they're caught even while the sidebar isn't rendering.
+    // Only a completion the transcript can vouch for (a recent lastStopAt from
+    // the assistant/user branch above) counts — a pure time-based stale-out
+    // (agent crashed, machine slept) must not paint a green "done".
+    const prev = this.lastDerived.get(tmuxSession);
+    this.lastDerived.set(tmuxSession, snap.state);
+    const vouched = !!snap.lastStopAt && Date.now() - snap.lastStopAt.getTime() < 120_000;
+    if ((prev === 'working' || prev === 'tool') && snap.state === 'idle' && vouched) {
+      this.noteFinished(tmuxSession, snap.outcome);
+    }
+
+    // Only an idle row can carry a result; a relaunched/working session must
+    // not wear the previous run's verdict.
+    if (snap.state === 'idle') {
+      const unread = this.unreadOf(tmuxSession);
+      if (unread) snap.unread = unread.kind;
     }
     return snap;
   }
@@ -926,6 +1072,9 @@ export class ClaudeTracker {
     switch (e.event) {
       case 'SessionStart':
         snap.state = 'idle';
+        // A (re)launch starts a fresh run: whatever the previous run left unread
+        // is history now, not something the new run finished.
+        if (Date.now() - tsMs < NOTIFY_STALE_MS) this.markSeen(e.tmuxSession);
         // Fresh launch/resume → re-read this pane's process flags (a Restart may
         // have relaunched with different character flags).
         this.flagCapTried.delete(e.tmuxSession);
@@ -933,6 +1082,12 @@ export class ClaudeTracker {
       case 'UserPromptSubmit':
         snap.state = 'working';
         snap.lastPromptAt = new Date(tsMs);
+        // Typing a prompt means the user saw the previous result. Live events
+        // only — a replayed old prompt must not clear a marker set after it.
+        if (Date.now() - tsMs < NOTIFY_STALE_MS) {
+          this.markSeen(e.tmuxSession);
+          this.dismissedAt.delete(e.tmuxSession);
+        }
         snap.toolName = undefined;
         snap.toolInput = undefined;
         snap.toolSince = undefined;
@@ -967,15 +1122,27 @@ export class ClaudeTracker {
         snap.waitingSince = new Date(tsMs);
         this.triggerWaitingNotify(e, tsMs, provider);
         break;
-      case 'Stop':
+      case 'Stop': {
         snap.state = 'idle';
         snap.lastStopAt = new Date(tsMs);
         snap.toolName = undefined;
         snap.toolInput = undefined;
         snap.toolSince = undefined;
         snap.waitingSince = undefined;
-        this.triggerStopNotify(e, tsMs, provider);
+        // The hook beats fs.watch to the final bytes; read them now so the
+        // verdict isn't computed on a turn missing its last tool result.
+        if (snap.sessionId) this.transcript.pollOne(snap.sessionId);
+        const t = snap.sessionId ? this.transcript.getSnapshot(snap.sessionId) : undefined;
+        const outcome = t ? classifyOutcome(t) : undefined;
+        // Live event only — a Stop replayed from the log at activation must not
+        // re-flag sessions the user already looked at.
+        if (Date.now() - tsMs < NOTIFY_STALE_MS) {
+          this.lastDerived.set(e.tmuxSession, 'idle');
+          this.noteFinished(e.tmuxSession, outcome);
+        }
+        this.triggerStopNotify(e, tsMs, provider, outcome);
         break;
+      }
       // SessionEnd is fully handled (and gated) before the ownership-transfer
       // block above — it must never reach the generic recording path.
     }
@@ -1107,7 +1274,7 @@ export class ClaudeTracker {
     if (changed) this._onChange.fire();
   }
 
-  private triggerStopNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider): void {
+  private triggerStopNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider, outcome?: TurnOutcome): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
     if (this.isSessionMuted(e.tmuxSession)) return;
@@ -1127,10 +1294,17 @@ export class ClaudeTracker {
     this.lastNotifyPerWs.set(wsKey, Date.now());
 
     const label = path.basename(e.cwd || '') || provider.displayName;
+    // Say HOW it ended when we know: "✗ tests failed · 3 failed" beats a
+    // generic "done" when the run actually went red.
+    const bad = outcomeIsBad(outcome);
+    const body = outcome && outcome.kind !== 'ok'
+      ? `${outcomeLabel(outcome)}${outcome.hint ? ' · ' + outcome.hint : ''}`
+      : 'Ready for your next prompt';
     void notify({
-      title: `🤖 ${provider.displayName} done`,
+      title: `${bad ? '✗' : '🤖'} ${provider.displayName} ${bad ? 'stopped with errors' : 'done'}`,
       subtitle: label,
-      body: 'Ready for your next prompt',
+      body,
+      level: bad ? 'warning' : 'info',
     });
   }
 

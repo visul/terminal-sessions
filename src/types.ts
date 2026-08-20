@@ -177,6 +177,12 @@ export interface SessionLabel {
   // from the same conversation). Drives the ⑂ chip decoration. Cleared on Unlink;
   // the set auto-dissolves when fewer than 2 members remain.
   branchSetId?: string;
+  // "Finished since you last looked" marker. Set when the agent's turn ends
+  // while this session's terminal is not the focused one; cleared when the user
+  // focuses the terminal (or dismisses it). Persisted so the green/red badge
+  // survives a window reload — overnight results are still flagged in the
+  // morning. `kind` picks the colour: done (green), error (red), asked (amber).
+  unread?: { kind: 'done' | 'error' | 'asked'; at: string; hint?: string };
 }
 
 export interface TmuxSessionRow {

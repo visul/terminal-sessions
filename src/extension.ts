@@ -65,21 +65,29 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   registerLongRunNotifier(ctx);
 
+  // Monotonic token for the async active-terminal resolution below: a slow
+  // PID walk for a tab you already left must not clobber the newer result
+  // (the tracker's "which tab is the user looking at" depends on it).
+  let activeResolveGen = 0;
   ctx.subscriptions.push(
     vscode.window.onDidCloseTerminal(() => refreshSidebar()),
     vscode.window.onDidOpenTerminal(() => refreshSidebar()),
     vscode.window.onDidChangeActiveTerminal(t => {
+      const gen = ++activeResolveGen;
       // Reflect the new active terminal's lock state for the native tab menu's
       // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
       // which sets the key false); does its own resolve, independent of the MRU
       // logic below.
       void syncActiveTerminalLockedContext(index);
-      if (!t) return;
+      if (!t) { claudeTracker.setActiveTmuxSession(undefined); return; }
       void (async () => {
         // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed
         // tabs (no #tabId in the label) — falls back to the live process via PID.
         const name = await resolveTmuxNameForTerminalLive(t, index, getConfig().sessionPrefix);
-        if (!name) return;
+        if (gen !== activeResolveGen) return; // superseded by a newer tab switch
+        if (!name) { claudeTracker.setActiveTmuxSession(undefined); return; }
+        // Focusing the tab "reads" its unread result.
+        claudeTracker.setActiveTmuxSession(name);
         const parsed = parseSessionName(name, getConfig().sessionPrefix);
         if (!parsed) return;
         index.setSessionLastActive(parsed.hash, name);
@@ -94,6 +102,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         if (getConfig().revealActiveSession) void revealSessionInSidebar(name, false, false);
       })();
     }),
+    // Coming back to the window while a finished session's tab is active counts
+    // as looking at it.
+    vscode.window.onDidChangeWindowState(s => { if (s.focused) claudeTracker.onWindowFocused(); }),
     vscode.workspace.onDidChangeConfiguration(e => {
       if (
         e.affectsConfiguration('terminalSessions.sidebarSortMode') ||

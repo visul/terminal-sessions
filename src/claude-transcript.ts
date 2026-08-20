@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { costForUsage } from './claude-pricing';
 import type { AgentProvider, TranscriptTailState } from './agents/types';
+import { emptyTurnEvidence, noteAssistantText, noteToolResult, type TurnEvidence } from './outcome';
 
 export type SubagentState = 'working' | 'tool' | 'done';
 
@@ -60,6 +61,9 @@ export interface TranscriptSnapshot {
   /** Flat list of subagents (Task tool_use spawns) seen in this transcript.
    *  Ordered by first appearance. Tree is computed by callers from parentId. */
   subagents: SubagentSnapshot[];
+  /** Main-thread tool-result evidence for the CURRENT turn (reset on each user
+   *  prompt). Feeds outcome classification (done / failed / tests red). */
+  turn?: TurnEvidence;
 }
 
 export interface MsgInfo {
@@ -97,6 +101,10 @@ interface ClaudeTailScratch {
   remainder?: Buffer;
   /** Per background-agent parse cache keyed by agentId. */
   bgAgentStat?: Map<string, BgAgentCache>;
+  /** Main-thread tool_use id → tool name, so a tool_result can be attributed
+   *  to the tool that produced it (outcome heuristics only trust shell tools).
+   *  Entries are dropped when their result arrives. */
+  toolNames?: Map<string, string>;
 }
 
 function tailScratchOf(state: TailState): ClaudeTailScratch {
@@ -417,6 +425,13 @@ export class TranscriptTailer {
     for (const sessionId of this.tails.keys()) this.readDelta(sessionId);
   }
 
+  /** Synchronously catch up one transcript. Used by the Stop hook path, which
+   *  fires the instant the agent exits its turn — often before fs.watch has
+   *  delivered the final bytes that carry the turn's last tool result. */
+  pollOne(sessionId: string): void {
+    if (this.tails.has(sessionId)) this.readDelta(sessionId);
+  }
+
   stopOne(sessionId: string): void {
     const state = this.tails.get(sessionId);
     if (!state) return;
@@ -580,12 +595,14 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
             snap.lastUserMessage = compactPreview(clean);
             if (ts) snap.lastUserMessageAt = ts;
             snap.messageCount++;
+            snap.turn = emptyTurnEvidence();
             return true;
           }
         }
       }
       // tool_result — clear pending tool use (best effort, main thread only)
       if (!belongsTo) {
+        noteToolResults(state, msg.content);
         extractToolUseIds(msg.content, state.pendingToolUseIds, 'remove');
         if (state.pendingToolUseIds.size === 0 && snap.currentToolName) {
           snap.currentToolName = undefined;
@@ -671,12 +688,14 @@ export function reduceClaudeTranscriptLine(state: TailState, line: string): bool
         snap.lastAssistantMessage = preview;
         if (ts) snap.lastAssistantMessageAt = ts;
         snap.messageCount++;
+        noteAssistantText(snap.turn ??= emptyTurnEvidence(), extractRawText(msg.content));
       }
     }
     // Track any new tool_use blocks on the MAIN thread only; sidechain tool
     // uses are already handled per-subagent by scanAssistantContent.
     if (!isSidechain) {
       extractToolUseIds(msg.content, state.pendingToolUseIds, 'add');
+      rememberToolNames(state, msg.content);
       const firstTool = firstToolUse(msg.content);
       if (firstTool) {
         snap.currentToolName = firstTool.name;
@@ -1020,6 +1039,36 @@ function firstToolUse(content: unknown): { name: string; preview: string } | und
     return { name, preview };
   }
   return undefined;
+}
+
+/** Fold every tool_result block of a user-role message into the turn
+ *  evidence: Claude's own `is_error` flag plus text heuristics on the output. */
+function noteToolResults(state: TailState, content: unknown): void {
+  if (!Array.isArray(content)) return;
+  const names = tailScratchOf(state).toolNames;
+  const snap = state.snapshot;
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as Record<string, unknown>;
+    if (b.type !== 'tool_result') continue;
+    const id = typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined;
+    const name = id ? names?.get(id) : undefined;
+    if (id) names?.delete(id);
+    const text = typeof b.content === 'string' ? b.content : extractRawText(b.content);
+    noteToolResult(snap.turn ??= emptyTurnEvidence(), text, b.is_error === true, name);
+  }
+}
+
+function rememberToolNames(state: TailState, content: unknown): void {
+  if (!Array.isArray(content)) return;
+  const scratch = tailScratchOf(state);
+  for (const block of content) {
+    if (!block || typeof block !== 'object') continue;
+    const b = block as Record<string, unknown>;
+    if (b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') {
+      (scratch.toolNames ??= new Map()).set(b.id, b.name);
+    }
+  }
 }
 
 function extractToolUseIds(

@@ -4,6 +4,16 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.36] — 2026-08-20
+
+### Added
+- **Unread results.** When an agent finishes while you're looking at another tab (or away from the window), its row keeps a persistent verdict until you focus that terminal: a filled check in teal for **done**, a red **✗ failed / ✗ tests failed / ⏳ rate limited**, or an amber **? asked you** when the agent's last message is a question. The marker is stored in the index, so results from overnight are still flagged after a window reload. The activity-bar badge counts unread sessions (after waiting, before working). Typing a new prompt in the session clears it too. Off switch: `terminalSessions.unreadBadges`.
+- **Turn outcome from the transcript.** No LLM involved: the tailer now records per-turn tool-result evidence (Claude's own `is_error`, plus text heuristics for `N failed`, `FAIL`, `npm ERR!`, `error TSxxxx`, exit codes, `BUILD FAILED`, rate-limit / overloaded messages; a later passing run clears the red-tests hint). Idle rows show the verdict (`idle 3m · ✗ tests failed`), the tooltip shows the decisive line, and the **Stop notification** says how the run ended (`✗ Claude stopped with errors — ✗ tests failed · 3 failed`) instead of a generic "done". Codex outputs go through the same text heuristics.
+- **Dismiss (Mark as Seen).** Right-click on any waiting or unread row (multi-select works). A dismissed *waiting* row renders as idle until the agent does anything new — next Notification, assistant chunk or prompt un-dismisses it automatically, so a real follow-up block is never hidden. Palette: **Terminal Sessions: Mark All Sessions as Seen**.
+
+### Changed
+- New theme colors `terminalSessions.unreadDoneIcon` and `terminalSessions.unreadErrorIcon`.
+
 ## [0.20.35] — 2026-08-20
 
 ### Changed

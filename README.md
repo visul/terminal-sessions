@@ -159,6 +159,11 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Name Conversation** — give any session a friendly name; it shows in the archive picker and the viewer title. Names live in the extension's sidecar index, so the agent's transcript files are never modified
 - **Clean Up Empty / Invalid Sessions** — a maintenance action (sidebar overflow `⋯` menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. **Claude only** — Codex, Antigravity, and Grok transcripts are never classified or moved, and the soft-delete refuses any path outside `~/.claude/projects`. The agent's own database and session index are never touched; moved files can be restored manually
 
+### Unread results & turn outcome
+- **Unread marker** — an agent that finishes while you're on another tab keeps a verdict on its row until you focus that terminal: teal filled check = done, red `✗ failed` / `✗ tests failed` / `⏳ rate limited`, amber `? asked you`. Persisted across window reloads; the activity-bar badge counts unread sessions. Toggle with `terminalSessions.unreadBadges`
+- **Outcome from the transcript, no LLM** — per-turn tool-result evidence (Claude `is_error`, `N failed`, `FAIL`, `npm ERR!`, `error TSxxxx`, exit codes, rate-limit messages) classifies how the turn ended; idle rows show `idle 3m · ✗ tests failed`, the tooltip shows the decisive line, and the Stop notification says what happened
+- **Dismiss (Mark as Seen)** — right-click a waiting/unread row (bulk OK). A dismissed waiting row shows as idle until the agent does anything new. Palette: `Terminal Sessions: Mark All Sessions as Seen`
+
 ### Notifications
 - **Claude Stop notification** — fires when Claude finishes a response. Distinct from the waiting variant so you can glance at the sound/icon and know whether you need to act. Min-duration filter prevents notif-storms on short turns
 - **Claude Waiting notification** — fires when Claude blocks for user permission (tool approval, risky command, URL access). Distinct sound (default `Sosumi` vs `Glass` for Stop), `⚠ Claude needs approval` title, subtitle is the session label. Two styles via `terminalSessions.waitingAlertStyle`:
@@ -374,6 +379,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.sidebarSortMode` | `"created"` | `custom`, `mru`, `created`, or `alphabetical` |
 | `terminalSessions.sidebarFilterMode` | `"all"` | Filter sidebar by state: `all`, `running`, or `stopped` |
 | `terminalSessions.showFavoritesFolder` | `true` | Show the pinned **Favorite Sessions** folder (starred sessions); hidden while empty |
+| `terminalSessions.unreadBadges` | `true` | Keep a done / failed / asked-you verdict on a session row until you focus its terminal or dismiss it |
 | `terminalSessions.showOpenFolder` | `true` | Show the pinned **Open Sessions** folder (terminal tabs open in this window, in tab order); hidden while empty |
 | `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |

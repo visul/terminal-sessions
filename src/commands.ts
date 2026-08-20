@@ -303,6 +303,21 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
+    vscode.commands.registerCommand(COMMAND.dismissAttention, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
+      // Works from any row (incl. mirror rows in the pinned folders) and in bulk.
+      const rows = selectionTargets(selection) ?? (item ? [item] : []);
+      if (rows.length === 0) {
+        vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
+        return;
+      }
+      for (const r of rows) claudeTracker.dismiss(r.session.name);
+      refreshSidebar();
+    }),
+    vscode.commands.registerCommand(COMMAND.markAllSeen, () => {
+      const n = claudeTracker.markAllSeen();
+      refreshSidebar();
+      vscode.window.showInformationMessage(n ? `${n} session${n === 1 ? '' : 's'} marked as seen.` : 'No unread sessions.');
+    }),
     vscode.commands.registerCommand(COMMAND.favoriteOn, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionFavorite(index, item, selection, true)),
     vscode.commands.registerCommand(COMMAND.favoriteOff, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionFavorite(index, item, selection, false)),
     vscode.commands.registerCommand(COMMAND.toggleFavorite, (item?: SessionTreeItem | vscode.Terminal) => cmdToggleFavorite(index, item)),

@@ -3,6 +3,7 @@ import { SessionInfo, KilledEntry } from '../types';
 import { humanAge } from '../util';
 import { ClaudeSnapshot } from '../claude-tracker';
 import { SubagentSnapshot } from '../claude-transcript';
+import { outcomeLabel } from '../outcome';
 import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
 
 /**
@@ -201,7 +202,17 @@ function claudeStateDescription(snap: ClaudeSnapshot): string | undefined {
         : (snap.lastAssistantMessageAt
           ? formatElapsed(Date.now() - snap.lastAssistantMessageAt.getTime())
           : '');
-      return since ? `idle ${since}${agentSuffix}` : `idle${agentSuffix}`;
+      const outcome = snap.outcome && snap.outcome.kind !== 'ok' ? outcomeLabel(snap.outcome) : '';
+      if (snap.dismissed) return `dismissed${since ? ' ' + since : ''}${agentSuffix}`;
+      // Unread: lead with the verdict ("done 2m", "✗ tests failed 2m") so the
+      // row reads as a result, not as a clock. Seen: back to the idle clock,
+      // with a non-ok verdict kept as a trailing hint.
+      if (snap.unread) {
+        const head = outcome || 'done';
+        return `${head}${since ? ' ' + since : ''}${agentSuffix}`;
+      }
+      const base = since ? `idle ${since}` : 'idle';
+      return `${base}${outcome ? ' · ' + outcome : ''}${agentSuffix}`;
     }
     case 'none':
       return undefined;
@@ -330,6 +341,9 @@ export class SessionTreeItem extends vscode.TreeItem {
     if (session.branchSetId) cv += '.branched';
     if (session.locked) cv += '.locked';
     if (session.yoloCapable) cv += session.yolo ? '.yoloOn' : '.yoloOff';
+    // Trailing `.attn` = row is asking for attention (unread result or a live
+    // waiting state): gates the Dismiss command.
+    if (claude && (claude.unread || claude.state === 'waiting')) cv += '.attn';
     this.contextValue = cv;
 
     // Fork branch-set members carry a resourceUri in the branch scheme so the
@@ -368,7 +382,12 @@ export class SessionTreeItem extends vscode.TreeItem {
       : `${favHint}${ageHint}${mutedHint}${lockHint}${yoloHint}`;
 
     const customized = Boolean(session.icon || session.color || session.label);
-    const claudeIcon = claude ? STATE_ICONS[claude.state] : '';
+    // Unread results get a distinct glyph per verdict so a row reads at a glance:
+    // filled check (done), error (failed/red tests), question (agent asked you).
+    const unreadIcon = claude?.state === 'idle' && claude.unread
+      ? (claude.unread === 'error' ? 'error' : claude.unread === 'asked' ? 'question' : 'pass-filled')
+      : '';
+    const claudeIcon = unreadIcon || (claude ? STATE_ICONS[claude.state] : '');
     // Detached sessions get a hollow circle regardless of Claude state — a
     // clear visual cue that nobody's currently attached to the tmux session.
     // Claude state is still visible via the icon color below.
@@ -382,7 +401,12 @@ export class SessionTreeItem extends vscode.TreeItem {
         case 'waiting':   colorId = 'terminalSessions.waitingIcon'; break;
         case 'working':   colorId = 'terminalSessions.workingIcon'; break;
         case 'tool':      colorId = 'terminalSessions.toolIcon'; break;
-        case 'idle':      colorId = session.color || 'terminalSessions.idleIcon'; break;
+        case 'idle':
+          colorId = claude.unread === 'error' ? 'terminalSessions.unreadErrorIcon'
+            : claude.unread === 'asked' ? 'terminalSessions.waitingIcon'
+            : claude.unread === 'done' ? 'terminalSessions.unreadDoneIcon'
+            : (session.color || 'terminalSessions.idleIcon');
+          break;
         case 'none':      colorId = session.color || (session.attached ? 'terminal.ansiGreen' : undefined); break;
       }
     } else {
@@ -424,6 +448,13 @@ export class SessionTreeItem extends vscode.TreeItem {
     if (session.color) parts.push(`Color: \`${session.color}\``);
     if (claude && claude.state !== 'none') {
       parts.push(`${aLabel || 'Claude'}: ${claudeDesc || claude.state}`);
+      if (claude.unread) {
+        parts.push(`**Unread** — finished since you last looked. Focus the terminal or right-click → Dismiss to clear.`);
+      }
+      if (claude.outcome && claude.outcome.kind !== 'ok' && claude.state === 'idle') {
+        parts.push(`Last turn: **${outcomeLabel(claude.outcome)}**${claude.outcome.hint ? ` — \`${claude.outcome.hint}\`` : ''}`);
+      }
+      if (claude.dismissed) parts.push(`_Waiting state dismissed — reappears on new agent activity._`);
       if (claude.sessionId) parts.push(`Conversation ID: \`${claude.sessionId}\``);
       if (claude.model) parts.push(`Model: \`${claude.model}\``);
       if (claude.messageCount) parts.push(`Turns: ${claude.messageCount}`);

@@ -181,6 +181,22 @@ export class SessionIndex {
     this.save();
   }
 
+  /** Set or clear the unread ("finished since you looked") marker. */
+  setSessionUnread(hash: string, sessionName: string, unread: SessionLabel['unread'] | undefined): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    const meta = ws?.sessions[sessionName];
+    if (!meta) return;
+    if (unread) meta.unread = unread;
+    else if (meta.unread) delete meta.unread;
+    else return; // nothing to clear — skip the disk write
+    this.save();
+  }
+
+  getSessionUnread(hash: string, sessionName: string): SessionLabel['unread'] | undefined {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.unread;
+  }
+
   isSessionMuted(hash: string, sessionName: string): boolean {
     return this.data.workspaces[hash]?.sessions[sessionName]?.muted === true;
   }

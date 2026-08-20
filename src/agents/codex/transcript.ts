@@ -1,6 +1,7 @@
 import * as fs from 'fs';
 import type { TranscriptTailState } from '../types';
 import { costForUsageCodex } from './pricing';
+import { emptyTurnEvidence, noteToolResult } from '../../outcome';
 
 // ───────────────────────────── Codex transcript shape ─────────────────────────────
 //
@@ -142,6 +143,7 @@ export function reduceCodexTranscriptLine(state: TranscriptTailState, line: stri
         snap.lastUserMessage = text;
         if (ts) snap.lastUserMessageAt = ts;
         snap.messageCount++;
+        snap.turn = emptyTurnEvidence();
         return true;
       }
       if (role === 'assistant') {
@@ -167,6 +169,23 @@ export function reduceCodexTranscriptLine(state: TranscriptTailState, line: stri
 
     if (pt === 'function_call_output') {
       const callId = typeof payload.call_id === 'string' ? payload.call_id : undefined;
+      // Codex shell outputs are usually a JSON envelope
+      // `{"output": "...", "metadata": {"exit_code": N, ...}}`; fall back to the
+      // raw string when it isn't. exit_code is the error flag; the text
+      // heuristics (FAIL, N failed…) run as for a shell tool.
+      if (typeof payload.output === 'string') {
+        let text: string = payload.output;
+        let isError: boolean | undefined;
+        try {
+          const env = JSON.parse(payload.output) as { output?: unknown; metadata?: { exit_code?: unknown } };
+          if (env && typeof env === 'object') {
+            if (typeof env.output === 'string') text = env.output;
+            const code = env.metadata?.exit_code;
+            if (typeof code === 'number') isError = code !== 0;
+          }
+        } catch { /* plain text output */ }
+        noteToolResult(snap.turn ??= emptyTurnEvidence(), text, isError, 'shell');
+      }
       // Clear the in-flight tool when its matching output arrives (or
       // unconditionally if we never recorded a call_id).
       if (!callId || callId === scratch.pendingCallId) {

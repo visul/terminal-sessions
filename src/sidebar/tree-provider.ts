@@ -947,11 +947,17 @@ export function registerSidebar(
     // Count only sessions the tracker is actively watching (its in-memory
     // snapshot map) instead of statSync-ing every session ever recorded in the
     // index on every event — only live sessions can be waiting/working anyway.
-    const { waiting, working } = claude.attentionCounts();
+    const { waiting, working, unread } = claude.attentionCounts();
     if (waiting > 0) {
       treeView.badge = {
         value: waiting,
         tooltip: `${waiting} agent session${waiting === 1 ? '' : 's'} waiting for you`,
+      };
+    } else if (unread > 0) {
+      // Finished results you haven't looked at yet outrank "still working".
+      treeView.badge = {
+        value: unread,
+        tooltip: `${unread} agent session${unread === 1 ? '' : 's'} finished since you looked`,
       };
     } else if (working > 0) {
       treeView.badge = {

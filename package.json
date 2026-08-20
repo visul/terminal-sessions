@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.35",
+  "version": "0.20.36",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -278,6 +278,11 @@
           "default": true,
           "description": "Show the pinned “Favorite Sessions” folder at the top of each workspace: sessions starred via the ☆ on their row. Hidden while empty. Toggle also available in the view's ⋯ menu."
         },
+        "terminalSessions.unreadBadges": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mark sessions whose agent finished while you were looking elsewhere: green (done), red (failed / tests red / rate limited) or amber (agent asked you a question) until you focus that terminal or right-click → Dismiss. Survives window reloads."
+        },
         "terminalSessions.showOpenFolder": {
           "type": "boolean",
           "default": true,
@@ -538,6 +543,15 @@
         "icon": "$(bell-slash)"
       },
       {
+        "command": "terminalSessions.dismissAttention",
+        "title": "Dismiss (Mark as Seen)",
+        "icon": "$(bell-dot)"
+      },
+      {
+        "command": "terminalSessions.markAllSeen",
+        "title": "Terminal Sessions: Mark All Sessions as Seen"
+      },
+      {
         "command": "terminalSessions.unmuteSession",
         "title": "Unmute Notifications",
         "icon": "$(bell)"
@@ -696,6 +710,10 @@
         },
         {
           "command": "terminalSessions.muteSession",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.dismissAttention",
           "when": "false"
         },
         {
@@ -978,52 +996,52 @@
       "view/item/context": [
         {
           "command": "terminalSessions.favoriteOn",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "inline@0"
         },
         {
           "command": "terminalSessions.favoriteOff",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?\\.fav(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?\\.fav(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "inline@0"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "inline@3"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "inline@4"
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.lockedHint",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?\\.locked(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?\\.locked(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "inline@5"
         },
         {
           "command": "terminalSessions.restart",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "danger@0"
         },
         {
           "command": "terminalSessions.stop",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "danger@0"
         },
         {
           "command": "terminalSessions.switchToYolo",
-          "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOff$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOff(\\.attn)?$/",
           "group": "danger@0.2"
         },
         {
           "command": "terminalSessions.switchToNormal",
-          "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOn$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /\\.yoloOn(\\.attn)?$/",
           "group": "danger@0.2"
         },
         {
@@ -1033,12 +1051,12 @@
         },
         {
           "command": "terminalSessions.favoriteOn",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "edit@-1"
         },
         {
           "command": "terminalSessions.favoriteOff",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?\\.fav(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?\\.fav(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "edit@-1"
         },
         {
@@ -1143,32 +1161,37 @@
         },
         {
           "command": "terminalSessions.kill",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped(\\.fav)?|(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped(\\.fav)?|(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "danger@1"
         },
         {
           "command": "terminalSessions.killDelete",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped(\\.fav)?|(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped(\\.fav)?|(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "danger@2"
         },
         {
+          "command": "terminalSessions.dismissAttention",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.attn$/",
+          "group": "edit@-2"
+        },
+        {
           "command": "terminalSessions.muteSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.unmuteSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?\\.muted(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.fav)?\\.muted(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "edit@4"
         },
         {
           "command": "terminalSessions.lockSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped(\\.fav)?|(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped(\\.fav)?|(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?)(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "danger@0.5"
         },
         {
           "command": "terminalSessions.unlockSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.locked(\\.yoloO(n|ff))?$/",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.locked(\\.yoloO(n|ff))?(\\.attn)?$/",
           "group": "danger@0.5"
         },
         {
@@ -1277,6 +1300,24 @@
           "dark": "#FF9E2D",
           "light": "#D97706",
           "highContrast": "#FFB74D"
+        }
+      },
+      {
+        "id": "terminalSessions.unreadDoneIcon",
+        "description": "Icon color for a session that finished successfully since you last looked at it.",
+        "defaults": {
+          "dark": "#4EC9B0",
+          "light": "#1B8A5A",
+          "highContrast": "#5DF5C9"
+        }
+      },
+      {
+        "id": "terminalSessions.unreadErrorIcon",
+        "description": "Icon color for a session whose last turn ended in a failure (tool error, red tests, rate limit) and that you haven't looked at yet.",
+        "defaults": {
+          "dark": "#F14C4C",
+          "light": "#D11A1A",
+          "highContrast": "#FF6B6B"
         }
       },
       {

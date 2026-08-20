@@ -24,6 +24,7 @@ export interface Config {
   notificationSound: string;
   notificationSoundWaiting: string;
   notifyOnClaudeStop: boolean;
+  unreadBadges: boolean;
   notifyOnClaudeWaiting: boolean;
   waitingAlertStyle: WaitingAlertStyle;
   claudeStopMinDurationSeconds: number;
@@ -65,6 +66,7 @@ export function getConfig(): Config {
     notificationSound: c.get('notificationSound', 'Glass'),
     notificationSoundWaiting: c.get('notificationSoundWaiting', 'Sosumi'),
     notifyOnClaudeStop: c.get('notifyOnClaudeStop', true),
+    unreadBadges: c.get('unreadBadges', true),
     notifyOnClaudeWaiting: c.get('notifyOnClaudeWaiting', true),
     waitingAlertStyle: ((): WaitingAlertStyle => {
       const v = c.get<string>('waitingAlertStyle', 'banner');
@@ -125,6 +127,8 @@ export const COMMAND = {
   alertsEnable: 'terminalSessions.alertsEnable',
   alertsDisable: 'terminalSessions.alertsDisable',
   muteSession: 'terminalSessions.muteSession',
+  dismissAttention: 'terminalSessions.dismissAttention',
+  markAllSeen: 'terminalSessions.markAllSeen',
   unmuteSession: 'terminalSessions.unmuteSession',
   favoriteOn: 'terminalSessions.favoriteOn',
   favoriteOff: 'terminalSessions.favoriteOff',
