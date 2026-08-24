@@ -49,7 +49,8 @@ export class TerminalTracker implements vscode.Disposable {
     const tIdx = args.indexOf('-t');
     const nameIdx = sIdx >= 0 ? sIdx + 1 : (tIdx >= 0 ? tIdx + 1 : -1);
     if (nameIdx < 0 || nameIdx >= args.length) return;
-    const sessionName = args[nameIdx];
+    // `-t =name` is tmux's exact-match form (buildAttachArgs) — strip the marker.
+    const sessionName = args[nameIdx].replace(/^=/, '');
     const cfg = getConfig();
     if (!sessionName.startsWith(`${cfg.sessionPrefix}-`)) return;
     const parsed = parseSessionName(sessionName, cfg.sessionPrefix);

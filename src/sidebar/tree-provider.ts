@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, buildClaudeDetails } from './items';
+import { shouldShowCleanupNotice, readClaudeCleanupDays, countExpiringTranscripts, ExpiryInfo } from '../notices';
 import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
 import { SessionInfo } from '../types';
 import { ClaudeTracker } from '../claude-tracker';
@@ -133,6 +134,23 @@ class SessionsTreeProvider
     private index: SessionIndex,
     private claude: ClaudeTracker,
   ) {}
+
+  // Live text filter (the sidebar funnel button). While set, the root renders a
+  // FLAT list of matching sessions across every workspace/group instead of the
+  // grouped tree — collapsed groups can't hide a match that way. Raw form kept
+  // for display, tokens pre-split for matching (every token must match).
+  private textFilterRaw: string | undefined;
+  private textFilterTokens: string[] = [];
+
+  setTextFilter(q: string | undefined): void {
+    const raw = q?.trim() || undefined;
+    if (raw === this.textFilterRaw) return;
+    this.textFilterRaw = raw;
+    this.textFilterTokens = raw ? raw.toLowerCase().split(/\s+/) : [];
+    this.refresh();
+  }
+
+  getTextFilter(): string | undefined { return this.textFilterRaw; }
 
   refresh(): void {
     this.refreshGen++;
@@ -497,6 +515,31 @@ class SessionsTreeProvider
     else if (cfg.sidebarFilterMode === 'stopped') filtered = sessions.filter(s => s.stopped);
 
     if (!el) {
+      // Active text filter → flat result list instead of the grouped tree.
+      // Mirror rows with full actions (same pattern as the pinned folders);
+      // uncached + `flt:` id prefix so reveal/getParent keep resolving to the
+      // canonical grouped rows once the filter clears.
+      if (this.textFilterTokens.length > 0) {
+        this.lastWorkspaceItems.clear();
+        this.lastSessionItems.clear();
+        this.lastGroupItems.clear();
+        this.lastClusterItems.clear();
+        const groupNameOf = (s: SessionInfo): string | undefined => s.groupId
+          ? this.index.getWorkspace(s.workspaceHash)?.groups?.[s.groupId]?.name
+          : undefined;
+        const matches = filtered.filter(s => {
+          const hay = [s.label, s.name, s.folderPath, s.workspacePath, s.workspaceLabel, groupNameOf(s)]
+            .filter(Boolean).join(' ').toLowerCase();
+          return this.textFilterTokens.every(t => hay.includes(t));
+        });
+        const out: vscode.TreeItem[] = [new FilterHeaderItem(this.textFilterRaw!, matches.length)];
+        for (const s of sortSessions(matches, cfg.sidebarSortMode)) {
+          const item = this.makeSessionItem(s, cfg, false, false);
+          item.id = `flt:${item.id}`;
+          out.push(item);
+        }
+        return out;
+      }
       if (filtered.length === 0) {
         this.lastWorkspaceItems.clear();
         this.lastSessionItems.clear();
@@ -520,6 +563,18 @@ class SessionsTreeProvider
       const grouped = groupByWorkspace(filtered);
       const allByWorkspace = groupByWorkspace(sessions);
       const out: vscode.TreeItem[] = [];
+      // Transcript-cleanup warning, above everything: Claude's 30-day default
+      // silently destroys old conversations. When actual transcripts sit inside
+      // the warn window the row says how many and how soon — that fires even for
+      // a "safe" (≥ 90 days) setting, because the loss is concrete. The expiry
+      // sweep is cached 6h; warnDays 0 disables it.
+      const warnDays = cfg.transcriptExpiryWarnDays;
+      const expiring: ExpiryInfo = warnDays > 0
+        ? countExpiringTranscripts(warnDays)
+        : { count: 0, soonestDays: 0 };
+      if (shouldShowCleanupNotice(expiring.count > 0)) {
+        out.push(new CleanupNoticeItem(readClaudeCleanupDays(), expiring, warnDays));
+      }
       this.lastWorkspaceItems.clear();
       // Groups AND sessions are rebuilt lazily on expand; drop stale entries so
       // getParent()/reveal() never get a container or session item from before a
@@ -991,6 +1046,17 @@ export function registerSidebar(
 
 export function refreshSidebar(): void { provider?.refresh(); }
 
+/** Set/clear the live text filter (undefined or '' clears). The view's
+ *  description mirrors the state so a forgotten filter is always visible. */
+export function setSidebarTextFilter(q: string | undefined): void {
+  provider?.setTextFilter(q);
+  updateTreeViewDescription();
+}
+
+export function getSidebarTextFilter(): string | undefined {
+  return provider?.getTextFilter();
+}
+
 let treeViewRef: vscode.TreeView<vscode.TreeItem> | undefined;
 
 /** Select and scroll to a session in the sidebar by tmux session name.
@@ -1051,7 +1117,9 @@ export async function revealSessionInSidebar(
 function updateTreeViewDescription(): void {
   if (!treeViewRef) return;
   const cfg = getConfig();
-  if (cfg.sidebarFilterMode === 'running') treeViewRef.description = 'Running only';
+  const textQ = provider?.getTextFilter();
+  if (textQ) treeViewRef.description = `filter: ${textQ}`;
+  else if (cfg.sidebarFilterMode === 'running') treeViewRef.description = 'Running only';
   else if (cfg.sidebarFilterMode === 'stopped') treeViewRef.description = 'Stopped only';
   else treeViewRef.description = undefined;
 }

@@ -9,7 +9,7 @@ const execFileP = promisify(execFile);
 
 export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
 
-const CONF_VERSION = 'ts-tmux-conf-v15';
+const CONF_VERSION = 'ts-tmux-conf-v16';
 
 // Writer script the remote clipboard bridge pipes copies to (installed by
 // clipboard-bridge.ts). tmux `copy-pipe` feeds it the selection on stdin; it writes
@@ -322,6 +322,10 @@ set -ag terminal-overrides ",xterm-256color:RGB"
 # terminal — reduces flicker and scrollback pollution when apps like Claude
 # Code emit rapid full-frame redraws. Requires tmux 3.4+.
 set -as terminal-features ',xterm*:sync'
+# OSC 8 hyperlinks: without this feature flag tmux STRIPS hyperlink escapes, so
+# Claude Code's clickable links (FORCE_HYPERLINK=1) never reach Cursor's terminal.
+# With it, links stay clickable even when the URL/path wraps across rows.
+set -as terminal-features ',xterm*:hyperlinks'
 # Let TUI apps (Claude Code, vim) send OSC/clipboard/kitty-graphics sequences
 # through tmux without being stripped.
 set -g allow-passthrough on
@@ -429,13 +433,31 @@ export async function createDetachedSession(
   await execFileP(tmuxPath, ['-f', CONF_PATH, 'new-session', '-d', '-s', name, '-c', cwd]);
 }
 
+/** tmux `-t` targets are PREFIX-matched: `-t ts-…-10` silently resolves to
+ *  `ts-…-108` when -10 is gone but -108 is alive — has-session lies, attach
+ *  lands in the wrong session, kill would murder a stranger. The `=` prefix
+ *  forces an exact-name match (args go through execFile, so no shell ever
+ *  sees the `=`). Every session-targeting `-t` below MUST go through this. */
+function exact(name: string): string {
+  return '=' + name;
+}
+
+/** Same, for commands whose `-t` is a target-PANE/WINDOW (display-message,
+ *  capture-pane, send-keys). Those need the `sess:` form — a bare `=name` is
+ *  silently empty on display-message and a hard "can't find pane" error on
+ *  capture-pane (verified on tmux 3.6a). The trailing `:` means "that
+ *  session's active window/pane", same as passing the bare name did. */
+function exactPane(name: string): string {
+  return '=' + name + ':';
+}
+
 /** Returns the original cwd the session was created in (tmux preserves this
  *  in #{session_path} for the lifetime of the server). Empty string if the
  *  session is gone. */
 export async function getSessionPath(tmuxPath: string, sessionName: string): Promise<string> {
   try {
     const { stdout } = await execFileP(tmuxPath, [
-      'display-message', '-p', '-t', sessionName, '#{session_path}',
+      'display-message', '-p', '-t', exactPane(sessionName), '#{session_path}',
     ]);
     return stdout.trim();
   } catch {
@@ -447,7 +469,7 @@ export async function getSessionPath(tmuxPath: string, sessionName: string): Pro
 export async function getPaneCommand(tmuxPath: string, sessionName: string): Promise<string> {
   try {
     const { stdout } = await execFileP(tmuxPath, [
-      'display-message', '-p', '-t', sessionName, '#{pane_current_command}',
+      'display-message', '-p', '-t', exactPane(sessionName), '#{pane_current_command}',
     ]);
     return stdout.trim();
   } catch {
@@ -524,7 +546,7 @@ export async function listSessions(tmux: string, prefix: string): Promise<TmuxSe
 
 export async function hasSession(tmux: string, name: string): Promise<boolean> {
   try {
-    await execFileP(tmux, ['has-session', '-t', name]);
+    await execFileP(tmux, ['has-session', '-t', exact(name)]);
     return true;
   } catch {
     return false;
@@ -532,12 +554,12 @@ export async function hasSession(tmux: string, name: string): Promise<boolean> {
 }
 
 export async function killSession(tmux: string, name: string): Promise<void> {
-  await execFileP(tmux, ['kill-session', '-t', name]).catch(() => { /* already gone */ });
+  await execFileP(tmux, ['kill-session', '-t', exact(name)]).catch(() => { /* already gone */ });
 }
 
 export async function capturePane(tmux: string, name: string, lines = 100): Promise<string> {
   try {
-    const { stdout } = await execFileP(tmux, ['capture-pane', '-p', '-S', `-${lines}`, '-t', name]);
+    const { stdout } = await execFileP(tmux, ['capture-pane', '-p', '-S', `-${lines}`, '-t', exactPane(name)]);
     return stdout;
   } catch {
     return '(no content — session may have no panes)';
@@ -545,7 +567,7 @@ export async function capturePane(tmux: string, name: string, lines = 100): Prom
 }
 
 export async function renameSession(tmux: string, oldName: string, newName: string): Promise<void> {
-  await execFileP(tmux, ['rename-session', '-t', oldName, newName]);
+  await execFileP(tmux, ['rename-session', '-t', exact(oldName), newName]);
 }
 
 /**
@@ -560,9 +582,9 @@ export async function exitCopyMode(tmux: string, session: string): Promise<void>
     // Two argv-safe calls instead of an `if-shell` whose command string re-parses
     // the session name: a name containing whitespace (custom sessionPrefix) would
     // otherwise resolve to the wrong target and inject stray keystrokes.
-    const { stdout } = await execFileP(tmux, ['display-message', '-p', '-t', session, '#{pane_in_mode}']);
+    const { stdout } = await execFileP(tmux, ['display-message', '-p', '-t', exactPane(session), '#{pane_in_mode}']);
     if (stdout.trim() === '1') {
-      await execFileP(tmux, ['send-keys', '-t', session, '-X', 'cancel']);
+      await execFileP(tmux, ['send-keys', '-t', exactPane(session), '-X', 'cancel']);
     }
   } catch { /* not in a mode, or no server */ }
 }
@@ -571,7 +593,7 @@ export async function exitCopyMode(tmux: string, session: string): Promise<void>
  *  process tree to find a live agent process and read its launch flags. */
 export async function panePids(tmux: string, session: string): Promise<number[]> {
   try {
-    const { stdout } = await execFileP(tmux, ['list-panes', '-t', session, '-s', '-F', '#{pane_pid}']);
+    const { stdout } = await execFileP(tmux, ['list-panes', '-t', exact(session), '-s', '-F', '#{pane_pid}']);
     return stdout
       .split('\n')
       .map(s => parseInt(s.trim(), 10))
@@ -588,5 +610,9 @@ export function buildAttachOrCreateArgs(name: string, cwd: string): string[] {
 
 export function buildAttachArgs(name: string): string[] {
   ensureConf();
-  return ['-f', CONF_PATH, 'attach-session', '-t', name];
+  // Exact-match target: without `=`, attaching to a session whose tmux died
+  // (ts-…-10) would prefix-match into a LIVE sibling (ts-…-108) and drop the
+  // user into the wrong session. Terminal-identity parsers strip the `=` when
+  // reading these args back (see sessionNameForTerminal / terminal-tracker).
+  return ['-f', CONF_PATH, 'attach-session', '-t', exact(name)];
 }

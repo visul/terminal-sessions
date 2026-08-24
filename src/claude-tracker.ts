@@ -1347,7 +1347,8 @@ export class ClaudeTracker {
               const opts = t.creationOptions;
               const args = (opts as vscode.TerminalOptions)?.shellArgs;
               const argList = Array.isArray(args) ? args : args ? [args] : [];
-              if (argList.includes(tmuxSession)) { t.show(); break; }
+              // Attach args carry the exact-match form `-t =name` — accept both.
+              if (argList.includes(tmuxSession) || argList.includes('=' + tmuxSession)) { t.show(); break; }
             }
           } catch { /* best effort */ }
         }
@@ -1363,7 +1364,8 @@ export class ClaudeTracker {
           const opts2 = t.creationOptions;
           const args = (opts2 as vscode.TerminalOptions)?.shellArgs;
           const argList = Array.isArray(args) ? args : args ? [args] : [];
-          if (argList.includes(tmuxSession)) { t.show(); break; }
+          // Attach args carry the exact-match form `-t =name` — accept both.
+          if (argList.includes(tmuxSession) || argList.includes('=' + tmuxSession)) { t.show(); break; }
         }
       });
       void notify({

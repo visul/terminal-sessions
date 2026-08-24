@@ -25,6 +25,7 @@ export interface Config {
   notificationSoundWaiting: string;
   notifyOnClaudeStop: boolean;
   unreadBadges: boolean;
+  transcriptExpiryWarnDays: number;
   notifyOnClaudeWaiting: boolean;
   waitingAlertStyle: WaitingAlertStyle;
   claudeStopMinDurationSeconds: number;
@@ -67,6 +68,7 @@ export function getConfig(): Config {
     notificationSoundWaiting: c.get('notificationSoundWaiting', 'Sosumi'),
     notifyOnClaudeStop: c.get('notifyOnClaudeStop', true),
     unreadBadges: c.get('unreadBadges', true),
+    transcriptExpiryWarnDays: c.get('transcriptExpiryWarnDays', 20),
     notifyOnClaudeWaiting: c.get('notifyOnClaudeWaiting', true),
     waitingAlertStyle: ((): WaitingAlertStyle => {
       const v = c.get<string>('waitingAlertStyle', 'banner');
@@ -167,6 +169,11 @@ export const COMMAND = {
   pickSortMode: 'terminalSessions.pickSortMode',
   pickFilterMode: 'terminalSessions.pickFilterMode',
   findSession: 'terminalSessions.findSession',
+  searchSessions: 'terminalSessions.searchSessions',
+  filterSessions: 'terminalSessions.filterSessions',
+  clearSidebarTextFilter: 'terminalSessions.clearSidebarTextFilter',
+  fixTranscriptCleanup: 'terminalSessions.fixTranscriptCleanup',
+  dismissCleanupNotice: 'terminalSessions.dismissCleanupNotice',
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
   openSubagentTranscript: 'terminalSessions.openSubagentTranscript',
   viewConversation: 'terminalSessions.viewConversation',

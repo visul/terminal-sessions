@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.37] — 2026-08-24
+
+### Fixed
+- **Clicking a stopped session could open a DIFFERENT session.** tmux prefix-matches `-t` targets, so a dead `ts-…-10` silently resolved to a live `ts-…-108`: `has-session` lied, the attach landed in the wrong pane, and `kill` could have killed a stranger. Every session-targeting tmux call now uses tmux's exact-match form (`-t =name`, pane targets `-t =name:`). Verified on tmux 3.6a.
+- **Stopped session starting as an inexplicable empty shell** now explains itself: when none of the pane's recorded conversations still exist on disk (Claude Code deletes transcripts after ~30 days, `cleanupPeriodDays`), Start shows a warning instead of silently opening a clean shell.
+
+### Added
+- **Filter the sidebar in place.** The `$(search-fuzzy)` button (or `Terminal Sessions: Filter Sidebar Sessions…`) opens an input that filters the tree LIVE on every keystroke: matching sessions (by name, folder path, group, workspace — every word must match) render as a flat list under a `Filter: "…"` header row, so matches inside collapsed groups can't hide. The filter persists after closing the box — the view's description shows `filter: …` and the header row clears it on click (`Terminal Sessions: Clear Sidebar Filter` in the palette does too). Rows keep all their actions. VS Code's native type-to-find (just start typing in the tree) still works for quick jumps in the visible rows.
+- **Search Sessions picker.** Palette command `Terminal Sessions: Search Sessions (Name, Folder, Group)…` — same matching, QuickPick form: accept reveals the row and attaches (or Starts a stopped one). Complements *Find Session by Prompt*, which searches transcript content.
+- **Transcript-cleanup warning.** A one-line dismissible notice at the top of the sidebar when Claude Code's `cleanupPeriodDays` is unset or under 90 days: *"Claude deletes old chats — after 30 days, click to keep them"* (the number is read from the user's actual setting). Click opens a modal that writes `"cleanupPeriodDays": 3650` into `~/.claude/settings.json` (surgical edit, rest of the file untouched byte-for-byte; refuses to touch a file that isn't valid JSON). The inline ✕ snoozes it for 30 days — it re-arms on purpose, since the data loss is permanent. Hidden entirely when `~/.claude` doesn't exist or the setting is already ≥ 90 days. Also in the palette: `Terminal Sessions: Keep Claude Transcripts (Stop 30-Day Deletion)…`.
+- **Expiring-transcript countdown.** The notice also counts the transcripts Claude will actually delete soon: it scans `~/.claude/projects` (cached 6h), computes each file's deletion date (mtime + `cleanupPeriodDays`) and, when any fall within the next 20 days (`terminalSessions.transcriptExpiryWarnDays`, 0 = off), the row becomes *"7 Claude chats expire soon — first in ~5d, click to keep them"*. This concrete form fires even when the cleanup setting is otherwise "safe" (≥ 90 days) — imminent loss is imminent loss. Sub-10KB glance transcripts don't count.
+
 ## [0.20.36] — 2026-08-20
 
 ### Added

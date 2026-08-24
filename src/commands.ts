@@ -8,7 +8,7 @@ import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId } from './profile-provider';
 import { currentWorkspace, hashPath, sessionName as buildSessionName, parseSessionName } from './workspace-id';
 import { SessionTreeItem, SubagentTreeItem, GroupTreeItem, WorkspaceTreeItem, KilledSessionItem } from './sidebar/items';
-import { refreshSidebar, collapseAllSessions, revealSessionInSidebar } from './sidebar/tree-provider';
+import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebarTextFilter, getSidebarTextFilter } from './sidebar/tree-provider';
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
@@ -21,6 +21,7 @@ import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } f
 import { planTrash, executeTrash, formatBytes } from './trash';
 import { AgentRegistry } from './agents/registry';
 import { isYolo, setYolo } from './agents/launch-flags';
+import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, countExpiringTranscripts, clearExpiryCache, KEEP_FOREVER_DAYS } from './notices';
 import type { AgentProvider, AgentId } from './agents/types';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
@@ -297,6 +298,11 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
     vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
+    vscode.commands.registerCommand(COMMAND.searchSessions, () => cmdSearchSessions(index, registry, claudeTracker)),
+    vscode.commands.registerCommand(COMMAND.filterSessions, () => cmdFilterSessions()),
+    vscode.commands.registerCommand(COMMAND.clearSidebarTextFilter, () => setSidebarTextFilter(undefined)),
+    vscode.commands.registerCommand(COMMAND.fixTranscriptCleanup, () => cmdFixTranscriptCleanup()),
+    vscode.commands.registerCommand(COMMAND.dismissCleanupNotice, () => { snoozeCleanupNotice(); refreshSidebar(); }),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts()),
     vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(true)),
@@ -842,6 +848,115 @@ async function cmdFindSession(searchIndex: ClaudeSearchIndex): Promise<void> {
   });
   qp.onDidHide(() => qp.dispose());
   qp.show();
+}
+
+/**
+ * Filter the SIDEBAR sessions (live + stopped) by keyword — label, folder path,
+ * group name, workspace — and jump to the picked one. Complements Find Session
+ * (which searches transcript CONTENT): this one answers "where is my linkody
+ * pane again?" without scrolling the tree. Accept = reveal in the sidebar and
+ * attach (or Start, when the session is stopped — same as clicking its row).
+ */
+async function cmdSearchSessions(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  const all = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
+  if (all.length === 0) {
+    vscode.window.showInformationMessage('No sessions to search.');
+    return;
+  }
+  interface Pick extends vscode.QuickPickItem { session: SessionInfo }
+  const picks: Pick[] = all.map(s => {
+    const groupName = s.groupId
+      ? index.getWorkspace(s.workspaceHash)?.groups?.[s.groupId]?.name
+      : undefined;
+    const state = s.stopped ? 'stopped' : s.attached ? 'attached' : 'detached';
+    return {
+      label: `$(${s.stopped ? 'debug-stop' : s.icon || 'terminal'}) ${s.label || `#${s.tabId}`}`,
+      description: [s.workspaceLabel, groupName, state, `idle ${humanAge(s.lastAttached)}`]
+        .filter(Boolean).join(' · '),
+      detail: s.folderPath || s.workspacePath,
+      session: s,
+    };
+  });
+  const pick = await vscode.window.showQuickPick<Pick>(picks, {
+    placeHolder: 'Filter sessions by name, folder, group, or workspace…',
+    matchOnDescription: true,
+    matchOnDetail: true,
+  });
+  if (!pick) return;
+  const s = pick.session;
+  await revealSessionInSidebar(s.name, true);
+  if (s.stopped) {
+    await cmdStart(index, registry, claudeTracker, undefined, s.name);
+  } else {
+    await openTerminalForSession(s.name, undefined, index);
+    refreshSidebar();
+  }
+}
+
+/**
+ * Live in-tree filter (the sidebar funnel button). An InputBox stays open while
+ * the tree filters ON EVERY KEYSTROKE — matching sessions render as a flat list
+ * with a "Filter: …" header row. Enter/Esc just close the box; the filter
+ * STAYS until cleared (header row click, empty text, or the view description
+ * reminds you it's on). This is the closest VS Code lets an extension get to
+ * "type directly into the tree".
+ */
+function cmdFilterSessions(): void {
+  const ib = vscode.window.createInputBox();
+  ib.placeholder = 'Filter sessions — name, folder, group, workspace (all words must match)';
+  ib.value = getSidebarTextFilter() ?? '';
+  ib.prompt = 'The sidebar filters live as you type. The filter persists after closing — click the "Filter:" row to clear it.';
+  ib.onDidChangeValue(v => setSidebarTextFilter(v));
+  ib.onDidAccept(() => ib.hide());
+  ib.onDidHide(() => ib.dispose());
+  ib.show();
+}
+
+/**
+ * Click on the transcript-cleanup notice row. One modal, two real choices:
+ * write `cleanupPeriodDays: 3650` into ~/.claude/settings.json (surgical text
+ * edit — the rest of the file is preserved byte-for-byte), or snooze the
+ * notice for 30 days. Escape does nothing and the notice stays.
+ */
+async function cmdFixTranscriptCleanup(): Promise<void> {
+  const current = readClaudeCleanupDays();
+  const warnDays = getConfig().transcriptExpiryWarnDays;
+  const expiring = warnDays > 0 ? countExpiringTranscripts(warnDays) : { count: 0, soonestDays: 0 };
+  const atRisk = expiring.count > 0
+    ? ` ${expiring.count} transcript${expiring.count === 1 ? '' : 's'} will be deleted within the next `
+      + `${warnDays} days — the first in ~${expiring.soonestDays} day${expiring.soonestDays === 1 ? '' : 's'}.`
+    : '';
+  const choice = await vscode.window.showWarningMessage(
+    `Claude Code deletes conversation transcripts after ${current ?? 30} days of inactivity `
+    + `(its cleanupPeriodDays setting). A stopped session older than that starts as an EMPTY shell — `
+    + `the conversation is permanently gone.${atRisk} Keep transcripts for ~10 years instead?`,
+    { modal: true },
+    'Keep Transcripts (3650 days)',
+    'Hide for 30 Days',
+  );
+  if (choice === 'Keep Transcripts (3650 days)') {
+    const err = setClaudeCleanupDays(KEEP_FOREVER_DAYS);
+    if (err) {
+      vscode.window.showErrorMessage(`Couldn't update Claude settings: ${err}`);
+      return;
+    }
+    clearExpiryCache(); // expiry dates just moved ~10 years out
+    vscode.window.showInformationMessage(
+      'Done — "cleanupPeriodDays": 3650 written to ~/.claude/settings.json. Claude will keep transcripts for ~10 years.',
+    );
+  } else if (choice === 'Hide for 30 Days') {
+    snoozeCleanupNotice();
+  } else {
+    return; // Escape — leave the notice as is.
+  }
+  refreshSidebar();
 }
 
 async function openSessionActions(entry: SessionIndexEntry): Promise<void> {
@@ -1558,6 +1673,17 @@ async function cmdStart(
   );
   const claudeSessionId = startResume?.sessionId;
   const claudeTranscriptPath = startResume?.transcriptPath;
+
+  // The pane has recorded conversations but none can be resumed — usually the
+  // transcripts were pruned from disk (Claude Code deletes them after
+  // ~30 days, `cleanupPeriodDays`). Without this the session just opens as an
+  // inexplicable empty shell.
+  if (!startResume && startHistory.length > 0) {
+    vscode.window.showWarningMessage(
+      `"${meta?.label || name}" started as a clean shell — its recorded conversation(s) are no longer on disk `
+      + `(Claude Code deletes old transcripts after ~30 days).`,
+    );
+  }
 
   try {
     // If the tmux session somehow already exists (rare race), skip create and just attach.

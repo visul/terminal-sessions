@@ -107,7 +107,8 @@ export function sessionNameForTerminal(t: vscode.Terminal): string | undefined {
   const tIdx = args.indexOf('-t');
   const nameIdx = sIdx >= 0 ? sIdx + 1 : (tIdx >= 0 ? tIdx + 1 : -1);
   if (nameIdx < 0 || nameIdx >= args.length) return undefined;
-  return args[nameIdx];
+  // `-t =name` is tmux's exact-match form (buildAttachArgs) — strip the marker.
+  return args[nameIdx].replace(/^=/, '');
 }
 
 /**
@@ -212,7 +213,8 @@ async function tmuxNameFromTerminalProcess(t: vscode.Terminal): Promise<string |
     // dead to Reveal / Open Folder.
     const m = /(?:new-session|attach-session)\b.*?\s-(?:t|s)\s+(\S+)/.exec(out)
       || /\s-[ts]\s+(\S+)/.exec(out);
-    return m ? m[1] : undefined;
+    // Strip tmux's `=` exact-match marker (attach-session -t =name).
+    return m ? m[1].replace(/^=/, '') : undefined;
   } catch {
     return undefined;
   }

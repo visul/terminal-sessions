@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.36",
+  "version": "0.20.37",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -283,6 +283,12 @@
           "default": true,
           "description": "Mark sessions whose agent finished while you were looking elsewhere: green (done), red (failed / tests red / rate limited) or amber (agent asked you a question) until you focus that terminal or right-click → Dismiss. Survives window reloads."
         },
+        "terminalSessions.transcriptExpiryWarnDays": {
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "description": "Warn in the sidebar when Claude conversation transcripts will be auto-deleted (Claude's cleanupPeriodDays) within this many days. The notice shows how many are at risk; click it to raise the cleanup period. Set 0 to only warn about the risky setting itself, never about individual transcripts."
+        },
         "terminalSessions.showOpenFolder": {
           "type": "boolean",
           "default": true,
@@ -516,8 +522,22 @@
       },
       {
         "command": "terminalSessions.findSession",
-        "title": "Terminal Sessions: Find Session by Prompt...",
+        "title": "Terminal Sessions: Search ALL Past Conversations (every agent, by prompt text)...",
         "icon": "$(search)"
+      },
+      {
+        "command": "terminalSessions.searchSessions",
+        "title": "Terminal Sessions: Search Sessions (Name, Folder, Group)...",
+        "icon": "$(list-filter)"
+      },
+      {
+        "command": "terminalSessions.filterSessions",
+        "title": "Terminal Sessions: Filter This List (type to narrow the sessions below)...",
+        "icon": "$(search-fuzzy)"
+      },
+      {
+        "command": "terminalSessions.clearSidebarTextFilter",
+        "title": "Terminal Sessions: Clear Sidebar Filter"
       },
       {
         "command": "terminalSessions.fixClaudeRendering",
@@ -550,6 +570,15 @@
       {
         "command": "terminalSessions.markAllSeen",
         "title": "Terminal Sessions: Mark All Sessions as Seen"
+      },
+      {
+        "command": "terminalSessions.fixTranscriptCleanup",
+        "title": "Terminal Sessions: Keep Claude Transcripts (Stop 30-Day Deletion)..."
+      },
+      {
+        "command": "terminalSessions.dismissCleanupNotice",
+        "title": "Dismiss for 30 Days",
+        "icon": "$(close)"
       },
       {
         "command": "terminalSessions.unmuteSession",
@@ -714,6 +743,10 @@
         },
         {
           "command": "terminalSessions.dismissAttention",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.dismissCleanupNotice",
           "when": "false"
         },
         {
@@ -903,9 +936,14 @@
       ],
       "view/title": [
         {
-          "command": "terminalSessions.findSession",
+          "command": "terminalSessions.filterSessions",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@0"
+        },
+        {
+          "command": "terminalSessions.findSession",
+          "when": "view == terminalSessions.sessions",
+          "group": "navigation@4.8"
         },
         {
           "command": "terminalSessions.pickSortMode",
@@ -1173,6 +1211,11 @@
           "command": "terminalSessions.dismissAttention",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session.*\\.attn$/",
           "group": "edit@-2"
+        },
+        {
+          "command": "terminalSessions.dismissCleanupNotice",
+          "when": "view == terminalSessions.sessions && viewItem == cleanupNotice",
+          "group": "inline@99"
         },
         {
           "command": "terminalSessions.muteSession",

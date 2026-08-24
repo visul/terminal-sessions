@@ -150,7 +150,8 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **API-equivalent cost in USD** — cost per session computed from the transcript against a built-in rate card (hardcoded in `src/claude-pricing.ts`, last verified January 2026 — it does not fetch live prices), per-model (Opus 4.7 at $5/$25 in/out, Opus 4.1 at $15/$75, Sonnet at $3/$15, Haiku at $1/$5, plus separate cache-read and 5-min/1-hour cache-write tiers). Retried turns are de-duplicated by `message.id`; subagents on different models are counted automatically with their own rate. Sidebar shows `opus · $55.25 · 364 turns`; tooltip shows per-model breakdown and the raw token totals
 - **Context-window gauge** — the `31% ctx` suffix appears next to every Claude-active session. Crosses `terminalSessions.contextWarnPct` (default 0.8) → `⚠ 87% ctx`. Limit is auto-detected per session: Opus/Sonnet 4.5+ default to 1M-context, older models to 200k; if any single turn exceeds 200k we pin the limit to 1M. Subagent turns are excluded because they have their own context
 - **Nested detail rows** — under each active session, rows show last user message, last Claude reply, model/cost/turns, current tool with its input (e.g. `Bash: "npm run build"`); configurable `auto | always | off`
-- **Search past sessions** — `$(search)` button in the sidebar (or `Terminal Sessions: Find Session by Prompt…` command) opens a fuzzy picker over every transcript on your machine. Jump to transcript, copy session ID, or reveal the cwd
+- **Search past sessions** — `$(search)` button in the sidebar (or `Terminal Sessions: Search ALL Past Conversations…` command) opens a fuzzy picker over every transcript on your machine. Jump to transcript, copy session ID, or reveal the cwd
+- **Filter the sidebar in place** — `$(search-fuzzy)` button (or `Terminal Sessions: Filter Sidebar Sessions…`): the tree filters live as you type (name, folder path, group, workspace), showing matches as a flat list under a `Filter:` header row; the filter persists until you click that row to clear it. A QuickPick variant lives in the palette as `Terminal Sessions: Search Sessions (Name, Folder, Group)…`
 - **Deduplicated live state** — if you ran `claude --resume <id>` in multiple tabs over time, the tracker now transfers ownership on each new hook event, so only the tab currently running that conversation shows live state. Others snap back to idle
 
 ### Archive, conversation viewer & cleanup
@@ -314,7 +315,9 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Kill Session` | Pick a session to kill |
 | `Terminal Sessions: Kill All Sessions for This Workspace` | Clean up this project |
 | `Terminal Sessions: Kill All Stale Sessions` | Prune sessions older than `pruneAfterDays` |
-| `Terminal Sessions: Find Session by Prompt...` | Fuzzy picker over every Claude transcript on your machine |
+| `Terminal Sessions: Search ALL Past Conversations...` | Fuzzy picker over every Claude transcript on your machine |
+| `Terminal Sessions: Filter Sidebar Sessions...` | Live in-place filter of the sidebar tree (name, folder, group, workspace) |
+| `Terminal Sessions: Search Sessions (Name, Folder, Group)...` | Same matching as a QuickPick — accept jumps to the session and attaches |
 | `Terminal Sessions: Set as Default Terminal Profile` | Write the VS Code setting so `+` auto-wraps |
 | `Terminal Sessions: Open tmux.conf` | Edit `~/.terminal-sessions/tmux.conf` |
 | `Terminal Sessions: Reload tmux Config` | Apply config changes to running sessions |

@@ -763,6 +763,67 @@ export class KilledFolderItem extends vscode.TreeItem {
   }
 }
 
+/** One-line dismissible notice at the top of the tree: Claude Code deletes
+ *  transcripts older than `cleanupPeriodDays` (default 30) — a stopped session
+ *  older than that comes back as an empty shell, the conversation is gone for
+ *  good. Click = fix the setting; inline X = snooze for 30 days (it re-arms,
+ *  on purpose — the loss is permanent, one X shouldn't bury it forever). */
+export class CleanupNoticeItem extends vscode.TreeItem {
+  constructor(
+    currentDays: number | undefined,
+    expiring?: { count: number; soonestDays: number },
+    warnDays?: number,
+  ) {
+    const concrete = (expiring?.count ?? 0) > 0;
+    super(
+      concrete
+        ? `${expiring!.count} Claude chat${expiring!.count === 1 ? '' : 's'} expire soon`
+        : 'Claude deletes old chats',
+      vscode.TreeItemCollapsibleState.None,
+    );
+    this.id = 'notice:transcriptCleanup';
+    this.description = concrete
+      ? `first in ~${expiring!.soonestDays}d — click to keep them`
+      : `after ${currentDays ?? 30} days — click to keep them`;
+    this.iconPath = new vscode.ThemeIcon('warning', new vscode.ThemeColor('list.warningForeground'));
+    this.contextValue = 'cleanupNotice';
+    const settingLine =
+      `Its \`cleanupPeriodDays\` setting ${currentDays === undefined ? 'is unset, so the default **30 days** applies' : `is **${currentDays} days**`}: `
+      + 'any conversation idle longer than that is deleted from disk — a stopped session then Starts as an empty shell, '
+      + 'and the conversation cannot be recovered.';
+    this.tooltip = new vscode.MarkdownString(
+      '**Claude Code auto-deletes conversation transcripts**\n\n'
+      + settingLine + '\n\n'
+      + (concrete
+        ? `**${expiring!.count} transcript${expiring!.count === 1 ? '' : 's'}** will be deleted within the next `
+          + `**${warnDays} days** — the first in ~**${expiring!.soonestDays} day${expiring!.soonestDays === 1 ? '' : 's'}**.\n\n`
+        : '')
+      + 'Click to set it to 3650 days (~forever) in `~/.claude/settings.json`. The ✕ hides this notice for 30 days.',
+    );
+    this.command = {
+      command: 'terminalSessions.fixTranscriptCleanup',
+      title: 'Keep Claude Transcripts',
+    };
+  }
+}
+
+/** Header row shown while the live text filter is active: names the query,
+ *  counts the matches, and clears the filter on click. */
+export class FilterHeaderItem extends vscode.TreeItem {
+  constructor(query: string, count: number) {
+    super(`Filter: "${query}"`, vscode.TreeItemCollapsibleState.None);
+    this.id = 'filter-header';
+    this.description = `${count} match${count === 1 ? '' : 'es'} — click to clear`;
+    this.iconPath = new vscode.ThemeIcon('filter-filled', new vscode.ThemeColor('charts.blue'));
+    this.contextValue = 'filterHeader';
+    this.tooltip = 'Showing only sessions matching the filter (name, folder, group, workspace). Click to clear it.';
+    this.command = {
+      command: 'terminalSessions.clearSidebarTextFilter',
+      title: 'Clear Filter',
+    };
+  }
+}
+
 /** One killed session inside the graveyard folder. Restore-only row. */
 export class KilledSessionItem extends vscode.TreeItem {
   constructor(
