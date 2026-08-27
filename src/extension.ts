@@ -15,6 +15,7 @@ import { resolveTmuxNameForTerminalLive } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import { getConfig } from './config';
 import { registerRevealPath } from './reveal-path';
+import { registerTerminalLinks } from './terminal-links';
 import { registerClipboardBridge } from './clipboard-bridge';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
@@ -47,6 +48,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // at startup (the key is falsy/Kill-shown until the first terminal switch).
   void syncActiveTerminalLockedContext(index);
   registerRevealPath(ctx);
+  registerTerminalLinks(ctx);
   // Remote-SSH only: mirror tmux copies to the local clipboard with correct UTF-8
   // (bypasses the OSC 52 path Cursor mangles). No-op on local hosts.
   registerClipboardBridge(ctx);

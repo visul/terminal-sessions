@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.37",
+  "version": "0.20.38",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -288,6 +288,16 @@
           "default": 20,
           "minimum": 0,
           "description": "Warn in the sidebar when Claude conversation transcripts will be auto-deleted (Claude's cleanupPeriodDays) within this many days. The notice shows how many are at risk; click it to raise the cleanup period. Set 0 to only warn about the risky setting itself, never about individual transcripts."
+        },
+        "terminalSessions.pathLinks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Make file paths CONTAINING SPACES Cmd+Clickable in the integrated terminal (the built-in detector stops at the first space). Paths are validated on disk before a link is shown; paths hard-wrapped onto a second row get a \"find file ending in…\" rescue. Auto-disables if the standalone Terminal Path Links extension is installed."
+        },
+        "terminalSessions.webLinks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Make scheme-less web URLs Cmd+Clickable in the integrated terminal: github.com/owner/repo, learn.microsoft.com/docs… The built-in detector only links https:// and www. forms. Conservative TLD allowlist; never linkifies file-extension look-alikes (.md, .sh, .ts)."
         },
         "terminalSessions.showOpenFolder": {
           "type": "boolean",

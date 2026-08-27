@@ -4,6 +4,12 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.38] — 2026-08-27
+
+### Added
+- **Clickable paths with spaces.** File paths containing spaces are now Cmd+Clickable in the integrated terminal — the built-in detector stops at the first space, this one doesn't. Every candidate is validated on disk before a link appears (stat-cached, hard budget per line, never a false link); `:line:col` suffixes open at the exact position; directories reveal in the Explorer; a path hard-wrapped onto a continuation row gets a "find file ending in…" tail rescue via workspace search. Ported from (and superseding) the standalone Terminal Path Links extension — auto-disables its own path detector if that extension is installed, so nothing double-links. Toggle: `terminalSessions.pathLinks`.
+- **Clickable scheme-less web URLs.** `github.com/owner/repo`, `support.google.com/x`, `climatico.ro`… become Cmd+Clickable without needing `https://` (the built-in detector only links scheme'd and `www.` forms — everything an agent prints in backticks or without a scheme was dead text). Conservative by design: known-TLD allowlist that excludes file-extension look-alikes (`.md`, `.sh`, `.ts`…), skips emails, `www.` forms, tokens inside paths, and numeric-only hosts; path links win on overlap. Toggle: `terminalSessions.webLinks`.
+
 ## [0.20.37] — 2026-08-24
 
 ### Fixed

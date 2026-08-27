@@ -93,6 +93,29 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Multi-select + bulk actions** — Cmd/Ctrl- or Shift-click several session rows, then right-click: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock and Add/Remove Favorites all apply to the whole selection. Destructive ones ask once for the batch (Kill & Delete Data shows the combined size); locked rows are always kept; the YOLO switch stays per-session on purpose
 - **Explorer right-click → "Open in Integrated Terminal - Persistent"** — on any folder, opens a persistent tmux session rooted at that folder. The VS Code tab description reflects the actual folder name, not the workspace root
 
+### Clickable paths & links in the terminal
+
+Two extra link detectors on top of VS Code's built-in one. Both read the **rendered** terminal text, so they work identically inside and outside tmux — no OSC 8 passthrough involved.
+
+- **Paths with spaces** — file paths **containing spaces** become Cmd+Clickable (the built-in detector stops at the first space). Every candidate is validated on disk before a link appears, so there are no false links; `:line:col` suffixes open at the exact position; directories reveal in the Explorer; a path hard-wrapped onto a second row by tmux gets a "find file ending in…" rescue via workspace search. Toggle: `terminalSessions.pathLinks`
+- **Scheme-less web URLs** — `github.com/owner/repo`, `support.google.com/docs`… become Cmd+Clickable even without `https://` (the built-in detector only links scheme'd and `www.` forms — everything an AI agent prints without a scheme is dead text otherwise). Conservative by design: a known-TLD allowlist that excludes file-extension look-alikes (`.md`, `.sh`, `.ts`…), and it skips emails, `www.` forms, and tokens inside paths. Toggle: `terminalSessions.webLinks`
+
+**Teach your AI agent to print clickable paths.** Both detectors work on rendered terminal lines, so a path hard-wrapped onto a second row can't be validated (only the "find file ending in…" rescue may catch it). You can raise the hit rate a lot by telling your agent how to print paths. Add this to your agent's instruction file — `~/.claude/CLAUDE.md` for Claude Code, `AGENTS.md` for Codex (also read by Gemini CLI and Grok), or `GEMINI.md`:
+
+```markdown
+## Paths and links in terminal output
+
+- A file path must fit on ONE terminal line — a wrapped path is not clickable.
+  Prefer workspace-relative paths (shorter = less likely to wrap).
+  Absolute and ~/ paths work too.
+- Put a long path alone on its own line, never buried at the end of a long
+  paragraph.
+- Only print paths that exist on disk.
+- For web resources print a full URL (https://...) or a markdown link — never
+  a bare owner/repo slug, and never a URL inside backticks (backticks kill
+  link rendering in most agents).
+```
+
 ### Sidebar sort modes
 - **Custom** — drag sessions in the sidebar to rearrange; order persisted across restarts (stored per-session in `~/.terminal-sessions/index.json`)
 - **Recently used** — most recently focused session floats to top
@@ -159,6 +182,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **View Conversation** — right-click a session (or the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`
 - **Name Conversation** — give any session a friendly name; it shows in the archive picker and the viewer title. Names live in the extension's sidecar index, so the agent's transcript files are never modified
 - **Clean Up Empty / Invalid Sessions** — a maintenance action (sidebar overflow `⋯` menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. **Claude only** — Codex, Antigravity, and Grok transcripts are never classified or moved, and the soft-delete refuses any path outside `~/.claude/projects`. The agent's own database and session index are never touched; moved files can be restored manually
+- **Transcript-cleanup warning** — Claude Code silently **deletes** conversation transcripts after 30 days (`cleanupPeriodDays`, and everything above — resume, archive, viewer — needs those files). A one-line dismissible notice at the top of the sidebar warns when your setting is risky (unset or under 90 days), and counts the transcripts about to expire within the next `terminalSessions.transcriptExpiryWarnDays` days: *"7 Claude chats expire soon — first in ~5d, click to keep them"*. Click writes `"cleanupPeriodDays": 3650` into `~/.claude/settings.json` (surgical edit — the rest of the file stays byte-for-byte identical; refuses to touch invalid JSON). The ✕ snoozes the notice for 30 days; it re-arms on purpose, because the data loss is permanent
 
 ### Unread results & turn outcome
 - **Unread marker** — an agent that finishes while you're on another tab keeps a verdict on its row until you focus that terminal: teal filled check = done, red `✗ failed` / `✗ tests failed` / `⏳ rate limited`, amber `? asked you`. Persisted across window reloads; the activity-bar badge counts unread sessions. Toggle with `terminalSessions.unreadBadges`
@@ -318,6 +342,8 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Search ALL Past Conversations...` | Fuzzy picker over every Claude transcript on your machine |
 | `Terminal Sessions: Filter Sidebar Sessions...` | Live in-place filter of the sidebar tree (name, folder, group, workspace) |
 | `Terminal Sessions: Search Sessions (Name, Folder, Group)...` | Same matching as a QuickPick — accept jumps to the session and attaches |
+| `Terminal Sessions: Clear Sidebar Filter` | Drop the live text filter (same as clicking the `Filter:` header row) |
+| `Terminal Sessions: Keep Claude Transcripts (Stop 30-Day Deletion)...` | Raise Claude Code's `cleanupPeriodDays` to 3650 so old conversations stop being auto-deleted |
 | `Terminal Sessions: Set as Default Terminal Profile` | Write the VS Code setting so `+` auto-wraps |
 | `Terminal Sessions: Open tmux.conf` | Edit `~/.terminal-sessions/tmux.conf` |
 | `Terminal Sessions: Reload tmux Config` | Apply config changes to running sessions |
@@ -383,6 +409,9 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.sidebarFilterMode` | `"all"` | Filter sidebar by state: `all`, `running`, or `stopped` |
 | `terminalSessions.showFavoritesFolder` | `true` | Show the pinned **Favorite Sessions** folder (starred sessions); hidden while empty |
 | `terminalSessions.unreadBadges` | `true` | Keep a done / failed / asked-you verdict on a session row until you focus its terminal or dismiss it |
+| `terminalSessions.transcriptExpiryWarnDays` | `20` | Warn in the sidebar when Claude transcripts will be auto-deleted within this many days (`0` = only warn about the risky setting itself) |
+| `terminalSessions.pathLinks` | `true` | Cmd+Clickable file paths **with spaces** in the terminal, validated on disk (auto-off if the standalone Terminal Path Links extension is installed) |
+| `terminalSessions.webLinks` | `true` | Cmd+Clickable scheme-less URLs (`github.com/owner/repo`) in the terminal, conservative TLD allowlist |
 | `terminalSessions.showOpenFolder` | `true` | Show the pinned **Open Sessions** folder (terminal tabs open in this window, in tab order); hidden while empty |
 | `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
@@ -451,10 +480,6 @@ If you started Claude in a session before the v3 config was applied, the env var
 - **From the Claude conversation:** press `Ctrl+O` then `[` inside Claude. That dumps the current conversation view into the main tmux scrollback. From there, drag-select normally. Press `Ctrl+O` then `/` for Claude's own in-view search
 - **Cmd+F / tmux copy-mode search** only sees content in the main buffer. The live Claude view lives in alt-screen, so it is not searchable that way — use `Ctrl+O` `/` inside Claude instead
 - **Over Remote-SSH:** an agent's own copy (Claude/Codex "copied to clipboard") reaches your **local** machine's clipboard with correct UTF-8, accents included. A headless remote has no clipboard tool (`xclip`/`pbcopy` fail) and Cursor's terminal mis-decodes OSC 52 for non-ASCII, so the extension installs a tiny writer on the remote and bridges what it captures to the local clipboard through the VS Code API. No setup on the remote
-
-## Related
-
-- **[Terminal Path Links](https://marketplace.visualstudio.com/items?itemName=visul.terminal-path-links)** — companion extension by the same author: makes file paths **containing spaces** Cmd+Clickable in the integrated terminal, including paths hard-wrapped across lines by tmux or TUI agents (exactly what Claude Code prints all day). Terminal Sessions keeps your terminals alive; Terminal Path Links keeps every printed path clickable.
 
 ## Changelog
 
