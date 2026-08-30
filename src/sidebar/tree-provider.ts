@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, buildClaudeDetails } from './items';
 import { shouldShowCleanupNotice, readClaudeCleanupDays, countExpiringTranscripts, ExpiryInfo } from '../notices';
 import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
 import { SessionInfo } from '../types';
@@ -209,6 +209,13 @@ class SessionsTreeProvider
       }
       return this.lastWorkspaceItems.get(el.workspaceHash);
     }
+    if (el instanceof ActiveFolderItem || el instanceof BackgroundFolderItem) {
+      return this.lastOpenParents.get(el.workspaceHash) ?? this.lastWorkspaceItems.get(el.workspaceHash);
+    }
+    if (el instanceof OpenFolderItem || el instanceof FavoritesFolderItem
+      || el instanceof ActivityFolderItem || el instanceof KilledFolderItem) {
+      return this.lastWorkspaceItems.get(el.workspaceHash);
+    }
     return undefined;
   }
 
@@ -292,6 +299,10 @@ class SessionsTreeProvider
    *  refresh would add up, but a tmux client can also appear a moment after a
    *  reload while the pty host reconnects. */
   private openNameCache = new WeakMap<vscode.Terminal, { name?: string; at: number }>();
+  // Last rendered "Open Sessions" parent per workspace, so getParent() can hand
+  // reveal() the wrapper the Active/Background folders nest under (when both
+  // rendered); absent → those folders sit at the workspace root.
+  private lastOpenParents = new Map<string, OpenFolderItem>();
 
   private async resolveOpenName(t: vscode.Terminal): Promise<string | undefined> {
     const hit = this.openNameCache.get(t);
@@ -314,7 +325,7 @@ class SessionsTreeProvider
       const favs = activityOrder(allWsSessions.filter(s => s.favorite));
       if (favs.length > 0) out.push(new FavoritesFolderItem(hash, favs));
     }
-    if (cfg.showOpenFolder) {
+    if (cfg.showOpenFolder || cfg.showBackgroundFolder) {
       // Sessions with a terminal tab open in THIS window, in panel order.
       const pos = new Map<string, number>();
       for (const t of vscode.window.terminals) {
@@ -330,7 +341,21 @@ class SessionsTreeProvider
       const open = allWsSessions
         .filter(s => pos.has(s.name))
         .sort((a, b) => (pos.get(a.name)! - pos.get(b.name)!));
-      if (open.length > 0) out.push(new OpenFolderItem(hash, open));
+      const active = cfg.showOpenFolder && open.length > 0 ? new ActiveFolderItem(hash, open) : undefined;
+      // Running (tmux alive, not Stopped) but no tab here: closed from the
+      // panel while the agent keeps going. Most recently active on top.
+      const bg = cfg.showBackgroundFolder
+        ? activityOrder(allWsSessions.filter(s => !s.stopped && !pos.has(s.name)))
+        : [];
+      const background = bg.length > 0 ? new BackgroundFolderItem(hash, bg) : undefined;
+      // Both present → nest under "Open Sessions"; just one → it sits at the root.
+      this.lastOpenParents.delete(hash);
+      if (active && background) {
+        const parent = new OpenFolderItem(hash, active, background);
+        this.lastOpenParents.set(hash, parent);
+        out.push(parent);
+      } else if (active) out.push(active);
+      else if (background) out.push(background);
     }
     if (cfg.showActivityFolder) {
       const list = activityOrder(allWsSessions).slice(0, Math.max(1, cfg.activityLimit));
@@ -616,10 +641,18 @@ class SessionsTreeProvider
         return item;
       });
     }
-    if (el instanceof OpenFolderItem) {
+    if (el instanceof OpenFolderItem) return [el.active, el.background];
+    if (el instanceof ActiveFolderItem) {
       return el.sessions.map(s => {
         const item = this.makeSessionItem(s, cfg, false, false);
         item.id = `open:${item.id}`;
+        return item;
+      });
+    }
+    if (el instanceof BackgroundFolderItem) {
+      return el.sessions.map(s => {
+        const item = this.makeSessionItem(s, cfg, false, false);
+        item.id = `bg:${item.id}`;
         return item;
       });
     }

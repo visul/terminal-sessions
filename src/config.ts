@@ -40,6 +40,7 @@ export interface Config {
   confirmYoloSwitch: boolean;
   showFavoritesFolder: boolean;
   showOpenFolder: boolean;
+  showBackgroundFolder: boolean;
   showActivityFolder: boolean;
   showKilledFolder: boolean;
   activityLimit: number;
@@ -98,6 +99,7 @@ export function getConfig(): Config {
     confirmYoloSwitch: c.get('confirmYoloSwitch', true),
     showFavoritesFolder: c.get('showFavoritesFolder', true),
     showOpenFolder: c.get('showOpenFolder', true),
+    showBackgroundFolder: c.get('showBackgroundFolder', true),
     showActivityFolder: c.get('showActivityFolder', true),
     showKilledFolder: c.get('showKilledFolder', true),
     activityLimit: Math.max(1, c.get<number>('activityLimit', 50)),
@@ -200,6 +202,8 @@ export const COMMAND = {
   disableFavoritesFolder: 'terminalSessions.disableFavoritesFolder',
   enableOpenFolder: 'terminalSessions.enableOpenFolder',
   disableOpenFolder: 'terminalSessions.disableOpenFolder',
+  enableBackgroundFolder: 'terminalSessions.enableBackgroundFolder',
+  disableBackgroundFolder: 'terminalSessions.disableBackgroundFolder',
   enableActivityFolder: 'terminalSessions.enableActivityFolder',
   disableActivityFolder: 'terminalSessions.disableActivityFolder',
   enableKilledFolder: 'terminalSessions.enableKilledFolder',

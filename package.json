@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.38",
+  "version": "0.20.39",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -302,7 +302,12 @@
         "terminalSessions.showOpenFolder": {
           "type": "boolean",
           "default": true,
-          "description": "Show the pinned “Open Sessions” folder: sessions currently open as terminal tabs in this window, in tab order. Hidden while empty. Toggle also available in the view's ⋯ menu."
+          "description": "Show the pinned “Active Sessions” folder: sessions currently open as terminal tabs in this window, in tab order. Hidden while empty. When Background Sessions is non-empty too, both nest under an “Open Sessions” parent. Toggle also available in the view's ⋯ menu."
+        },
+        "terminalSessions.showBackgroundFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the pinned “Background Sessions” folder: sessions still running in tmux but with no terminal tab open in this window (tab closed, session not stopped). Hidden while empty. When Active Sessions is non-empty too, both nest under an “Open Sessions” parent. Toggle also available in the view's ⋯ menu."
         },
         "terminalSessions.showActivityFolder": {
           "type": "boolean",
@@ -682,12 +687,22 @@
       },
       {
         "command": "terminalSessions.enableOpenFolder",
-        "title": "Enable Open Sessions Folder",
+        "title": "Enable Active Sessions Folder",
         "category": "Terminal Sessions"
       },
       {
         "command": "terminalSessions.disableOpenFolder",
-        "title": "Disable Open Sessions Folder",
+        "title": "Disable Active Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.enableBackgroundFolder",
+        "title": "Enable Background Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.disableBackgroundFolder",
+        "title": "Disable Background Sessions Folder",
         "category": "Terminal Sessions"
       },
       {
@@ -860,6 +875,14 @@
           "when": "terminalSessions.openFolderEnabled"
         },
         {
+          "command": "terminalSessions.enableBackgroundFolder",
+          "when": "!terminalSessions.backgroundFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.disableBackgroundFolder",
+          "when": "terminalSessions.backgroundFolderEnabled"
+        },
+        {
           "command": "terminalSessions.enableActivityFolder",
           "when": "!terminalSessions.activityFolderEnabled"
         },
@@ -1019,6 +1042,16 @@
           "command": "terminalSessions.enableOpenFolder",
           "when": "view == terminalSessions.sessions && !terminalSessions.openFolderEnabled",
           "group": "2_folders@0.5"
+        },
+        {
+          "command": "terminalSessions.disableBackgroundFolder",
+          "when": "view == terminalSessions.sessions && terminalSessions.backgroundFolderEnabled",
+          "group": "2_folders@0.7"
+        },
+        {
+          "command": "terminalSessions.enableBackgroundFolder",
+          "when": "view == terminalSessions.sessions && !terminalSessions.backgroundFolderEnabled",
+          "group": "2_folders@0.7"
         },
         {
           "command": "terminalSessions.disableActivityFolder",
@@ -1296,6 +1329,21 @@
           "command": "terminalSessions.disableOpenFolder",
           "when": "view == terminalSessions.sessions && viewItem == openFolder",
           "group": "9_manage@1"
+        },
+        {
+          "command": "terminalSessions.disableBackgroundFolder",
+          "when": "view == terminalSessions.sessions && viewItem == backgroundFolder",
+          "group": "9_manage@1"
+        },
+        {
+          "command": "terminalSessions.disableOpenFolder",
+          "when": "view == terminalSessions.sessions && viewItem == openParentFolder",
+          "group": "9_manage@1"
+        },
+        {
+          "command": "terminalSessions.disableBackgroundFolder",
+          "when": "view == terminalSessions.sessions && viewItem == openParentFolder",
+          "group": "9_manage@2"
         },
         {
           "command": "terminalSessions.disableActivityFolder",

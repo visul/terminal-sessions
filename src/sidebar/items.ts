@@ -716,19 +716,57 @@ export class FavoritesFolderItem extends vscode.TreeItem {
   }
 }
 
-/** Pinned virtual folder "Open Sessions": sessions with a terminal tab open in
- *  THIS window, in panel order. Hidden while empty. */
-export class OpenFolderItem extends vscode.TreeItem {
+/** Pinned virtual folder "Active Sessions": sessions with a terminal tab open
+ *  in THIS window, in panel order. Hidden while empty. Sits at the workspace
+ *  root on its own; when Background Sessions is non-empty too, both nest
+ *  under an "Open Sessions" parent. */
+export class ActiveFolderItem extends vscode.TreeItem {
   constructor(
     public readonly workspaceHash: string,
     public readonly sessions: SessionInfo[],
   ) {
-    super('Open Sessions', vscode.TreeItemCollapsibleState.Collapsed);
+    super('Active Sessions', vscode.TreeItemCollapsibleState.Collapsed);
     this.id = `openf:${workspaceHash}`;
     this.iconPath = new vscode.ThemeIcon('terminal', new vscode.ThemeColor('charts.green'));
     this.description = String(sessions.length);
     this.contextValue = 'openFolder';
-    this.tooltip = 'Sessions currently open as terminal tabs in this window, in tab order. Right-click (or the view\'s ⋯ menu) to disable.';
+    this.tooltip = 'Sessions with a terminal tab open in this window, in tab order. Right-click (or the view\'s ⋯ menu) to disable.';
+  }
+}
+
+/** Pinned virtual parent "Open Sessions": everything running, split into
+ *  Active (tab open here) and Background (tmux alive, no tab). Only shown when
+ *  BOTH children are non-empty — otherwise the one child sits at the root. */
+export class OpenFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly active: ActiveFolderItem,
+    public readonly background: BackgroundFolderItem,
+  ) {
+    super('Open Sessions', vscode.TreeItemCollapsibleState.Expanded);
+    this.id = `allopenf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('folder-opened', new vscode.ThemeColor('charts.green'));
+    this.description = String(active.sessions.length + background.sessions.length);
+    this.contextValue = 'openParentFolder';
+    this.tooltip = 'All running sessions: Active (terminal tab open in this window) and Background (tmux still running, tab closed).';
+  }
+}
+
+/** Pinned virtual folder "Background Sessions": sessions whose tmux is alive
+ *  but that have NO terminal tab in THIS window — the tab was closed (or never
+ *  opened here) while the agent keeps working. The complement of Open
+ *  Sessions among running sessions. Hidden while empty. */
+export class BackgroundFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly sessions: SessionInfo[],
+  ) {
+    super('Background Sessions', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `bgf:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('debug-disconnect', new vscode.ThemeColor('charts.blue'));
+    this.description = String(sessions.length);
+    this.contextValue = 'backgroundFolder';
+    this.tooltip = 'Sessions still running in tmux but with no terminal tab open in this window (tab closed, not stopped or killed). Click one to reattach. Right-click (or the view\'s ⋯ menu) to disable.';
   }
 }
 

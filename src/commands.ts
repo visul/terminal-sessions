@@ -363,6 +363,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.disableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableOpenFolder, () => cmdSetSpecialFolder('showOpenFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableOpenFolder, () => cmdSetSpecialFolder('showOpenFolder', false)),
+    vscode.commands.registerCommand(COMMAND.enableBackgroundFolder, () => cmdSetSpecialFolder('showBackgroundFolder', true)),
+    vscode.commands.registerCommand(COMMAND.disableBackgroundFolder, () => cmdSetSpecialFolder('showBackgroundFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', true)),
@@ -3022,11 +3024,12 @@ export async function syncSpecialFolderContexts(): Promise<void> {
   const cfg = getConfig();
   await vscode.commands.executeCommand('setContext', 'terminalSessions.favoritesFolderEnabled', cfg.showFavoritesFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.openFolderEnabled', cfg.showOpenFolder);
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.backgroundFolderEnabled', cfg.showBackgroundFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.activityFolderEnabled', cfg.showActivityFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
 }
 
-async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showOpenFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
+async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showOpenFolder' | 'showBackgroundFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
   // Write to the scope that currently defines the value: a workspace override
   // would shadow a Global write and make the toggle appear dead.

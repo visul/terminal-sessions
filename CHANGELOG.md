@@ -4,6 +4,14 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.39] — 2026-08-30
+
+### Added
+- **Background Sessions folder.** A pinned virtual folder listing sessions whose tmux is still alive but that have no terminal tab in this window — closed from the panel, not stopped or killed, the agent keeps working. Most recently active on top; click to reattach; hidden while empty. Enable/Disable from the view's ⋯ menu, the folder's right-click, or `terminalSessions.showBackgroundFolder`.
+
+### Changed
+- **Open Sessions → Active Sessions.** The folder of sessions with a terminal tab open in this window is now called **Active Sessions** (setting key `showOpenFolder` unchanged). When both Active and Background have sessions, the two nest under an **Open Sessions** parent (everything running); when only one has sessions it sits directly at the workspace root, no extra level.
+
 ## [0.20.38] — 2026-08-27
 
 ### Added
