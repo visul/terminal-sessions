@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.39",
+  "version": "0.20.40",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -953,6 +953,11 @@
           "command": "terminalSessions.unlockSession",
           "when": "terminalSessions.activeTerminalLocked",
           "group": "6_stop@3"
+        },
+        {
+          "command": "terminalSessions.killDelete",
+          "when": "!terminalSessions.activeTerminalLocked",
+          "group": "6_stop@4"
         },
         {
           "command": "terminalSessions.revealSessionInSidebar",

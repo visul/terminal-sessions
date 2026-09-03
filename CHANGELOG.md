@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.40] — 2026-09-03
+
+### Added
+- **Kill & Delete Data… in the terminal tab menu.** The destructive kill (deletes conversations and disk data, skips the Killed Sessions graveyard) is now available from a terminal tab's right-click menu too, next to Kill Terminal — same confirmation dialog, same lock guard (hidden while the session is locked). Previously sidebar-only.
+
 ## [0.20.39] — 2026-08-30
 
 ### Added
