@@ -4,6 +4,16 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.30.1] — 2026-09-05
+
+### Added
+- **Agent state on the native terminal tab.** 🔵 while an agent works, then 🟢 with an age the moment control comes back: 🟢 2m finished two minutes ago, 🟢 12m blocked on a permission prompt that long, 🟢 3m stopped with a failure. Two marks, one question: is this tab mine to look at.
+  - A finished session's mark follows the sidebar's unread rule by default: it stays until you focus that terminal or Dismiss it, and a turn you watched finish never gets one. `terminalSessions.tabStateClear: "timer"` (also in the view's `⋯` menu, next to an on/off switch) clears it 30 minutes after the finish instead. One blocked on a prompt keeps counting either way, because it stays frozen until you answer. A working tab never shows a clock.
+  - Only the session you talk to counts: subagent and teammate events carry an `agentId` and are dropped, and `SubagentStop` is never installed.
+  - On by default behind `terminalSessions.tabStateText`, but silent until the tab description can show it: the extension offers to put `${sequence}` in front of `terminal.integrated.tabs.description` ("Not now" asks again next start, "Never ask" is final), and while that variable is absent nothing is written. In front, because VS Code truncates a tab's description from the end: appended after the folder name, the mark was the first thing a narrow tab list cut off. `off` blanks every tab again and leaves your template alone.
+  - `terminalSessions.tabStateStyle` picks the marks: `blue` (default) or `dark` for the two-mark read (they differ only in how loud a working tab is), monochrome `glyphs` (`⟳ ✓ ⚠ ✗`), or `words` (`running` / `done 2m` / `needs you 12m`). Changing it repaints every tab at once.
+  - How: VS Code takes a tab's icon and color at creation and never exposes a setter, and tab statuses (the yellow ⚠) are internal to it, so the state is written as an OSC 2 title into the session's active tmux pane, wrapped in tmux passthrough (already enabled by the managed config) — the description template is the one part of a tab an extension can drive. A cleared state is written as a single space, never as a blank title: VS Code treats a blank one as a label reset and renames the tab to its process name (`tmux`). Writes go only to sessions with a tab in this window, only when the text changes, and only while a client is attached; a recreated tab is repainted on its next tick.
+
 ## [0.20.41] — 2026-09-04
 
 ### Fixed
@@ -16,6 +26,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 - **One conversation name, shared with the agent.** "Name Conversation…" is now "Rename Conversation…" and, for Claude, writes Claude's own `<id>/custom-title.json` — the file `/rename` writes and `claude --resume` reads — so a name given in the sidebar and one given with `/rename` inside Claude are the same thing. Everywhere the extension shows a conversation (resume pickers, Find Session, View Conversation, the rename prefill) now uses one rule: the title set inside the agent (Claude `/rename`, Grok `/rename`) → the extension's name → the agent's generated title (Claude `ai-title`, Codex `thread_name`, Antigravity's summaries db via `sqlite3`, Grok `generated_title`) → the first prompt. Find Session also matches on those titles; its cache is rebuilt once (`search-index.v2.json`).
 
 ### Changed
+- **README opens with a guided tour.** An annotated sketch of the sidebar (what every row, icon, badge and count means), the hover buttons on a row, how to read a terminal tab, every right-click menu with a line per entry — session row, terminal tab, terminal body — and a short walkthrough of a day's use. Written with made-up sessions so it reads as a manual rather than someone's screenshot.
 - README no longer recommends `CLAUDE_CODE_DISABLE_MOUSE_CLICKS`; new troubleshooting section "Drag-select or clicks dead inside Claude?".
 
 ## [0.20.40] — 2026-09-03

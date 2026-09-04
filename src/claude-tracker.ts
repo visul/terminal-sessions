@@ -39,6 +39,9 @@ export interface ClaudeSnapshot {
   sessionId?: string;
   lastPromptAt?: Date;
   lastStopAt?: Date;
+  /** When the current run of the agent was launched (SessionStart). A stop that
+   *  predates it belongs to a previous run. */
+  lastStartAt?: Date;
   toolName?: string;
   toolInput?: string;
   toolSince?: Date;
@@ -1072,6 +1075,7 @@ export class ClaudeTracker {
     switch (e.event) {
       case 'SessionStart':
         snap.state = 'idle';
+        snap.lastStartAt = new Date(tsMs);
         // A (re)launch starts a fresh run: whatever the previous run left unread
         // is history now, not something the new run finished.
         if (Date.now() - tsMs < NOTIFY_STALE_MS) this.markSeen(e.tmuxSession);

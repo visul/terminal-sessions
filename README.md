@@ -10,13 +10,242 @@ Persistent terminal sessions for Cursor and VS Code, with first-class awareness 
 
 Every terminal is wrapped in a tmux session whose server runs independent of the editor. Quit Cursor, reboot the window, crash the renderer: Claude Code, dev servers, REPLs, migrations, SSH sessions keep running. Reopen the workspace and everything is where you left it.
 
-**Contents:** [What it looks like](#what-it-looks-like) · [Platform support](#platform-support) · [Why](#why) · [How it works](#how-it-works) · [Features](#features) · [Requirements](#requirements) · [Install](#install) · [First-time setup](#first-time-setup) · [Commands](#commands) · [Keyboard](#keyboard-tmux-prefix-ctrla) · [Settings](#settings) · [Session naming](#session-naming-scheme) · [Recovering without the extension](#recovering-without-the-extension) · [Claude Code rendering in tmux](#claude-code-rendering-in-tmux)
+**Contents:** [What it looks like](#what-it-looks-like) · [Guided tour](#a-guided-tour) · [Platform support](#platform-support) · [Why](#why) · [How it works](#how-it-works) · [Features](#features) · [Requirements](#requirements) · [Install](#install) · [First-time setup](#first-time-setup) · [Commands](#commands) · [Keyboard](#keyboard-tmux-prefix-ctrla) · [Settings](#settings) · [Session naming](#session-naming-scheme) · [Recovering without the extension](#recovering-without-the-extension) · [Claude Code rendering in tmux](#claude-code-rendering-in-tmux)
 
 ## What it looks like
 
 ![The Terminal Sessions sidebar showing a live Claude session with its state, messages, cost and context use](media/screenshots/sidebar.png)
 
 Sessions are grouped by workspace. The live one shows what the agent is doing right now (running a Bash tool here), the last thing you said, the last thing it replied, the tool it's on with its input, and the model, running cost, turn count, and context use with a warning past 80%. Stopped sessions keep their row and their buttons, so you can view the conversation, restart, or kill them.
+
+## A guided tour
+
+Everything below uses made-up sessions — `api`, `web`, `worker`, `docs` — so you
+can map it onto your own projects. The sketches are ASCII stand-ins for real
+codicons; what matters is where each thing sits and what it tells you.
+
+Where to find it: the **Terminal Sessions** view sits in the Explorer sidebar
+(or in the Terminal panel, if you moved it). The `+` at the top makes your
+first session.
+
+### The sidebar, line by line
+
+```
+   1 │ TERMINAL SESSIONS        ⌕ ▽ + ↻ 🔔 🔍 ⌚ ⌄
+     │ ───────────────────────────────────────────
+   2 │ ▾ 📂 my-app                 12⏸ · 1⇄ 5▶
+   3 │   ▸ ⭐ Favorite Sessions
+   4 │   ▾ ▶ Open Sessions
+     │       ▸ Active Sessions
+     │       ▸ Background Sessions
+   5 │   ▸ 🕐 Recent Sessions
+   6 │   ▸ 🗑 Killed Sessions
+   7 │   ▾ 📁 backend
+   8 │       ⟳ api · migration   working 1m
+   9 │       🔧 web · e2e        Bash 8s · 🤖 2 running
+  10 │       ⚠ worker · queue    waiting input · 🚨
+  11 │       ✓ docs · rewrite    done 3m
+  12 │       ○ api · scratch     idle 2h
+  13 │       ■ web · old branch  stopped · idle 6d · 🔒
+```
+
+1. **Toolbar,** left to right: filter this list as you type, change the
+   filter mode, new session, re-attach ghost terminals, toggle waiting
+   alerts, search every past conversation on the machine, resume from
+   archive, collapse all. The `⋯` menu holds the sort mode, the cleanup tool,
+   switches for each pinned folder, and the terminal-tab marks (on/off, and
+   whether a mark clears when seen or after 30 minutes).
+2. **Workspace.** One per project, with a count badge: `12⏸` stopped, then the
+   live ones — `1⇄` detached (no tab here), `5▶` with a tab open.
+3. **Favorites.** A pinned folder of starred sessions, hidden while empty.
+4. **Open Sessions.** *Active* have a tab open in this window, in tab order;
+   *Background* are running in tmux with no tab here. When only one kind
+   exists, that folder stands alone.
+5. **Recent.** A flat list: running sessions first by last activity, then
+   stopped ones by when they stopped.
+6. **Killed.** A graveyard. Right-click → *Restore Session* brings one back.
+7. **Your own folder.** Make as many as you like, drag rows in, colour them,
+   nest a folder inside another.
+8. **Working.** A spinner and how long this turn has been going.
+9. **Running a tool.** The tool's name replaces the word, and `🤖 2 running`
+   means two subagents are alive under it.
+10. **Waiting for you.** A warning icon; the session is frozen until you
+    answer. `🚨` marks a session launched in auto-approve (YOLO) mode.
+11. **Just finished.** A filled check for a clean turn; the icon becomes an
+    error mark when it ended badly (`✗ tests failed 2m`) or a question mark
+    when the agent asked you something. Once you look, the row goes back to
+    the ordinary idle description.
+12. **Detached.** A hollow circle: alive in tmux, no tab open in this window.
+13. **Stopped.** The process is gone, the row and its history stay. `🔒` means
+    locked — Kill is refused until you unlock it.
+
+Expand a running session and it carries nested rows: last thing you said, last
+reply, the current tool with its input, and `model · cost · turns`, plus an
+`🤖 Agents` folder listing every subagent while it runs. Each subagent row has
+its own **Open Subagent Transcript** button.
+
+### The buttons on a row (hover)
+
+Actions live on the row itself, so the common ones never need a menu.
+
+```
+  running row   ☆  ↻  ⏸  🗑
+  stopped row   ☆  ▷  🗑
+  locked row    ☆  ↻  ⏸  🔒     padlock sits where Kill was
+                ☆  ▷  🔒        (same on a stopped one)
+  killed row    ↻                restore it from the graveyard
+
+  ☆  favorite      ↻  restart (kill + fresh shell)
+  ▷  start         ⏸  stop (keep the row and its history)
+  🗑  kill          🔒  locked, Kill refused until you unlock
+```
+
+**Stop** keeps the session in the sidebar with its conversation history, so
+Start later resumes the same agent conversation. **Kill** ends it and drops the
+entry into Killed Sessions, where it can still be restored. **Restart** kills
+the shell and opens a fresh one under the same name. A locked row shows a
+padlock where Kill used to be; the padlock is an indicator, not a button —
+unlock from the right-click menu.
+
+### Reading a terminal tab at a glance
+
+The extension also writes the state onto VS Code's own terminal tabs, so you can
+tell what happened without opening the sidebar. Two things have to be true for
+you to see it: `terminal.integrated.tabs.description` must contain `${sequence}`
+(the extension offers to put it in front on first start — in front, because a
+narrow tab list truncates the description from the end), and the tab list must be
+showing at all — VS Code hides it while only one terminal is open
+(`terminal.integrated.tabs.hideCondition`).
+
+```
+  still working  │ 🤖  api · migration   🔵 my-app
+  finished 2m    │ ▤   web · e2e         🟢 2m my-app
+  wants you 14m  │ ◧   worker · queue    🟢 14m my-app
+  nothing recent │ ◧   docs · rewrite    my-app
+```
+
+Two marks, one question: is this tab mine to look at? 🔵 means the agent is
+working — no clock, because a number ticking on every busy tab is noise. 🟢
+means control is back with you, whether the turn finished, stopped on a
+permission prompt, or failed. A finished session's mark follows the sidebar's
+unread rule: it stays until you focus that terminal (or Dismiss it), so
+`🟢 40m` reads "finished 40 minutes ago and you have not looked yet", and a
+turn you watched finish never gets one. Prefer a plain clock instead? The
+view's `⋯` menu switches to *Clear After 30 Minutes*, and back. A session
+blocked on a prompt keeps its mark either way, until you answer.
+
+The `⋯` menu also turns the whole thing off and on. See
+[`terminalSessions.tabStateText`](#settings) for the setting behind it, and
+`terminalSessions.tabStateStyle` for the mark set: `blue` (default), `dark`
+(⚫ for a quieter working tab), `glyphs` (`⟳ ✓ ⚠ ✗`, monochrome, one mark per
+state) or `words` (`running` / `done 2m` / `needs you 12m` / `failed 3m`).
+
+### Right-click a session row
+
+Twenty-odd actions, grouped here by what they are for (the menu itself
+orders them by VS Code's group names, so the vertical order differs).
+
+```
+ ┌─ Open ───────────────────────────────────────────┐
+ │ Fork Conversation (new parallel branch)           │
+ │ Unlink from Branch Set                            │
+ │ Resume Other Session… (Claude / Codex / Antigravity) │
+ │ Reveal Session Folder in Explorer / Finder        │
+ │ View Conversation                                 │
+ │ Rename Conversation…                              │
+ │ Copy Last Conversation ID                         │
+ │ Copy Last Conversation Path                       │
+ ├─ Organize ───────────────────────────────────────┤
+ │ Add to / Remove from Favorites                    │
+ │ Move to Group…                                    │
+ │ Rename Session                                    │
+ │ Change Icon… / Change Color…                      │
+ │ Mute / Unmute Notifications                       │
+ │ Dismiss (Mark as Seen)                            │
+ ├─ Lifecycle ──────────────────────────────────────┤
+ │ Start Session              (stopped rows)         │
+ │ Restart Session (kill + fresh shell)              │
+ │ Stop Session (keep in sidebar)                    │
+ │ Switch to YOLO Mode (auto-approve)                │
+ │ Switch to Normal Mode (ask before acting)         │
+ │ Lock (Protect from Kill) / Unlock (Allow Kill)    │
+ │ Kill Session                                      │
+ │ Kill & Delete Data…                               │
+ └───────────────────────────────────────────────────┘
+```
+
+- **Fork Conversation** — start a second session that continues the same
+  conversation on its own branch. Claude only; the two never share a transcript.
+- **Unlink from Branch Set** — break the visual link between a fork and its
+  origin. The conversations were already independent.
+- **Resume Other Session…** — pick an earlier conversation from this session's
+  own history and continue it in this tab. For anything that ever ran on the
+  machine, use **Resume Session from Archive…** in the view toolbar instead.
+- **View Conversation** — the whole transcript rendered as a readable document.
+- **Rename Conversation…** — name the conversation itself. For Claude this
+  writes the same file `/rename` writes, so the name shows up in
+  `claude --resume` too.
+- **Copy Last Conversation ID / Path** — for `claude --resume <id>` or for
+  opening the raw `.jsonl`.
+- **Move to Group…**, **Rename Session**, **Change Icon / Color** — the row is
+  yours to organize; names and colours survive restarts.
+- **Mute Notifications** — silence one noisy session without touching the rest.
+- **Dismiss (Mark as Seen)** — clear the unread verdict without opening the tab.
+- **Switch to YOLO Mode** — relaunch the same conversation with the agent's
+  auto-approve flag, or switch back. The row grows a `🚨` while it is on.
+- **Lock (Protect from Kill)** — Kill, "kill all", and auto-prune all refuse a
+  locked session. For the long migration you must not lose.
+- **Kill & Delete Data…** — kill it and erase its conversations from disk, with
+  a confirmation naming exactly what goes. Conversations another session still
+  uses are kept.
+
+### Right-click a terminal tab
+
+The same session actions, without leaving the terminal. State-dependent entries
+follow the tab you right-click; while a session is locked, **Unlock** takes the
+place of **Kill Session**.
+
+```
+ ┌───────────────────────────────────────────────────┐
+ │ Reveal in Terminal Sessions View                  │
+ │ Reveal Session Folder in Explorer / Finder        │
+ ├───────────────────────────────────────────────────┤
+ │ Add/Remove Favorite                               │
+ │ Switch to YOLO Mode (auto-approve)                │
+ │ Switch to Normal Mode (ask before acting)         │
+ │ Mute / Unmute Notifications                       │
+ ├───────────────────────────────────────────────────┤
+ │ Fork Conversation (new parallel branch)           │
+ │ View Conversation                                 │
+ │ Rename Conversation…                              │
+ │ Copy Last Conversation ID                         │
+ │ Copy Last Conversation Path                       │
+ ├───────────────────────────────────────────────────┤
+ │ Restart Session  ·  Stop Session                  │
+ │ Lock (Protect from Kill) / Unlock (Allow Kill)    │
+ │ Kill Session  ·  Kill & Delete Data…              │
+ └───────────────────────────────────────────────────┘
+```
+
+Right-clicking inside the terminal body offers **Add/Remove Favorite**, the
+reveal actions (the selected path in Finder / Explorer, the session folder,
+the row in the Terminal Sessions view), **View Conversation** and the two
+**Copy Last Conversation** entries, so you can grab a conversation id straight
+from where you are typing.
+
+### A day with it
+
+```
+ 1  Click + in the sidebar          a persistent session opens
+ 2  Start your agent, give it work  row shows ⟳ working 40s
+ 3  Close the tab, quit the editor  tmux keeps it running
+ 4  Come back after lunch           row and tab are still there
+ 5  Tab reads 🟢 2h                 it stopped on a permission prompt
+                                    and has been waiting since
+ 6  Click the row                   the tab re-attaches, mid-scrollback
+ 7  Right-click → Fork              try a second approach in parallel
+ 8  Right-click → Kill & Delete     the experiment's data is gone
+```
 
 ## Platform support
 
@@ -180,6 +409,13 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **Search past sessions** — `$(search)` button in the sidebar (or `Terminal Sessions: Search ALL Past Conversations…` command) opens a fuzzy picker over every transcript on your machine. Jump to transcript, copy session ID, or reveal the cwd
 - **Filter the sidebar in place** — `$(search-fuzzy)` button (or `Terminal Sessions: Filter Sidebar Sessions…`): the tree filters live as you type (name, folder path, group, workspace), showing matches as a flat list under a `Filter:` header row; the filter persists until you click that row to clear it. A QuickPick variant lives in the palette as `Terminal Sessions: Search Sessions (Name, Folder, Group)…`
 - **Deduplicated live state** — if you ran `claude --resume <id>` in multiple tabs over time, the tracker now transfers ownership on each new hook event, so only the tab currently running that conversation shows live state. Others snap back to idle
+
+### Agent state on the native terminal tab
+- **🔵 working, 🟢 your turn** — the state each agent is in, shown on VS Code's own terminal tab, next to the tab name. The default set answers one question, is this tab mine to look at, with two marks: 🔵 while the agent works (no clock — a number ticking on every busy tab is noise) and 🟢 the moment control comes back to you, whether the turn finished, stopped on a permission prompt, or failed. Pick the `dark` set and the working mark becomes ⚫, about as quiet as a mark can be. The age tells those apart: 🟢 2m finished two minutes ago and clears after 30 minutes, so a green dot is always something recent, while a session blocked on a prompt keeps counting (🟢 12m) because it stays frozen until you answer. Under a minute the dot stands alone. Coloured dots rather than outline glyphs because the tab description is drawn in a dim grey, where a thin `⟳` disappears
+- **Pick the glyph set: `terminalSessions.tabStateStyle`** — `blue` (default) 🔵 🟢 or `dark` ⚫ 🟢 for the two-mark read, differing only in how loud a working tab is; `glyphs` `⟳` `✓` `⚠` `✗` or `words` (`running` / `done 2m` / `needs you 12m` / `failed 3m`) when you want the tab itself to distinguish finished from blocked from failed. Changing it repaints every tab immediately
+- **On by default, one prompt to make it visible** — the text only renders if `terminal.integrated.tabs.description` contains `${sequence}`, so the extension offers to add it ("Not now" asks again on the next start, "Never ask" is final). Until it is there nothing is written to your panes; accept and the tabs start carrying state. `terminalSessions.tabStateText: "off"` turns the whole thing off and blanks every tab again, leaving your description template as you had it
+- **Why text and not the tab icon** — VS Code takes a terminal's icon and color at creation (`TerminalOptions.iconPath`, `creationOptions` is readonly) and never exposes a setter, and the yellow `⚠` you sometimes see on a tab is an internal VS Code *status* extensions cannot add to. The description template is the one part of the tab an extension can drive, through `${sequence}` — the title an application sets with an OSC 2 escape sequence. The extension writes that sequence into the session's active tmux pane, wrapped in tmux passthrough (`allow-passthrough on`, already in the managed config), so tmux forwards it to the tab instead of eating it. Claude's own window titles stay inside tmux, so nothing fights over the string
+- **Only the main agent counts** — subagents and agent-team teammates carry an `agentId` on their hook events and are dropped before they reach the state machine, and the `SubagentStop` hook is never installed. A tab turns 🟢 when the session you are talking to is done, not when one of its helpers finishes
 
 ### Archive, conversation viewer & cleanup
 - **Resume Session from Archive** — the `$(history)` button on the sidebar toolbar (or `Terminal Sessions: Resume Session from Archive…`) opens a picker of **every** past conversation on disk, across every agent you have enabled, even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Accepting a row resumes it into your active session or a fresh persistent one
@@ -421,6 +657,9 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.showBackgroundFolder` | `true` | Show the pinned **Background Sessions** folder (running in tmux, no tab in this window); hidden while empty. Both non-empty → nested under **Open Sessions** |
 | `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
+| `terminalSessions.tabStateText` | `"on"` | Write the agent's state into the native terminal tab description: 🔵 working, 🟢 + age once it is your turn. Needs `${sequence}` in `terminal.integrated.tabs.description` (the extension offers to add it) |
+| `terminalSessions.tabStateClear` | `"seen"` | When a finished session's tab mark leaves: `seen` — until you focus that terminal or Dismiss it (the sidebar's unread rule); `timer` — 30 minutes after it finished. Also in the view's `⋯` menu |
+| `terminalSessions.tabStateStyle` | `"blue"` | Glyph set for that state: `blue` 🔵🟢, `dark` ⚫🟢, `glyphs` `⟳✓⚠✗`, or `words` (`running` / `done 2m` / `needs you 12m`) |
 | `terminalSessions.activityLimit` | `50` | Max sessions listed in Recent Sessions |
 | `terminalSessions.killedLimit` | `50` | Max killed sessions kept in the graveyard (older entries fall off) |
 | `terminalSessions.confirmYoloSwitch` | `true` | Ask for confirmation before switching a session into YOLO (auto-approve) mode |

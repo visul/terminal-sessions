@@ -6,6 +6,14 @@ export type SidebarSortMode = 'custom' | 'mru' | 'created' | 'alphabetical';
 export type SidebarFilterMode = 'all' | 'running' | 'stopped';
 export const FILTER_MODES: SidebarFilterMode[] = ['all', 'running', 'stopped'];
 export type ClaudeDetailsMode = 'auto' | 'always' | 'collapsed' | 'off';
+/** Agent state written into the native terminal tab's description. */
+export type TabStateTextMode = 'off' | 'on';
+/** Which glyph set that state is drawn with. */
+export type TabStateStyle = 'blue' | 'dark' | 'glyphs' | 'words';
+/** When a finished session's mark leaves the tab: once you look at it (the
+ *  sidebar's unread rule) or 30 minutes after it finished. */
+export type TabStateClear = 'seen' | 'timer';
+export const TAB_STATE_STYLES: TabStateStyle[] = ['blue', 'dark', 'glyphs', 'words'];
 
 export const SORT_MODES: SidebarSortMode[] = ['custom', 'mru', 'created', 'alphabetical'];
 
@@ -45,6 +53,9 @@ export interface Config {
   showKilledFolder: boolean;
   activityLimit: number;
   killedLimit: number;
+  tabStateText: TabStateTextMode;
+  tabStateStyle: TabStateStyle;
+  tabStateClear: TabStateClear;
 }
 
 export function getConfig(): Config {
@@ -104,6 +115,10 @@ export function getConfig(): Config {
     showKilledFolder: c.get('showKilledFolder', true),
     activityLimit: Math.max(1, c.get<number>('activityLimit', 50)),
     killedLimit: Math.max(1, c.get<number>('killedLimit', 50)),
+    tabStateText: c.get<string>('tabStateText', 'on') === 'off' ? 'off' : 'on',
+    tabStateStyle: (TAB_STATE_STYLES as string[]).includes(c.get<string>('tabStateStyle', 'blue'))
+      ? (c.get<string>('tabStateStyle', 'blue') as TabStateStyle) : 'blue',
+    tabStateClear: c.get<string>('tabStateClear', 'seen') === 'timer' ? 'timer' : 'seen',
   };
 }
 
@@ -209,5 +224,9 @@ export const COMMAND = {
   disableActivityFolder: 'terminalSessions.disableActivityFolder',
   enableKilledFolder: 'terminalSessions.enableKilledFolder',
   disableKilledFolder: 'terminalSessions.disableKilledFolder',
+  enableTabState: 'terminalSessions.enableTabState',
+  disableTabState: 'terminalSessions.disableTabState',
+  tabStateClearSeen: 'terminalSessions.tabStateClearSeen',
+  tabStateClearTimer: 'terminalSessions.tabStateClearTimer',
   restoreKilled: 'terminalSessions.restoreKilled',
 } as const;

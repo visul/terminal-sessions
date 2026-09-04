@@ -18,6 +18,7 @@ import { registerRevealPath } from './reveal-path';
 import { registerTerminalLinks } from './terminal-links';
 import { registerClipboardBridge } from './clipboard-bridge';
 import { maybeWarnMouseEnv } from './mouse-clicks-guard';
+import { registerTabState } from './tab-state';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -54,6 +55,10 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // (bypasses the OSC 52 path Cursor mangles). No-op on local hosts.
   registerClipboardBridge(ctx);
   registerSidebar(ctx, index, claudeTracker);
+  // Agent state (running / finished / blocked / failed) in the NATIVE terminal tab
+  // description. On by default, but silent until `${sequence}` is in the user's
+  // tab-description template (offered once).
+  registerTabState(ctx, claudeTracker);
 
   // Prompt once to install hooks for the enabled agents (remembers declination).
   void maybePromptInstallClaudeHook(ctx, registry);
@@ -129,7 +134,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.showOpenFolder') ||
         e.affectsConfiguration('terminalSessions.showBackgroundFolder') ||
         e.affectsConfiguration('terminalSessions.showActivityFolder') ||
-        e.affectsConfiguration('terminalSessions.showKilledFolder')
+        e.affectsConfiguration('terminalSessions.showKilledFolder') ||
+        e.affectsConfiguration('terminalSessions.tabStateText') ||
+        e.affectsConfiguration('terminalSessions.tabStateClear')
       ) { void syncSpecialFolderContexts(); refreshSidebar(); }
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {
         void applyNoFlickerChange();

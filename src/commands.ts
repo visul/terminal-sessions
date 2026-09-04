@@ -376,6 +376,10 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.disableActivityFolder, () => cmdSetSpecialFolder('showActivityFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', false)),
+    vscode.commands.registerCommand(COMMAND.enableTabState, () => cmdSetTabStateOption('tabStateText', 'on')),
+    vscode.commands.registerCommand(COMMAND.disableTabState, () => cmdSetTabStateOption('tabStateText', 'off')),
+    vscode.commands.registerCommand(COMMAND.tabStateClearSeen, () => cmdSetTabStateOption('tabStateClear', 'seen')),
+    vscode.commands.registerCommand(COMMAND.tabStateClearTimer, () => cmdSetTabStateOption('tabStateClear', 'timer')),
     vscode.commands.registerCommand(COMMAND.restoreKilled, (item?: KilledSessionItem) => cmdRestoreKilled(index, registry, claudeTracker, item)),
   );
   // Seed the ⋯-menu Enable/Disable labels for the two special folders.
@@ -3134,6 +3138,20 @@ export async function syncSpecialFolderContexts(): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'terminalSessions.backgroundFolderEnabled', cfg.showBackgroundFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.activityFolderEnabled', cfg.showActivityFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
+  // Agent state on the native terminal tabs: on/off, and how a mark clears.
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.tabStateEnabled', cfg.tabStateText === 'on');
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.tabStateClearSeen', cfg.tabStateClear === 'seen');
+}
+
+/** Same scope rule as the folder toggles: write where the value is defined. */
+async function cmdSetTabStateOption(key: 'tabStateText' | 'tabStateClear', value: string): Promise<void> {
+  const c = vscode.workspace.getConfiguration('terminalSessions');
+  const insp = c.inspect<string>(key);
+  const target = insp?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
+    : insp?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace
+    : vscode.ConfigurationTarget.Global;
+  await c.update(key, value, target);
+  await syncSpecialFolderContexts();
 }
 
 async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showOpenFolder' | 'showBackgroundFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {

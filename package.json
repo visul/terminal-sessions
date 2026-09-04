@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.41",
+  "version": "0.30.1",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -318,6 +318,49 @@
           "type": "boolean",
           "default": true,
           "description": "Show the pinned \"Sessions Killed\" folder: recently killed sessions kept in a graveyard so they can be restored (right-click → Restore Session). Hidden while empty. Toggle also available in the view's ⋯ menu."
+        },
+        "terminalSessions.tabStateText": {
+          "type": "string",
+          "enum": [
+            "off",
+            "on"
+          ],
+          "enumDescriptions": [
+            "Nothing is written to terminal tabs.",
+            "Write the agent's state into the tab description."
+          ],
+          "default": "on",
+          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written as text into the tab description, which needs `${sequence}` in #terminal.integrated.tabs.description# — the extension offers to add it (“Not now” asks again next start, “Never ask” is final); until it is there nothing is written. Requires the managed tmux config (`allow-passthrough on`)."
+        },
+        "terminalSessions.tabStateStyle": {
+          "type": "string",
+          "enum": [
+            "blue",
+            "dark",
+            "glyphs",
+            "words"
+          ],
+          "enumDescriptions": [
+            "🔵 working, 🟢 your turn: finished, waiting for you, or failed",
+            "⚫ working (as quiet as it gets), 🟢 your turn",
+            "⟳ running, ✓ done, ⚠ waiting for you, ✗ failed (monochrome)",
+            "running / done / needs you / failed, spelled out"
+          ],
+          "default": "blue",
+          "markdownDescription": "Which glyphs #terminalSessions.tabStateText# draws the agent state with. The tab description is dim grey, so the coloured sets carry much further than the outline glyphs."
+        },
+        "terminalSessions.tabStateClear": {
+          "type": "string",
+          "enum": [
+            "seen",
+            "timer"
+          ],
+          "enumDescriptions": [
+            "The mark stays until you focus that terminal (or Dismiss it in the sidebar) — the same rule as the sidebar's unread rows. A turn you watched finish never gets one.",
+            "The mark clears 30 minutes after the agent finished, whether you looked or not."
+          ],
+          "default": "seen",
+          "markdownDescription": "When a finished session's mark leaves the terminal tab. A session blocked on a prompt keeps its mark either way, until you answer. Also in the view's `⋯` menu."
         },
         "terminalSessions.activityLimit": {
           "type": "number",
@@ -722,6 +765,26 @@
       {
         "command": "terminalSessions.enableKilledFolder",
         "title": "Enable Killed Sessions Folder",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.enableTabState",
+        "title": "Enable Agent State on Terminal Tabs",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.disableTabState",
+        "title": "Disable Agent State on Terminal Tabs",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.tabStateClearSeen",
+        "title": "Tab Marks: Clear When Seen (instead of after 30 min)",
+        "category": "Terminal Sessions"
+      },
+      {
+        "command": "terminalSessions.tabStateClearTimer",
+        "title": "Tab Marks: Clear After 30 Minutes (instead of when seen)",
         "category": "Terminal Sessions"
       },
       {
@@ -1139,6 +1202,26 @@
           "command": "terminalSessions.enableKilledFolder",
           "when": "view == terminalSessions.sessions && !terminalSessions.killedFolderEnabled",
           "group": "2_folders@2"
+        },
+        {
+          "command": "terminalSessions.disableTabState",
+          "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled",
+          "group": "3_tabs@0"
+        },
+        {
+          "command": "terminalSessions.enableTabState",
+          "when": "view == terminalSessions.sessions && !terminalSessions.tabStateEnabled",
+          "group": "3_tabs@0"
+        },
+        {
+          "command": "terminalSessions.tabStateClearTimer",
+          "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled && terminalSessions.tabStateClearSeen",
+          "group": "3_tabs@1"
+        },
+        {
+          "command": "terminalSessions.tabStateClearSeen",
+          "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled && !terminalSessions.tabStateClearSeen",
+          "group": "3_tabs@1"
         }
       ],
       "view/item/context": [
