@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.20.40",
+  "version": "0.20.41",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -434,7 +434,7 @@
       },
       {
         "command": "terminalSessions.nameSession",
-        "title": "Name Conversation...",
+        "title": "Rename Conversation...",
         "icon": "$(edit)"
       },
       {
@@ -557,6 +557,10 @@
       {
         "command": "terminalSessions.fixClaudeRendering",
         "title": "Terminal Sessions: Fix Claude Code Rendering in Shell"
+      },
+      {
+        "command": "terminalSessions.fixClaudeMouseEnv",
+        "title": "Terminal Sessions: Fix Claude Code Mouse (drag-select)"
       },
       {
         "command": "terminalSessions.toggleAllAlerts",
@@ -929,12 +933,24 @@
         {
           "command": "terminalSessions.revealSessionFolderFinder",
           "group": "navigation@13"
+        },
+        {
+          "command": "terminalSessions.viewConversation",
+          "group": "navigation@14"
+        },
+        {
+          "command": "terminalSessions.copySessionId",
+          "group": "navigation@15"
+        },
+        {
+          "command": "terminalSessions.copySessionPath",
+          "group": "navigation@16"
         }
       ],
       "terminal/title/context": [
         {
           "command": "terminalSessions.toggleFavorite",
-          "group": "6_stop@0"
+          "group": "4_session@0"
         },
         {
           "command": "terminalSessions.restart",
@@ -970,6 +986,52 @@
         {
           "command": "terminalSessions.revealSessionFolderFinder",
           "group": "navigation@11"
+        },
+        {
+          "command": "terminalSessions.switchToYolo",
+          "when": "terminalSessions.activeTerminalYolo == 'off'",
+          "group": "4_session@1"
+        },
+        {
+          "command": "terminalSessions.switchToNormal",
+          "when": "terminalSessions.activeTerminalYolo == 'on'",
+          "group": "4_session@1"
+        },
+        {
+          "command": "terminalSessions.muteSession",
+          "when": "!terminalSessions.activeTerminalMuted",
+          "group": "4_session@2"
+        },
+        {
+          "command": "terminalSessions.unmuteSession",
+          "when": "terminalSessions.activeTerminalMuted",
+          "group": "4_session@2"
+        },
+        {
+          "command": "terminalSessions.forkConversation",
+          "when": "terminalSessions.activeTerminalForkable",
+          "group": "5_conversation@0"
+        },
+        {
+          "command": "terminalSessions.viewConversation",
+          "group": "5_conversation@1"
+        },
+        {
+          "command": "terminalSessions.nameSession",
+          "group": "5_conversation@2"
+        },
+        {
+          "command": "terminalSessions.copySessionId",
+          "group": "5_conversation@3"
+        },
+        {
+          "command": "terminalSessions.copySessionPath",
+          "group": "5_conversation@4"
+        },
+        {
+          "command": "terminalSessions.lockSession",
+          "when": "!terminalSessions.activeTerminalLocked",
+          "group": "6_stop@3.5"
         }
       ],
       "view/title": [

@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
-import { registerCommands, syncActiveTerminalLockedContext, syncSpecialFolderContexts } from './commands';
+import { registerCommands, syncActiveTerminalContext, syncSpecialFolderContexts } from './commands';
 import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
@@ -17,6 +17,7 @@ import { getConfig } from './config';
 import { registerRevealPath } from './reveal-path';
 import { registerTerminalLinks } from './terminal-links';
 import { registerClipboardBridge } from './clipboard-bridge';
+import { maybeWarnMouseEnv } from './mouse-clicks-guard';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -46,7 +47,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerCommands(ctx, index, claudeTracker, searchIndex, registry);
   // Seed the tab-menu Kill ↔ locked-hint gate for whatever terminal is active
   // at startup (the key is falsy/Kill-shown until the first terminal switch).
-  void syncActiveTerminalLockedContext(index);
+  void syncActiveTerminalContext(index);
   registerRevealPath(ctx);
   registerTerminalLinks(ctx);
   // Remote-SSH only: mirror tmux copies to the local clipboard with correct UTF-8
@@ -56,6 +57,13 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   // Prompt once to install hooks for the enabled agents (remembers declination).
   void maybePromptInstallClaudeHook(ctx, registry);
+  // Leftover CLAUDE_CODE_DISABLE_MOUSE_CLICKS (rc export / old tmux server env /
+  // settings.json env) kills drag-select and clicks inside Claude. Offer a fix once;
+  // delayed so it doesn't fight the restore/hook toasts.
+  setTimeout(async () => {
+    const tmuxPath = await tmuxMod.detectTmuxPath(getConfig().tmuxPath);
+    void maybeWarnMouseEnv(ctx, tmuxPath);
+  }, 8000);
 
   const statusBar = new StatusBar(index);
   statusBar.start();
@@ -80,7 +88,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       // Kill ↔ locked-hint gate. Runs on every switch (incl. t === undefined,
       // which sets the key false); does its own resolve, independent of the MRU
       // logic below.
-      void syncActiveTerminalLockedContext(index);
+      void syncActiveTerminalContext(index);
       if (!t) { claudeTracker.setActiveTmuxSession(undefined); return; }
       void (async () => {
         // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed
@@ -209,15 +217,15 @@ async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void
   const { isConfOutOfDate, regenerateConf, detectTmuxPath, reloadConfig } = await import('./tmux');
   if (!isConfOutOfDate()) return;
   // Bump this key whenever the conf gains a fix worth re-prompting dismissed
-  // users for (here: copy-mode no longer gets "stuck", v8).
-  const KEY = 'tmuxConfUpgradeDismissed-v8';
+  // users for (here: v17 unsets CLAUDE_CODE_DISABLE_MOUSE_CLICKS on the server).
+  const KEY = 'tmuxConfUpgradeDismissed-v17';
   if (ctx.globalState.get(KEY)) return;
   setTimeout(async () => {
     const choice = await vscode.window.showInformationMessage(
-      'Your Terminal Sessions tmux.conf can be updated with the latest copy/scroll '
-      + 'improvements (e.g. copy-mode no longer gets "stuck" — scroll back down or '
-      + 'click to return to the prompt). Update now? A backup is saved next to the '
-      + 'current file and it applies to live sessions immediately.',
+      'Your Terminal Sessions tmux.conf can be updated: v17 clears a leftover '
+      + 'CLAUDE_CODE_DISABLE_MOUSE_CLICKS from the tmux server (older versions set it; '
+      + 'it makes Claude Code ignore clicks and drag-select). Update now? A backup is '
+      + 'saved next to the current file and it applies to live sessions immediately.',
       'Update', 'Not now', "Don't ask again",
     );
     if (choice === 'Update') {

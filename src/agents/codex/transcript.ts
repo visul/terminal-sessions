@@ -220,6 +220,9 @@ export function reduceCodexTranscriptLine(state: TranscriptTailState, line: stri
       snap.lastUserMessage = text;
       if (ts) snap.lastUserMessageAt = ts;
       snap.messageCount++;
+      // A new human turn here too (sessions with only the event_msg form):
+      // drop the previous turn's tool evidence so it can't colour this one.
+      snap.turn = emptyTurnEvidence();
       return true;
     }
     if (pt === 'agent_message') {

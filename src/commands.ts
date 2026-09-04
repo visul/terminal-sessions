@@ -13,13 +13,15 @@ import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
 import { notify } from './notifications';
+import { conversationTitle } from './conversation-title';
+import { maybeWarnMouseEnv, findMouseEnvLines, commentOutMouseEnv } from './mouse-clicks-guard';
 import { ClaudeTracker } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
-import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary } from './claude-transcript';
+import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
 import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
 import { planTrash, executeTrash, formatBytes } from './trash';
-import { AgentRegistry } from './agents/registry';
+import { AgentRegistry, isForkableAgent, yoloSpecFor, yoloFlagsFor } from './agents/registry';
 import { isYolo, setYolo } from './agents/launch-flags';
 import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, countExpiringTranscripts, clearExpiryCache, KEEP_FOREVER_DAYS } from './notices';
 import type { AgentProvider, AgentId } from './agents/types';
@@ -56,6 +58,8 @@ interface ResumeCandidate {
   transcriptPath: string;
   cwd?: string;
   firstUserMessage?: string;
+  customTitle?: string;
+  autoTitle?: string;
   lineCount: number;
   byteSize: number;
   mtimeMs: number;
@@ -96,6 +100,8 @@ function gatherResumeCandidates(
       transcriptPath: tp,
       cwd: summary?.cwd,
       firstUserMessage: summary?.firstUserMessage,
+      customTitle: summary?.customTitle,
+      autoTitle: summary?.autoTitle,
       lineCount: summary?.lineCount ?? 0,
       byteSize,
       mtimeMs,
@@ -284,7 +290,7 @@ export function registerCommands(
         await cmdStop(index, claudeTracker, r);
       }
     }),
-    vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem) => cmdForkConversation(index, registry, claudeTracker, item)),
+    vscode.commands.registerCommand(COMMAND.forkConversation, (item?: SessionTreeItem | vscode.Terminal) => cmdForkConversation(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.unlinkBranch, (item?: SessionTreeItem) => cmdUnlinkBranch(index, item)),
     vscode.commands.registerCommand(COMMAND.start, async (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
@@ -297,18 +303,19 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.pickSortMode, () => cmdPickSortMode(index)),
     vscode.commands.registerCommand(COMMAND.pickFilterMode, () => cmdPickFilterMode()),
-    vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(searchIndex)),
+    vscode.commands.registerCommand(COMMAND.findSession, () => cmdFindSession(index, searchIndex)),
     vscode.commands.registerCommand(COMMAND.searchSessions, () => cmdSearchSessions(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.filterSessions, () => cmdFilterSessions()),
     vscode.commands.registerCommand(COMMAND.clearSidebarTextFilter, () => setSidebarTextFilter(undefined)),
     vscode.commands.registerCommand(COMMAND.fixTranscriptCleanup, () => cmdFixTranscriptCleanup()),
     vscode.commands.registerCommand(COMMAND.dismissCleanupNotice, () => { snoozeCleanupNotice(); refreshSidebar(); }),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
+    vscode.commands.registerCommand(COMMAND.fixClaudeMouseEnv, () => cmdFixClaudeMouseEnv(ctx)),
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts()),
     vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(true)),
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
-    vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
-    vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
+    vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
+    vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
     vscode.commands.registerCommand(COMMAND.dismissAttention, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
       // Works from any row (incl. mirror rows in the pinned folders) and in bulk.
       const rows = selectionTargets(selection) ?? (item ? [item] : []);
@@ -339,8 +346,8 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.lockedHint, (item?: SessionTreeItem) => cmdLockedHint(item)),
     vscode.commands.registerCommand(COMMAND.openSubagentTranscript, (item?: SubagentTreeItem) => cmdOpenSubagentTranscript(item)),
-    vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
-    vscode.commands.registerCommand(COMMAND.nameSession, (arg?: SessionTreeItem | { sessionId: string; current?: string }) => cmdNameSession(index, registry, claudeTracker, arg)),
+    vscode.commands.registerCommand(COMMAND.viewConversation, (arg?: SessionTreeItem | vscode.Terminal | { transcriptPath: string; title?: string }) => cmdViewConversation(index, registry, claudeTracker, arg)),
+    vscode.commands.registerCommand(COMMAND.nameSession, (arg?: SessionTreeItem | vscode.Terminal | { sessionId: string; current?: string; transcriptPath?: string; agent?: AgentId }) => cmdNameSession(index, registry, claudeTracker, arg)),
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
     vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
@@ -356,8 +363,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.cleanupSessions, () => cmdCleanupSessions(index, registry)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolder, (arg?: unknown) => cmdRevealSessionFolder(index, 'explorer', arg)),
     vscode.commands.registerCommand(COMMAND.revealSessionFolderFinder, (arg?: unknown) => cmdRevealSessionFolder(index, 'finder', arg)),
-    vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem) => cmdCopySessionId(index, item)),
-    vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem) => cmdCopySessionPath(index, registry, item)),
+    vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem | vscode.Terminal) => cmdCopySessionId(index, item)),
+    vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem | vscode.Terminal) => cmdCopySessionPath(index, registry, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
     vscode.commands.registerCommand(COMMAND.enableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', false)),
@@ -440,16 +447,20 @@ async function cmdViewConversation(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
-  arg?: SessionTreeItem | { transcriptPath: string; title?: string },
+  arg?: SessionTreeItem | vscode.Terminal | { transcriptPath: string; title?: string },
 ): Promise<void> {
   let transcriptPath: string | undefined;
   let title: string | undefined;
 
+  // A sidebar row or a terminal tab resolves to its session; the archive picker
+  // passes the transcript directly.
+  const session = arg && 'transcriptPath' in arg
+    ? undefined
+    : await resolveSessionInfoFromInvocation(arg as SessionTreeItem | vscode.Terminal | undefined, index);
   if (arg && 'transcriptPath' in arg) {
     transcriptPath = arg.transcriptPath;
     title = arg.title;
-  } else if (arg && 'session' in arg) {
-    const session = arg.session;
+  } else if (session) {
     const { provider, history } =
       resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
     const cwd = index.getSessionMeta(session.workspaceHash, session.name)?.folderPath
@@ -461,7 +472,11 @@ async function cmdViewConversation(
     const resolved = resolveResumeFromHistory(provider, history, cwd, session.workspacePath);
     if (resolved) {
       transcriptPath = resolved.transcriptPath;
-      title = index.getSessionName(resolved.sessionId) || session.label || session.name;
+      const summary = provider.readTranscriptSummary?.(resolved.transcriptPath);
+      title = conversationTitle(
+        { sessionId: resolved.sessionId, customTitle: summary?.customTitle, autoTitle: summary?.autoTitle },
+        id => index.getSessionName(id),
+      ).title || session.label || session.name;
     }
   }
 
@@ -489,29 +504,41 @@ async function cmdViewConversation(
 }
 
 /**
- * Prompt for a friendly name for an agent session and store it in the sidecar
- * names map. Empty input clears the name. Accepts a SessionTreeItem (resolve the
- * live session's current sessionId) or an explicit { sessionId, current }.
+ * Rename a conversation. The name goes to the extension's sidecar map (any agent)
+ * AND, for Claude, to Claude's own `<id>/custom-title.json` — the file `/rename`
+ * writes and `claude --resume` reads — so the two stay one name. Empty input
+ * clears both. Accepts a sidebar row, a terminal tab, or an explicit
+ * { sessionId, current, transcriptPath, agent } from the archive picker.
  * Returns the saved name (undefined when cleared/cancelled).
  */
 async function cmdNameSession(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
-  arg?: SessionTreeItem | { sessionId: string; current?: string },
+  arg?: SessionTreeItem | vscode.Terminal | { sessionId: string; current?: string; transcriptPath?: string; agent?: AgentId },
 ): Promise<string | undefined> {
   let sessionId: string | undefined;
   let current: string | undefined;
+  let transcriptPath: string | undefined;
+  let agent: AgentId | undefined;
 
   if (arg && 'sessionId' in arg) {
     sessionId = arg.sessionId;
-    current = arg.current ?? index.getSessionName(sessionId);
-  } else if (arg && 'session' in arg) {
-    const session = arg.session;
-    const { history } =
-      resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
-    sessionId = history[0];
-    current = sessionId ? index.getSessionName(sessionId) : undefined;
+    current = arg.current;
+    transcriptPath = arg.transcriptPath;
+    agent = arg.agent;
+  } else {
+    const session = await resolveSessionInfoFromInvocation(arg as SessionTreeItem | vscode.Terminal | undefined, index);
+    if (session) {
+      const { provider, history } =
+        resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
+      const cwd = index.getSessionMeta(session.workspaceHash, session.name)?.folderPath
+        || session.workspacePath || '';
+      const resolved = resolveResumeFromHistory(provider, history, cwd, session.workspacePath);
+      sessionId = resolved?.sessionId ?? history[0];
+      transcriptPath = resolved?.transcriptPath;
+      agent = provider.id;
+    }
   }
 
   if (!sessionId) {
@@ -519,14 +546,37 @@ async function cmdNameSession(
     return undefined;
   }
 
+  // Prefill with what the user currently sees for this conversation (a native
+  // /rename title first), so "rename" edits the visible name rather than a blank.
+  if (current === undefined) {
+    const summary = transcriptPath && agent
+      ? registry.getProvider(agent)?.readTranscriptSummary?.(transcriptPath)
+      : undefined;
+    current = conversationTitle(
+      { sessionId, customTitle: summary?.customTitle, autoTitle: summary?.autoTitle },
+      id => index.getSessionName(id),
+      200,
+    ).title;
+  }
+
   const input = await vscode.window.showInputBox({
-    prompt: 'Friendly name for this conversation (empty to clear)',
+    prompt: 'Name for this conversation (empty to clear)',
     value: current ?? '',
   });
   if (input === undefined) return current; // cancelled
   const name = input.trim() || undefined;
   index.setSessionName(sessionId, name);
+  let native = '';
+  if (agent === 'claude' && transcriptPath) {
+    native = writeClaudeCustomTitle(transcriptPath, name)
+      ? (name ? ' Claude shows it in `claude --resume` too.' : ' Cleared in Claude too.')
+      : ' (Could not write Claude\'s custom-title.json.)';
+  }
   refreshSidebar();
+  vscode.window.setStatusBarMessage(
+    name ? `Conversation renamed to "${name}".${native}` : `Conversation name cleared.${native}`,
+    3500,
+  );
   return name;
 }
 
@@ -571,7 +621,7 @@ async function cmdToggleShowCompletedSubagents(): Promise<void> {
 
 async function cmdSetSessionMuted(
   index: SessionIndex,
-  item: SessionTreeItem | undefined,
+  item: SessionTreeItem | vscode.Terminal | undefined,
   selection: vscode.TreeItem[] | undefined,
   muted: boolean,
 ): Promise<void> {
@@ -584,17 +634,21 @@ async function cmdSetSessionMuted(
     );
     return;
   }
-  if (!item) {
-    vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
+  // A sidebar row or a terminal tab (Mute/Unmute live on the tab menu too).
+  const session = await resolveSessionInfoFromInvocation(item, index);
+  if (!session) {
+    vscode.window.showErrorMessage('Use the sidebar context menu or a terminal tab on a session.');
     return;
   }
-  const name = item.session.name;
+  const name = session.name;
   const parsed = parseSessionName(name, getConfig().sessionPrefix);
   if (!parsed) return;
   index.setSessionMuted(parsed.hash, name, muted);
   refreshSidebar();
+  // Flip the tab menu's Mute ↔ Unmute right away for the active terminal.
+  void syncActiveTerminalContext(index);
   vscode.window.showInformationMessage(
-    `${item.session.label || name}: notifications ${muted ? 'muted' : 'unmuted'}.`,
+    `${session.label || name}: notifications ${muted ? 'muted' : 'unmuted'}.`,
   );
 }
 
@@ -677,7 +731,7 @@ async function cmdSetSessionLocked(
   // If the just-(un)locked session is the active terminal, refresh the tab-menu
   // gate immediately so Kill Session ↔ Unlock flips without waiting for a
   // terminal re-activation.
-  void syncActiveTerminalLockedContext(index);
+  void syncActiveTerminalContext(index);
   const label = index.getSessionLabel(parsed.hash, name) || name;
   vscode.window.setStatusBarMessage(
     `${label}: ${locked ? '🔒 locked — protected from Kill' : '🔓 unlocked'}`,
@@ -685,25 +739,27 @@ async function cmdSetSessionLocked(
   );
 }
 
-/** The context key `terminalSessions.activeTerminalLocked` mirrors whether the
- *  ACTIVE terminal's tmux session is locked. The native terminal-tab right-click
- *  menu can't read the right-clicked tab's session state in a `when` clause, so
- *  it keys off this — the active terminal is the one being acted on — to swap
- *  Kill Session ↔ a "locked" hint. Falls to `false` (Kill shown) on any resolve
- *  miss; cmdKill still refuses locked sessions as a backstop, so a momentarily
- *  stale key only degrades to the pre-existing "warn on click" behavior. */
-export async function syncActiveTerminalLockedContext(index: SessionIndex): Promise<void> {
-  const setKey = (v: boolean): void => {
-    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalLocked', v);
+/** Context keys mirroring the ACTIVE terminal's session state, for the native
+ *  terminal-tab right-click menu: a `when` clause can't read the right-clicked
+ *  tab's session, so it keys off the active terminal (the one being acted on).
+ *    terminalSessions.activeTerminalLocked   — Kill Session ↔ Unlock, Lock shown when false
+ *    terminalSessions.activeTerminalMuted    — Mute ↔ Unmute Notifications
+ *    terminalSessions.activeTerminalYolo     — 'on' | 'off' | 'none' → Switch to Normal / YOLO / hidden
+ *    terminalSessions.activeTerminalForkable — Fork Conversation shown
+ *  Every key falls to its "safe" value on a resolve miss; the commands re-check
+ *  the real state, so a momentarily stale key only degrades to "warn on click". */
+export async function syncActiveTerminalContext(index: SessionIndex): Promise<void> {
+  const set = (locked: boolean, muted: boolean, yolo: 'on' | 'off' | 'none', forkable: boolean): void => {
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalLocked', locked);
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalMuted', muted);
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalYolo', yolo);
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalForkable', forkable);
   };
   const t = vscode.window.activeTerminal;
-  if (!t) { setKey(false); return; }
-  const cfg = getConfig();
-  const name = await resolveTmuxNameForTerminalLive(t, index, cfg.sessionPrefix);
-  if (!name) { setKey(false); return; }
-  const parsed = parseSessionName(name, cfg.sessionPrefix);
-  if (!parsed) { setKey(false); return; }
-  setKey(index.isSessionLocked(parsed.hash, name));
+  if (!t) { set(false, false, 'none', false); return; }
+  const s = await resolveSessionInfoFromInvocation(t, index);
+  if (!s) { set(false, false, 'none', false); return; }
+  set(Boolean(s.locked), Boolean(s.muted), s.yoloCapable ? (s.yolo ? 'on' : 'off') : 'none', Boolean(s.forkable));
 }
 
 /** Inline padlock button on a locked row. It is a deliberate no-op on the lock
@@ -727,36 +783,46 @@ async function cmdFixClaudeRendering(): Promise<void> {
   const rcPath = path.join(home, rcFile);
   const isFish = rcFile.endsWith('config.fish');
 
-  // DISABLE_MOUSE_CLICKS (not DISABLE_MOUSE): clicks go to tmux so you can
-  // select panes natively, but scroll events still reach Claude Code so the
-  // trackpad scrolls the conversation view. DISABLE_MOUSE=1 would break
-  // trackpad scroll inside Claude.
-  const EXPORTS = [
-    'export CLAUDE_CODE_NO_FLICKER=1',
-    'export CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1',
-  ];
-  const FISH_SET = [
-    'set -gx CLAUDE_CODE_NO_FLICKER 1',
-    'set -gx CLAUDE_CODE_DISABLE_MOUSE_CLICKS 1',
-  ];
-  const lines = isFish ? FISH_SET : EXPORTS;
-  const block = '\n# Terminal Sessions — Claude Code rendering fix\n' + lines.join('\n') + '\n';
-
-  // Match the old DISABLE_MOUSE var (without _CLICKS) so we can migrate users
-  // who ran an earlier iteration of this command.
-  const oldMouseLine = isFish
-    ? /^set -gx CLAUDE_CODE_DISABLE_MOUSE 1\s*$/m
-    : /^export CLAUDE_CODE_DISABLE_MOUSE=1\s*$/m;
-  const newMouseLine = lines[1];
+  // Only NO_FLICKER. Up to v0.20.40 this command ALSO appended
+  // CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1, which makes Claude ignore every mouse
+  // click/drag (only wheel scroll survives) and so kills drag-select, copy on
+  // release and buttons inside Claude's fullscreen view. See mouse-clicks-guard.ts.
+  const line = isFish ? 'set -gx CLAUDE_CODE_NO_FLICKER 1' : 'export CLAUDE_CODE_NO_FLICKER=1';
+  const block = '\n# Terminal Sessions — Claude Code rendering fix\n' + line + '\n';
 
   let existing = '';
   try { existing = fs.readFileSync(rcPath, 'utf8'); } catch { /* file may not exist yet */ }
 
-  const alreadyFullyPresent = lines.every((l: string) => existing.includes(l));
-  if (alreadyFullyPresent) {
+  // Migration: an rc file written by an older version still carries the mouse var.
+  const mouseLines = findMouseEnvLines(existing);
+  if (mouseLines.length) {
+    const choice = await vscode.window.showWarningMessage(
+      `~/${rcFile} still sets CLAUDE_CODE_DISABLE_MOUSE_CLICKS (line ${mouseLines.join(', ')}), `
+      + 'added by an older Terminal Sessions. It makes Claude Code ignore every mouse click '
+      + 'and drag (drag-select and buttons stop working). Comment it out? A backup is saved '
+      + 'next to the file.',
+      { modal: true },
+      'Comment out', 'Keep',
+    );
+    if (choice === 'Comment out') {
+      try {
+        const { changed, backup } = commentOutMouseEnv(rcPath);
+        existing = fs.readFileSync(rcPath, 'utf8');
+        vscode.window.showInformationMessage(
+          `Commented out ${changed} line(s) in ~/${rcFile} (backup: ${path.basename(backup)}). `
+          + 'Restart running Claude sessions to pick it up.',
+        );
+      } catch (e) {
+        vscode.window.showErrorMessage(`Could not write to ${rcPath}: ${String(e).slice(0, 120)}`);
+        return;
+      }
+    }
+  }
+
+  if (existing.includes(line)) {
     const action = await vscode.window.showInformationMessage(
-      `The Claude Code rendering env vars are already in ~/${rcFile}. `
-      + 'Open a new shell (or restart the tmux pane) to pick them up in a running Claude session.',
+      `CLAUDE_CODE_NO_FLICKER=1 is already in ~/${rcFile}. `
+      + 'Open a new shell (or restart the tmux pane) to pick it up in a running Claude session.',
       'Open rc file',
     );
     if (action === 'Open rc file') {
@@ -766,38 +832,13 @@ async function cmdFixClaudeRendering(): Promise<void> {
     return;
   }
 
-  // Migration path: user has the old DISABLE_MOUSE=1 line (broke trackpad
-  // scroll in Claude). Replace it in place.
-  if (oldMouseLine.test(existing)) {
-    const choice = await vscode.window.showInformationMessage(
-      `Your ~/${rcFile} has an older variant (CLAUDE_CODE_DISABLE_MOUSE=1) that blocks `
-      + 'trackpad scroll inside Claude Code. Replace with CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1 '
-      + '(clicks still go to tmux, wheel reaches Claude)?',
-      { modal: true },
-      'Replace', 'Cancel',
-    );
-    if (choice !== 'Replace') return;
-    let updated = existing.replace(oldMouseLine, newMouseLine);
-    // Ensure NO_FLICKER also present (it was paired with the old var).
-    if (!updated.includes(lines[0])) updated += '\n' + lines[0] + '\n';
-    try {
-      fs.writeFileSync(rcPath, updated);
-      vscode.window.showInformationMessage(
-        `Updated ~/${rcFile}. Open a new shell (or restart the tmux pane) to activate.`,
-      );
-    } catch (e) {
-      vscode.window.showErrorMessage(`Could not write to ${rcPath}: ${String(e).slice(0, 120)}`);
-    }
-    return;
-  }
-
   const choice = await vscode.window.showInformationMessage(
-    `Append Claude Code rendering env vars to ~/${rcFile}?\n\n`
-    + lines.join('\n') + '\n\n'
-    + 'These put Claude Code into fullscreen (alt-screen) mode so the scrollback '
-    + 'stays clean, and route trackpad scroll to Claude (clicks still go to tmux '
-    + 'for pane select). Copy text from Claude: press Ctrl+O then [ to dump the '
-    + 'conversation into tmux scrollback, then drag-select normally.\n\n'
+    `Append the Claude Code rendering env var to ~/${rcFile}?\n\n`
+    + line + '\n\n'
+    + 'This puts Claude Code into fullscreen (alt-screen) mode so the scrollback stays '
+    + 'clean; Claude then owns the mouse (drag-select, copy on release, clicks, wheel). '
+    + 'The managed tmux.conf already sets this for every tmux pane — you only need the '
+    + 'rc export for shells outside tmux.\n\n'
     + 'Requires Claude Code ≥ 2.1.110. Running tmux panes pick up the change only '
     + 'after Restart Session + relaunch of claude.',
     { modal: true },
@@ -815,7 +856,7 @@ async function cmdFixClaudeRendering(): Promise<void> {
   try {
     fs.appendFileSync(rcPath, block);
     vscode.window.showInformationMessage(
-      `Appended env vars to ~/${rcFile}. Open a new terminal (or reload shell) to activate. `
+      `Appended CLAUDE_CODE_NO_FLICKER=1 to ~/${rcFile}. Open a new terminal (or reload shell) to activate. `
       + 'Note: running tmux panes need to be restarted to pick up the new environment.',
     );
   } catch (e) {
@@ -823,18 +864,30 @@ async function cmdFixClaudeRendering(): Promise<void> {
   }
 }
 
-async function cmdFindSession(searchIndex: ClaudeSearchIndex): Promise<void> {
-  // Best-effort refresh in the background while the picker is open
-  void searchIndex.refresh();
+/** On-demand version of the startup guard: scan rc files, the tmux server env,
+ *  ~/.claude/settings.json and this process for the mouse-killing vars, offer the fix. */
+async function cmdFixClaudeMouseEnv(ctx: vscode.ExtensionContext): Promise<void> {
+  const tmuxPath = await tmux.detectTmuxPath(getConfig().tmuxPath);
+  await maybeWarnMouseEnv(ctx, tmuxPath, { force: true });
+}
+
+async function cmdFindSession(index: SessionIndex, searchIndex: ClaudeSearchIndex): Promise<void> {
+  // Best-effort refresh in the background while the picker is open; re-render
+  // once it lands so a title renamed/cleared since the last scan shows fresh.
+  let disposed = false;
+  void searchIndex.refresh().then(n => { if (n > 0 && !disposed) render(qp.value); });
   interface Pick extends vscode.QuickPickItem { entry: SessionIndexEntry }
   const qp = vscode.window.createQuickPick<Pick>();
   qp.placeholder = 'Search Claude sessions by prompt, cwd, or session id…';
   qp.matchOnDescription = true;
   qp.matchOnDetail = true;
   const render = (q: string): void => {
-    const entries = q ? searchIndex.search(q) : searchIndex.list();
+    const entries = q ? searchIndex.search(q, id => index.getSessionName(id)) : searchIndex.list();
     qp.items = entries.slice(0, 100).map(e => ({
-      label: e.title || '(no prompt)',
+      label: conversationTitle(
+        { sessionId: e.sessionId, customTitle: e.customTitle, autoTitle: e.aiTitle, firstUserMessage: e.title },
+        id => index.getSessionName(id),
+      ).title || '(no prompt)',
       description: `${path.basename(e.cwd || '')} · ${e.turns} turns · ${humanAge(new Date(e.lastModified))}`,
       detail: e.lastPrompt !== e.firstPrompt ? `last: ${e.lastPrompt}` : undefined,
       entry: e,
@@ -848,7 +901,7 @@ async function cmdFindSession(searchIndex: ClaudeSearchIndex): Promise<void> {
     if (!sel) return;
     await openSessionActions(sel.entry);
   });
-  qp.onDidHide(() => qp.dispose());
+  qp.onDidHide(() => { disposed = true; qp.dispose(); });
   qp.show();
 }
 
@@ -1115,6 +1168,52 @@ async function resolveSessionNameFromInvocation(
     return resolveTmuxNameForTerminalLive(asTerm, index, prefix);
   }
   return undefined;
+}
+
+/** Like resolveSessionNameFromInvocation, but yields the full SessionInfo the
+ *  session commands work on. A sidebar row already carries it; a terminal tab is
+ *  resolved to its tmux session and the row is rebuilt from the index (same
+ *  fields enrichSessions fills for a live row, minus the tmux timestamps). */
+async function resolveSessionInfoFromInvocation(
+  arg: SessionTreeItem | vscode.Terminal | undefined,
+  index: SessionIndex,
+): Promise<SessionInfo | undefined> {
+  const asItem = arg as SessionTreeItem | undefined;
+  if (asItem?.session?.name) return asItem.session;
+  const cfg = getConfig();
+  const name = await resolveSessionNameFromInvocation(arg, index, cfg.sessionPrefix);
+  if (!name) return undefined;
+  const parsed = parseSessionName(name, cfg.sessionPrefix);
+  if (!parsed) return undefined;
+  const ws = index.getWorkspace(parsed.hash);
+  const meta = index.getSessionMeta(parsed.hash, name);
+  const agent = latestAgentSession(index, parsed.hash, name)?.agent;
+  const yoloHits = agent ? yoloFlagsFor(agent, meta?.resumeFlags?.[agent] ?? []) : [];
+  return {
+    name,
+    workspaceHash: parsed.hash,
+    workspacePath: ws?.path || '',
+    workspaceLabel: ws?.label || `(${parsed.hash})`,
+    tabId: parsed.tabId,
+    label: meta?.label,
+    icon: meta?.icon,
+    color: meta?.color,
+    createdAt: meta?.createdAt ? new Date(meta.createdAt) : new Date(0),
+    lastAttached: new Date(),
+    lastActiveAt: meta?.lastActiveAt ? new Date(meta.lastActiveAt) : undefined,
+    attached: true,
+    muted: meta?.muted,
+    favorite: meta?.favorite,
+    locked: meta?.locked,
+    stopped: false,
+    groupId: meta?.groupId,
+    branchSetId: meta?.branchSetId,
+    forkable: isForkableAgent(agent),
+    yolo: yoloHits.length > 0,
+    yoloCapable: Boolean(yoloSpecFor(agent)),
+    yoloFlags: yoloHits,
+    folderPath: meta?.folderPath,
+  };
 }
 
 /** A session resolved down to everything needed to tear it down and bring it
@@ -1443,14 +1542,14 @@ async function cmdForkConversation(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
-  item?: SessionTreeItem,
+  item?: SessionTreeItem | vscode.Terminal,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
-  const src = item?.session;
+  const src = await resolveSessionInfoFromInvocation(item, index);
   if (!src) {
-    vscode.window.showInformationMessage('Right-click a Claude session in the Terminal Sessions sidebar to fork it.');
+    vscode.window.showInformationMessage('Right-click a Claude session in the sidebar or its terminal tab to fork it.');
     return;
   }
   const parsed = parseSessionName(src.name, cfg.sessionPrefix);
@@ -2291,7 +2390,7 @@ async function cmdResumeFromArchive(
   let scopeCwd: string | undefined = ws?.path;
 
   const eyeBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('book'), tooltip: 'View Conversation' };
-  const editBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Name Conversation' };
+  const editBtn: vscode.QuickInputButton = { iconPath: new vscode.ThemeIcon('edit'), tooltip: 'Rename Conversation' };
 
   interface Pick extends vscode.QuickPickItem { sess?: ArchivedSession; toggle?: boolean }
 
@@ -2300,7 +2399,7 @@ async function cmdResumeFromArchive(
     const rows: Pick[] = sessions.slice(0, 500).map(s => {
       const provider = registry.getProvider(s.agent);
       const badge = provider?.displayName || s.agent;
-      const primary = s.friendlyName || (s.firstUserMessage?.replace(/\s+/g, ' ').slice(0, 80)) || '(no user message)';
+      const primary = conversationTitle(s, id => index.getSessionName(id)).title || '(no user message)';
       const lines = (s.lineCount ?? 0).toLocaleString();
       const ageMs = Date.now() - (s.mtimeMs ?? Date.now());
       const ageMin = Math.round(ageMs / 60000);
@@ -2341,9 +2440,14 @@ async function cmdResumeFromArchive(
       const s = e.item.sess;
       if (!s || !s.transcriptPath) return;
       if (e.button === eyeBtn) {
-        await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: s.friendlyName || s.firstUserMessage });
+                await vscode.commands.executeCommand(COMMAND.viewConversation, { transcriptPath: s.transcriptPath, title: conversationTitle(s, id => index.getSessionName(id)).title });
       } else if (e.button === editBtn) {
-        const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, { sessionId: s.sessionId, current: s.friendlyName });
+                const name = await vscode.commands.executeCommand<string | undefined>(COMMAND.nameSession, {
+          sessionId: s.sessionId,
+          current: conversationTitle(s, id => index.getSessionName(id), 200).title,
+          transcriptPath: s.transcriptPath,
+          agent: s.agent,
+        });
         if (name !== undefined) refresh();
       }
     });
@@ -2512,8 +2616,11 @@ async function cmdResumeOtherClaude(
 
   interface Pick extends vscode.QuickPickItem { sid: string; transcriptPath: string; recordedCwd?: string }
   const picks: Pick[] = candidates.map(c => {
-    const firstUser = c.firstUserMessage?.replace(/\s+/g, ' ').slice(0, 80) || '(no user message yet)';
-    const cwdShort = c.cwd ? c.cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?';
+    // Native /rename title → sidecar name → agent's auto title → first prompt.
+    const firstUser = conversationTitle(c, id => index.getSessionName(id)).title || '(no user message yet)';
+    const prompt = c.firstUserMessage?.replace(/\s+/g, ' ').slice(0, 80);
+    const cwdShort = (c.cwd ? c.cwd.replace(/^\/Users\/[^/]+\//, '~/') : '?')
+      + (prompt && prompt !== firstUser ? ` · ${prompt}` : '');
     const lines = c.lineCount.toLocaleString();
     const ageMs = Date.now() - c.mtimeMs;
     const ageMin = Math.round(ageMs / 60000);
@@ -2677,12 +2784,12 @@ function latestAgentSession(
  * the clipboard. Driven from the sidebar right-click; with no item (e.g. invoked
  * from the command palette) it explains what to do instead of failing silently.
  */
-async function cmdCopySessionId(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
-  if (!item?.session) {
-    vscode.window.showInformationMessage('Right-click a session in the Terminal Sessions sidebar to copy its session ID.');
+async function cmdCopySessionId(index: SessionIndex, item?: SessionTreeItem | vscode.Terminal): Promise<void> {
+  const s = await resolveSessionInfoFromInvocation(item, index);
+  if (!s) {
+    vscode.window.showInformationMessage('Right-click a session in the sidebar or a Terminal Sessions tab to copy its session ID.');
     return;
   }
-  const s = item.session;
   const latest = latestAgentSession(index, s.workspaceHash, s.name);
   if (!latest) {
     vscode.window.showInformationMessage(`No agent session has run in "${s.label || s.name}" yet — nothing to copy.`);
@@ -2698,12 +2805,12 @@ async function cmdCopySessionId(index: SessionIndex, item?: SessionTreeItem): Pr
  * through the owning agent's provider so it works for Claude/Codex/agy alike,
  * returning the computed path even when the file isn't written yet.
  */
-async function cmdCopySessionPath(index: SessionIndex, registry: AgentRegistry, item?: SessionTreeItem): Promise<void> {
-  if (!item?.session) {
-    vscode.window.showInformationMessage('Right-click a session in the Terminal Sessions sidebar to copy its transcript path.');
+async function cmdCopySessionPath(index: SessionIndex, registry: AgentRegistry, item?: SessionTreeItem | vscode.Terminal): Promise<void> {
+  const s = await resolveSessionInfoFromInvocation(item, index);
+  if (!s) {
+    vscode.window.showInformationMessage('Right-click a session in the sidebar or a Terminal Sessions tab to copy its transcript path.');
     return;
   }
-  const s = item.session;
   const latest = latestAgentSession(index, s.workspaceHash, s.name);
   if (!latest) {
     vscode.window.showInformationMessage(`No agent session has run in "${s.label || s.name}" yet — no transcript to copy.`);

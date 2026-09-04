@@ -191,6 +191,11 @@ export function findTranscriptBySessionId(cwd: string, sessionId: string): strin
 export interface TranscriptSummary {
   cwd?: string;
   firstUserMessage?: string;
+  /** `/rename` title: the `<id>/custom-title.json` sidecar Claude reads back for
+   *  `claude --resume`, else the last `custom-title` record in the transcript. */
+  customTitle?: string;
+  /** Claude's generated title (last `ai-title` record). */
+  autoTitle?: string;
   lineCount: number;
   byteSize: number;
   mtimeMs: number;
@@ -234,6 +239,38 @@ function unwrapLocalCommand(raw: string): { text?: string; commandName?: string 
   return { text: stripped || undefined, commandName };
 }
 
+/** Sidecar Claude writes on `/rename` and reads back for `claude --resume`:
+ *  `<project>/<sessionId>/custom-title.json` = `{"customTitle":"…"}`. */
+export function claudeCustomTitlePath(transcriptPath: string): string {
+  const dir = path.dirname(transcriptPath);
+  const id = path.basename(transcriptPath, '.jsonl');
+  return path.join(dir, id, 'custom-title.json');
+}
+
+export function readClaudeCustomTitle(transcriptPath: string): string | undefined {
+  try {
+    const v = JSON.parse(fs.readFileSync(claudeCustomTitlePath(transcriptPath), 'utf8'))?.customTitle;
+    return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+  } catch { return undefined; }
+}
+
+/** Write (or, with an empty title, remove) Claude's own custom-title sidecar so a
+ *  name given in the extension shows up in `claude --resume` too. The transcript
+ *  .jsonl is never touched. Returns false when the write failed. */
+export function writeClaudeCustomTitle(transcriptPath: string, title: string | undefined): boolean {
+  const p = claudeCustomTitlePath(transcriptPath);
+  try {
+    if (!title) {
+      try { fs.unlinkSync(p); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+      return true;
+    }
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ customTitle: title }));
+    return true;
+  } catch { return false; }
+}
+
 export function readTranscriptSummary(transcriptPath: string): TranscriptSummary | undefined {
   try {
     const stat = fs.statSync(transcriptPath);
@@ -250,6 +287,11 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
     // Sub-session detection (agent-team teammate / pure subagent transcript).
     let isTeammate = false;
     let sawMainUser = false;
+    // Title records can land anywhere (ai-title after a few turns, custom-title
+    // whenever the user runs /rename); last one wins, so they're sniffed on every
+    // line — the substring test is cheap, JSON.parse only runs on hits.
+    let customTitle: string | undefined;
+    let autoTitle: string | undefined;
     // Walk lines, but only parse the first ~200 for cwd/first-user — the rest
     // is just counted. Saves a lot of JSON.parse work on 22k-line transcripts.
     let cursor = 0;
@@ -272,6 +314,12 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
             userAssistantCount++;
           } else if (line.includes('"type":"summary"')) {
             hasSummary = true;
+          } else if (line.includes('"type":"custom-title"') || line.includes('"type":"ai-title"')) {
+            try {
+              const t = JSON.parse(line);
+              if (t.type === 'custom-title' && typeof t.customTitle === 'string') customTitle = t.customTitle;
+              else if (t.type === 'ai-title' && typeof t.aiTitle === 'string') autoTitle = t.aiTitle;
+            } catch { /* malformed line */ }
           }
           if (lineCount <= 200 && (!cwd || !firstUser)) {
             try {
@@ -322,6 +370,8 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
     return {
       cwd,
       firstUserMessage: (firstUser ?? firstCommandName ?? (sawLocalCommand ? '(local command)' : undefined))?.slice(0, 200),
+      customTitle: readClaudeCustomTitle(transcriptPath) ?? customTitle,
+      autoTitle,
       lineCount,
       byteSize: stat.size,
       mtimeMs: stat.mtimeMs,

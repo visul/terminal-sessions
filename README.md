@@ -45,7 +45,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 
 **1. tmux as the process keeper.** Every persistent terminal you open is actually `tmux attach-session` against a named session on a tmux server that runs outside of Cursor. Quit Cursor, reboot the window, crash the renderer: the shells and anything they spawned (Claude Code, `npm run dev`, a migration, a long SSH) keep running in the tmux server. When you reopen the workspace, the extension offers to re-attach. Sessions are named `ts-<workspace-hash>-<tabId>`, so two projects or two git worktrees of the same repo never collide.
 
-**2. A managed `~/.terminal-sessions/tmux.conf`.** The extension writes its own tmux config with defaults tuned for Cursor: mouse on, large scrollback, OSC 52 clipboard, modern CSI-u keys, DECSET 2026 synchronized output, and the `CLAUDE_CODE_NO_FLICKER` and `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` env vars baked in so Claude Code renders cleanly in alt-screen and trackpad scroll stays inside the conversation view. Your own `~/.tmux.conf` is never touched; the managed file loads it at the end if it exists, so your personal theme or keybindings still apply.
+**2. A managed `~/.terminal-sessions/tmux.conf`.** The extension writes its own tmux config with defaults tuned for Cursor: mouse on, large scrollback, OSC 52 clipboard, modern CSI-u keys, DECSET 2026 synchronized output, and `CLAUDE_CODE_NO_FLICKER` baked in so Claude Code renders cleanly in alt-screen and owns its own mouse (drag-select, copy on release, clicks, wheel). Your own `~/.tmux.conf` is never touched; the managed file loads it at the end if it exists, so your personal theme or keybindings still apply.
 
 **3. AI-agent awareness via hooks + transcript tailing.** If you opt in, the extension installs lifecycle hooks for each agent you use — `SessionStart | UserPromptSubmit | PreToolUse | PostToolUse | Notification | Stop | SessionEnd` for Claude (`~/.claude/settings.json`), the equivalent events for Codex (`~/.codex/hooks.json`) and Antigravity (`~/.gemini/antigravity-cli/settings.json`, plus a `statusLine` for live context). A single shared forwarder normalizes each agent's differing event payload and writes a JSON line to `~/.terminal-sessions/agent-events.log`, tagged with the agent id and the tmux session the agent is running in. A file watcher feeds those events into an in-memory map and sets the per-session state (working, tool, waiting, idle). In parallel, a transcript tailer follows the agent's on-disk conversation file and, through that agent's provider, extracts model, token counts, context-window usage, and cost. The sidebar reads both streams and renders the merged snapshot. A conversation can only belong to one tmux session at a time; starting the same conversation in a different tab transfers ownership so the sidebar never shows duplicate live states. Everything below works the same way for Claude, Codex, Antigravity, and Grok — Claude is simply the most battle-tested provider. Grok is the exception on the hook side: it needs none, because the extension discovers its sessions from `~/.grok/active_sessions.json` instead (see [Multi-agent support](#multi-agent-support-claude--codex--antigravity--grok)).
 
@@ -73,6 +73,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
 - **Kill & Delete Data…** — right-click a session in the sidebar (or a terminal tab) to kill it AND permanently delete its conversations' on-disk data across every agent (Claude/Codex/Antigravity/Grok): transcripts, Claude sidecar dirs (subagents/tool-results/workflows), todos files, and per-session scratchpads under `/tmp/claude-*`. A modal confirmation shows exactly what's about to go (conversation count, file count, size on disk). Safety first: conversations still used by other sessions — live in another pane, or recorded as another session's resume history — are skipped and kept; every path is validated (strict UUID-named artifacts inside your home or the claude tmp dir only) and re-checked at delete time; symlinks are never followed. The session skips the graveyard — regular Kill stays reversible, this one doesn't
+- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Fork Conversation (Claude), View Conversation, Rename Conversation…, Copy Last Conversation ID / Path, Restart, Stop, Lock/Unlock, Kill Session, Kill & Delete Data…. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
 - **Auto-prune** stale sessions after configurable days (default 14)
 - **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
@@ -134,7 +135,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showFavoritesFolder` / `showOpenFolder` / `showBackgroundFolder` / `showActivityFolder` / `showKilledFolder` settings. All default to on
 
 ### YOLO mode switch (auto-approve)
-- **Switch to YOLO Mode / Switch to Normal Mode** — right-click a session to relaunch its agent with (or without) auto-approve flags, continuing the **same conversation**: `--dangerously-skip-permissions` for Claude, `--yolo` for Codex/Antigravity, the equivalent for Grok. The flag set is per-agent and allowlisted, so nothing else about the launch command changes
+- **Switch to YOLO Mode / Switch to Normal Mode** — right-click a session to relaunch its agent with (or without) auto-approve flags, continuing the **same conversation**: `--dangerously-skip-permissions` for Claude and Antigravity, `--yolo` for Codex, the equivalent for Grok. The flag set is per-agent and allowlisted, so nothing else about the launch command changes
 - **🚨 chip** — sessions running in YOLO mode show a 🚨 in their sidebar description (stopped sessions too, meaning "will start in YOLO mode"); the tooltip names the actual flags
 - **Confirmation prompt** before switching into YOLO (`terminalSessions.confirmYoloSwitch`, default on)
 
@@ -151,7 +152,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **Fork Conversation** — right-click a Claude session → **Fork Conversation (new parallel branch)** to open a new session/tab that continues the same conversation on its own independent branch. Runs `claude --resume <id> --fork-session`, which mints a fresh conversation id, so the two sessions never share a transcript and neither can overwrite the other. You can name the branch; it defaults to `fork N`
 - **Fork clusters** — the origin and its forks gather under one collapsible header with a `repo-forked` icon tinted in the branch set's color, labeled `{origin} · N forks`. Separate from your normal folder groups, expanded by default, and the collapse state sticks. A lone or filtered member outside a cluster keeps the small `⑂` chip instead
 - **Unlink from Branch Set** — right-click a linked session → **Unlink from Branch Set** to make it standalone again. Only the visual link goes away; the conversations were already independent from the moment of the fork, so nothing is lost. A set dissolves automatically once it drops below two members, including when you kill one side
-- **Claude only** — the command is hidden on Codex, Antigravity, and Grok sessions, which have no fork equivalent. It is also sidebar-only, because VS Code cannot gate the native terminal-tab menu per agent
+- **Claude only** — the command is hidden on Codex, Antigravity, and Grok sessions, which have no fork equivalent. In the terminal-tab menu it follows the **active** terminal (the one you right-click), since VS Code cannot gate that menu per tab
 
 ### Subagents in the sidebar
 - **`🤖 Agents (N running · M done)` folder per session** — one collapsible row groups every subagent a Claude session spawned, so sessions with lots of agents stay tidy. Auto-expanded while anything is live; collapsed when everything finishes. Tooltip previews the first five agents with their state
@@ -183,7 +184,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 ### Archive, conversation viewer & cleanup
 - **Resume Session from Archive** — the `$(history)` button on the sidebar toolbar (or `Terminal Sessions: Resume Session from Archive…`) opens a picker of **every** past conversation on disk, across every agent you have enabled, even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Accepting a row resumes it into your active session or a fresh persistent one
 - **View Conversation** — right-click a session (or the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`
-- **Name Conversation** — give any session a friendly name; it shows in the archive picker and the viewer title. Names live in the extension's sidecar index, so the agent's transcript files are never modified
+- **Rename Conversation** — one name for a conversation everywhere: the resume pickers, Find Session and the viewer title. For Claude it is written to Claude's own `<id>/custom-title.json` (the file `/rename` writes and `claude --resume` reads), so renaming in the sidebar or with `/rename` inside Claude gives the same result; the transcript `.jsonl` is never modified. Titles set inside the agent win, then the extension's name, then the agent's generated title (Claude `ai-title`, Codex thread name, Antigravity summaries, Grok `generated_title`), then the first prompt
 - **Clean Up Empty / Invalid Sessions** — a maintenance action (sidebar overflow `⋯` menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. **Claude only** — Codex, Antigravity, and Grok transcripts are never classified or moved, and the soft-delete refuses any path outside `~/.claude/projects`. The agent's own database and session index are never touched; moved files can be restored manually
 - **Transcript-cleanup warning** — Claude Code silently **deletes** conversation transcripts after 30 days (`cleanupPeriodDays`, and everything above — resume, archive, viewer — needs those files). A one-line dismissible notice at the top of the sidebar warns when your setting is risky (unset or under 90 days), and counts the transcripts about to expire within the next `terminalSessions.transcriptExpiryWarnDays` days: *"7 Claude chats expire soon — first in ~5d, click to keep them"*. Click writes `"cleanupPeriodDays": 3650` into `~/.claude/settings.json` (surgical edit — the rest of the file stays byte-for-byte identical; refuses to touch invalid JSON). The ✕ snoozes the notice for 30 days; it re-arms on purpose, because the data loss is permanent
 
@@ -227,7 +228,7 @@ Defaults include:
 - **DECSET 2026 synchronized output** passthrough (`terminal-features xterm*:sync`) — apps like Claude Code that emit the sequence stop producing flicker through tmux
 - **`allow-passthrough on`** — TUIs can send OSC/kitty-graphics/clipboard sequences through unfiltered
 - **`extended-keys on`** — modern CSI-u encoding so Ctrl+Shift combos reach Claude Code correctly
-- **`CLAUDE_CODE_NO_FLICKER=1`** and **`CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1`** baked in via `set-environment -g` — every new tmux window inherits these, so Claude renders in alt-screen and trackpad scroll stays inside the conversation view. No shell rc edit required
+- **`CLAUDE_CODE_NO_FLICKER=1`** baked in via `set-environment -g` — every new tmux window inherits it, so Claude renders in alt-screen and handles its own mouse (drag-select, copy on release, clicks, wheel). No shell rc edit required. `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` is deliberately **not** set — and is unset on the server at every load — because it makes Claude ignore every click and drag (see [Drag-select or clicks dead inside Claude?](#drag-select-or-clicks-dead-inside-claude))
 - **Drag-select stays in copy-mode** (tmux default exits copy-mode and jumps to prompt — override uses `copy-selection-no-clear`)
 - **Trackpad-friendly scroll** — 1 line per tick (default 5 is too fast on trackpads)
 - **Custom prefix `Ctrl+A`** (screen-style). `Ctrl+A Ctrl+A` sends a literal Ctrl+A
@@ -292,7 +293,7 @@ cursor --install-extension visul.terminal-sessions    # Cursor
 
 ### From VSIX
 ```bash
-cursor --install-extension terminal-sessions-0.20.31.vsix --force
+cursor --install-extension terminal-sessions-<ver>.vsix --force
 ```
 Or in Cursor: Extensions panel → `⋯` → **Install from VSIX...**
 
@@ -358,12 +359,13 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Change Sidebar Sort` | Pick custom / recently-used / creation-order / alphabetical |
 | `Terminal Sessions: New Master Group...` | Create a master group to hold other groups |
 | `Terminal Sessions: Test Native Notification` | Fire a sample notification to check your OS setup |
-| `Terminal Sessions: Fix Claude Code Rendering in Shell` | Appends `CLAUDE_CODE_NO_FLICKER=1` and `CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1` to your rc file (optional — the managed tmux.conf already bakes these in, so most users won't need this) |
+| `Terminal Sessions: Fix Claude Code Rendering in Shell` | Appends `CLAUDE_CODE_NO_FLICKER=1` to your rc file, for shells outside tmux (optional — the managed tmux.conf already bakes it in). Also offers to comment out a leftover `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` line written by older versions |
+| `Terminal Sessions: Fix Claude Code Mouse (drag-select)` | Finds `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` in your rc files, the tmux server environment or `~/.claude/settings.json` and removes it. That variable makes Claude ignore every mouse click and drag |
 | `Terminal Sessions: Toggle Claude Waiting Alerts (Global)` | Flip the `notifyOnClaudeWaiting` setting |
 | `Terminal Sessions: Recreate Sessions from Index` | After a reboot, rebuild tmux sessions from the stored index |
 | Right-click on sidebar session → `Restart` | Kill + fresh shell; auto-resume the agent if detected |
 | Right-click on sidebar session → `View Conversation` | Render the session's transcript as Markdown (reads the `.jsonl` directly — works on stopped sessions too) |
-| Right-click on sidebar session → `Name Conversation...` | Give the session a friendly name (shown in the archive picker) |
+| Right-click on sidebar session or terminal tab → `Rename Conversation...` | Name the conversation (shown in the resume pickers, Find Session and the viewer; for Claude also in `claude --resume`) |
 | Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
 | Right-click on sidebar session → `Switch to YOLO Mode` / `Switch to Normal Mode` | Relaunch the same conversation with (or without) the agent's auto-approve flags; 🚨 chip marks YOLO sessions |
 | Right-click on killed row (or Command Palette) → `Restore Session` | Bring a killed session back from the graveyard and resume its conversation |
@@ -462,15 +464,19 @@ Claude Code's TUI writes full-frame redraws into the main terminal buffer on eve
 
 ### Fix (automatic)
 
-The managed `~/.terminal-sessions/tmux.conf` now emits
+The managed `~/.terminal-sessions/tmux.conf` emits
 ```tmux
-set-environment -g CLAUDE_CODE_NO_FLICKER 1
-set-environment -g CLAUDE_CODE_DISABLE_MOUSE_CLICKS 1
+set-environment -g  CLAUDE_CODE_NO_FLICKER 1
+set-environment -gu CLAUDE_CODE_DISABLE_MOUSE_CLICKS
 ```
-so every new tmux window inherits these at startup. No shell rc edit needed. The extension auto-prompts to regenerate older configs on upgrade.
+so every new tmux window inherits `NO_FLICKER` at startup. No shell rc edit needed. The extension auto-prompts to regenerate older configs on upgrade.
 
-- **`CLAUDE_CODE_NO_FLICKER=1`** — Claude Code renders into the alternate screen buffer (like `vim`, `less`, `htop`). tmux no longer captures each intermediate frame, so scrollback stays clean across detach/reattach and parallel subagents
-- **`CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1`** — clicks are handed to tmux (so you can still click-select panes, tabs, the sidebar, etc.) but scroll events still reach Claude Code. Trackpad scrolls Claude's conversation view directly. `DISABLE_MOUSE=1` alone would block trackpad scroll
+- **`CLAUDE_CODE_NO_FLICKER=1`** — Claude Code renders into the alternate screen buffer (like `vim`, `less`, `htop`). tmux no longer captures each intermediate frame, so scrollback stays clean across detach/reattach and parallel subagents. In this mode Claude owns the mouse: drag-select, copy on release, button clicks and wheel scroll all happen inside Claude
+- **`CLAUDE_CODE_DISABLE_MOUSE_CLICKS` is unset** on every load. Versions 0.11–0.20.13 set it here (and the rendering-fix command wrote it into rc files) on the theory that it "routes clicks to tmux but keeps scroll". In practice it makes Claude ignore every click and drag, so drag-select and buttons die inside Claude. A tmux server started under an old conf keeps the variable until restart, hence the explicit unset
+
+### Drag-select or clicks dead inside Claude?
+
+Symptom: the wheel scrolls Claude's conversation, but dragging selects nothing and buttons (e.g. the `×` on the `/diff` panel) ignore clicks. Cause, almost always: `CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1` still exported somewhere — `~/.zshrc` / `~/.bashrc` (written by the old "Fix Claude Code Rendering in Shell"), the tmux server's global environment (inherited from an old conf), or `~/.claude/settings.json` `env`. The extension checks all of these at startup and offers a one-click fix; run **Terminal Sessions: Fix Claude Code Mouse (drag-select)** to check on demand. After the fix, **Restart Session** on running Claude sessions — the environment is read when Claude launches, and the pane's shell already exported it.
 
 Requires Claude Code ≥ 2.1.110 (earlier versions had a regression that wiped scrollback).
 

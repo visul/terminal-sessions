@@ -196,6 +196,9 @@ export const codexProvider: AgentProvider = {
   listSessions(cwd?: string): AgentSessionSummary[] {
     const out: AgentSessionSummary[] = [];
     const seen = new Set<string>();
+    // Codex's generated thread titles (session_index.jsonl) — the name `codex resume`
+    // shows and accepts; surfaced as autoTitle for on-disk sessions too.
+    const threadNames = threadNamesById();
 
     // 1) Scan recent rollout dirs (newest days first) — authoritative file
     //    locations with full summaries (cwd filter + previews).
@@ -212,6 +215,7 @@ export const codexProvider: AgentProvider = {
         transcriptPath: file.path,
         cwd: summary?.cwd,
         firstUserMessage: summary?.firstUserMessage,
+        autoTitle: threadNames.get(sessionId),
         lineCount: summary?.lineCount,
         byteSize: summary?.byteSize ?? file.size,
         mtimeMs: summary?.mtimeMs ?? file.mtimeMs,
@@ -235,6 +239,7 @@ export const codexProvider: AgentProvider = {
           sessionId: entry.id,
           transcriptPath: rolloutById.get(entry.id),
           firstUserMessage: entry.thread_name,
+          autoTitle: entry.thread_name,
           mtimeMs: entry.updated_at ? Date.parse(entry.updated_at) || undefined : undefined,
         });
       }
@@ -245,9 +250,25 @@ export const codexProvider: AgentProvider = {
   },
 
   readTranscriptSummary(transcriptPath: string) {
-    return readCodexTranscriptSummary(transcriptPath);
+    const s = readCodexTranscriptSummary(transcriptPath);
+    if (!s) return undefined;
+    const id = sessionIdFromRolloutName(path.basename(transcriptPath));
+    const autoTitle = id ? threadNamesById().get(id) : undefined;
+    return autoTitle ? { ...s, autoTitle } : s;
   },
 };
+
+// session_index.jsonl is re-read at most every few seconds: the resume picker
+// calls readTranscriptSummary once per candidate.
+let threadNameCache: { at: number; map: Map<string, string> } | undefined;
+function threadNamesById(): Map<string, string> {
+  const now = Date.now();
+  if (threadNameCache && now - threadNameCache.at < 5000) return threadNameCache.map;
+  const map = new Map<string, string>();
+  for (const e of readSessionIndex()) if (e.thread_name) map.set(e.id, e.thread_name);
+  threadNameCache = { at: now, map };
+  return map;
+}
 
 // ───────────────────────────── helpers ─────────────────────────────
 

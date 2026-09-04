@@ -1,3 +1,4 @@
+import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -38,6 +39,46 @@ const SETTINGS_PATH = path.join(AGY_HOME, 'settings.json');
 const BRAIN_DIR = path.join(AGY_HOME, 'brain');
 const LAST_CONV_PATH = path.join(AGY_HOME, 'cache', 'last_conversations.json');
 const HISTORY_PATH = path.join(AGY_HOME, 'history.jsonl');
+const SUMMARIES_DB = path.join(AGY_HOME, 'conversation_summaries.db');
+
+/** Antigravity's conversation titles (what its resume picker shows) live in a
+ *  sqlite db: the LLM-generated title sits in the `preview` column (3–5 title-cased
+ *  words, despite the name) and `title` is empty unless the user renamed the
+ *  conversation. Read through the `sqlite3` CLI so we need no native module; an
+ *  empty map when the CLI or the db is missing. Cached a few seconds because the
+ *  resume picker asks once per candidate. */
+interface AgyTitles { custom?: string; auto?: string }
+/** `preview` holds the generated title only for conversations titled by newer agy
+ *  builds; older rows carry a long snippet of the first message instead (hundreds
+ *  of chars, sentence punctuation). Keep only what reads as a title. */
+function looksLikeTitle(p: string): boolean {
+  const t = p.trim();
+  return t.length > 0 && t.length <= 80 && !/[.!?…]$/.test(t) && t.split(/\s+/).length <= 12;
+}
+let agyTitleCache: { at: number; map: Map<string, AgyTitles> } | undefined;
+function agyTitlesById(): Map<string, AgyTitles> {
+  const now = Date.now();
+  if (agyTitleCache && now - agyTitleCache.at < 5000) return agyTitleCache.map;
+  const map = new Map<string, AgyTitles>();
+  try {
+    if (fs.existsSync(SUMMARIES_DB)) {
+      const out = execFileSync('sqlite3', [
+        '-readonly', '-json', SUMMARIES_DB,
+        "select conversation_id as id, title, preview from conversation_summaries where title <> '' or preview <> ''",
+      ], { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] });
+      const rows = out.trim() ? JSON.parse(out) as { id?: unknown; title?: unknown; preview?: unknown }[] : [];
+      for (const r of rows) {
+        if (typeof r.id !== 'string') continue;
+        map.set(r.id, {
+          custom: typeof r.title === 'string' && r.title ? r.title : undefined,
+          auto: typeof r.preview === 'string' && looksLikeTitle(r.preview) ? r.preview : undefined,
+        });
+      }
+    }
+  } catch { /* no sqlite3 CLI, locked db, or unexpected output */ }
+  agyTitleCache = { at: now, map };
+  return map;
+}
 
 // Events agy emits with the Claude-compatible hook schema. Stop → turn finished
 // (idle); Notification → agent needs user input (waiting).
@@ -273,6 +314,7 @@ export const agyProvider: AgentProvider = {
     } catch { /* no history yet */ }
 
     // Enumerate on-disk conversations by their brain/ transcript dirs.
+    const titles = agyTitlesById();
     for (const convId of safeReaddir(BRAIN_DIR)) {
       if (!UUID_RE.test(convId)) continue;
       const tp = transcriptPathForConv(convId);
@@ -290,6 +332,8 @@ export const agyProvider: AgentProvider = {
         transcriptPath: tp,
         cwd: recordedCwd,
         firstUserMessage: firstMsgByConv.get(convId) ?? summary?.firstUserMessage,
+        customTitle: titles.get(convId)?.custom,
+        autoTitle: titles.get(convId)?.auto,
         lineCount: summary?.lineCount,
         byteSize: summary?.byteSize,
         mtimeMs: summary?.mtimeMs,
@@ -301,6 +345,10 @@ export const agyProvider: AgentProvider = {
   },
 
   readTranscriptSummary(transcriptPath: string) {
-    return readAgyTranscriptSummary(transcriptPath);
+    const s = readAgyTranscriptSummary(transcriptPath);
+    if (!s) return undefined;
+    const convId = /([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})/.exec(transcriptPath)?.[1];
+    const t = convId ? agyTitlesById().get(convId) : undefined;
+    return t ? { ...s, customTitle: t.custom, autoTitle: t.auto } : s;
   },
 };

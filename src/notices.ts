@@ -161,7 +161,11 @@ export function setClaudeCleanupDays(days: number): string | undefined {
     } else {
       const idx = raw.indexOf('{');
       if (idx < 0) return '~/.claude/settings.json has no top-level object';
-      next = raw.slice(0, idx + 1) + `\n  "cleanupPeriodDays": ${days},` + raw.slice(idx + 1);
+      const rest = raw.slice(idx + 1);
+      // `{}` has nothing after the brace but whitespace — a comma there would be
+      // invalid JSON and trip the corruption guard below.
+      const sep = /^\s*}/.test(rest) ? '' : ',';
+      next = raw.slice(0, idx + 1) + `\n  "cleanupPeriodDays": ${days}${sep}` + rest;
     }
     try { JSON.parse(next); } catch {
       return 'edit would corrupt ~/.claude/settings.json — aborted, nothing written';

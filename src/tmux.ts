@@ -9,7 +9,7 @@ const execFileP = promisify(execFile);
 
 export const CONF_PATH = path.join(os.homedir(), '.terminal-sessions', 'tmux.conf');
 
-const CONF_VERSION = 'ts-tmux-conf-v16';
+const CONF_VERSION = 'ts-tmux-conf-v17';
 
 // Writer script the remote clipboard bridge pipes copies to (installed by
 // clipboard-bridge.ts). tmux `copy-pipe` feeds it the selection on stdin; it writes
@@ -226,7 +226,9 @@ bind-key -T copy-mode-vi y   send-keys -X copy-selection-and-cancel`;
  *  We deliberately do NOT set CLAUDE_CODE_DISABLE_MOUSE_CLICKS. Despite old advice
  *  that it "routes clicks to tmux while keeping scroll", in practice it makes Claude
  *  ignore ALL mouse clicks/drags (keeping only wheel scroll), which silently breaks
- *  Claude's own fullscreen drag-selection and button clicks. */
+ *  Claude's own fullscreen drag-selection and button clicks. v0.11–v0.20.13 confs set
+ *  it, so the block also UNSETS it (and the older DISABLE_MOUSE) on every load: a tmux
+ *  server started under an old conf carries the var until restart otherwise. */
 function flickerConf(): string {
   const flicker = noFlickerEnabled
     ? 'set-environment -g CLAUDE_CODE_NO_FLICKER 1'
@@ -242,6 +244,12 @@ function flickerConf(): string {
 # see the change until restart.
 # NOTE: we intentionally do NOT export CLAUDE_CODE_DISABLE_MOUSE_CLICKS — it makes
 # Claude ignore mouse clicks/drags (only scroll), which breaks drag-select + clicks.
+# Terminal Sessions v0.11–v0.20.13 DID set it right here, and a tmux server started
+# under that conf keeps it in its global environment until the server restarts, so
+# every load/reload of this file unsets it (v17). Shell-rc exports are handled by the
+# extension's startup check / "Fix Claude Code Mouse (drag-select)" command.
+set-environment -gu CLAUDE_CODE_DISABLE_MOUSE_CLICKS
+set-environment -gu CLAUDE_CODE_DISABLE_MOUSE
 ${flicker}`;
 }
 

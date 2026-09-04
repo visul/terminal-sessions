@@ -216,6 +216,8 @@ export const claudeProvider: AgentProvider = {
           transcriptPath: tp,
           cwd: s?.cwd,
           firstUserMessage: s?.firstUserMessage,
+          customTitle: s?.customTitle,
+          autoTitle: s?.autoTitle,
           lineCount: s?.lineCount,
           byteSize: s?.byteSize,
           mtimeMs: s?.mtimeMs,

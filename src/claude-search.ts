@@ -1,20 +1,29 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { claudeCustomTitlePath, readClaudeCustomTitle } from './claude-transcript';
 
 export interface SessionIndexEntry {
   sessionId: string;
   transcriptPath: string;
   cwd: string;
   title: string;        // derived from first user prompt
+  customTitle?: string; // `/rename` title (custom-title.json sidecar or record)
+  aiTitle?: string;     // Claude's generated `ai-title`
   firstPrompt: string;
   lastPrompt: string;
   turns: number;
   lastModified: number; // ms since epoch
+  /** mtime of Claude's custom-title.json sidecar (0 = none). Part of the cache
+   *  key: a rename/clear touches only the sidecar, not the transcript. */
+  titleModified?: number;
 }
 
 const PROJECTS_ROOT = path.join(os.homedir(), '.claude', 'projects');
-const INDEX_PATH = path.join(os.homedir(), '.terminal-sessions', 'search-index.json');
+// v2: entries carry customTitle/aiTitle. New file name so the pre-title cache is
+// rebuilt once instead of serving stale, title-less entries until each transcript
+// happens to change.
+const INDEX_PATH = path.join(os.homedir(), '.terminal-sessions', 'search-index.v2.json');
 const HEAD_SCAN_BYTES = 256 * 1024;  // scan first 256 KB for first user prompt
 const EXTENDED_SCAN_BYTES = 2 * 1024 * 1024;  // 2nd-pass window when the first prompt is past the head
 const TAIL_SCAN_BYTES = 128 * 1024;  // last 128 KB for last user prompt
@@ -81,9 +90,15 @@ export class ClaudeSearchIndex {
         // extra `turns > 0` guard forced a wasteful re-read of every 0-turn /
         // promptless file on each refresh — an unchanged file yields identical
         // results, and promptless-but-large files now get a sentinel entry.)
-        if (existing && existing.lastModified >= stat.mtimeMs) continue;
+        // The custom-title sidecar has its own mtime (a rename via the extension
+        // writes/removes only that file), so it is part of the key too — an
+        // exact match, so a cleared title (sidecar gone → 0) also re-scans.
+        const titleModified = sidecarMtime(fpath);
+        if (existing && existing.lastModified >= stat.mtimeMs
+            && (existing.titleModified ?? 0) === titleModified) continue;
         const entry = readTranscriptSummary(fpath, stat.mtimeMs, f.replace(/\.jsonl$/, ''));
         if (entry) {
+          entry.titleModified = titleModified;
           this.entries.set(fpath, entry);
           changed++;
         }
@@ -104,13 +119,16 @@ export class ClaudeSearchIndex {
     return [...this.entries.values()].sort((a, b) => b.lastModified - a.lastModified);
   }
 
-  search(query: string): SessionIndexEntry[] {
+  /** `extra` adds per-session text that lives outside the transcript (the name
+   *  given in the extension's Rename Conversation) so the title the picker SHOWS
+   *  is also the title it MATCHES. */
+  search(query: string, extra?: (sessionId: string) => string | undefined): SessionIndexEntry[] {
     const q = query.trim().toLowerCase();
     if (!q) return this.list();
     const tokens = q.split(/\s+/);
     const results: Array<{ e: SessionIndexEntry; score: number }> = [];
     for (const e of this.entries.values()) {
-      const hay = `${e.title} ${e.firstPrompt} ${e.lastPrompt} ${e.cwd}`.toLowerCase();
+      const hay = `${e.customTitle ?? ''} ${extra?.(e.sessionId) ?? ''} ${e.aiTitle ?? ''} ${e.title} ${e.firstPrompt} ${e.lastPrompt} ${e.cwd}`.toLowerCase();
       let score = 0;
       for (const t of tokens) {
         const idx = hay.indexOf(t);
@@ -137,6 +155,14 @@ function readTranscriptSummary(
   let lastPrompt = '';
   let cwd = '';
   let turns = 0;
+  // Title records (`/rename` → custom-title, generated → ai-title) can sit anywhere;
+  // the last one in file order wins. Sniffed in every window we read anyway.
+  let customTitle: string | undefined;
+  let aiTitle: string | undefined;
+  const noteTitle = (data: Record<string, unknown>): void => {
+    if (data.type === 'custom-title' && typeof data.customTitle === 'string') customTitle = data.customTitle;
+    else if (data.type === 'ai-title' && typeof data.aiTitle === 'string') aiTitle = data.aiTitle;
+  };
 
   let stat: fs.Stats;
   try { stat = fs.statSync(fpath); } catch { return undefined; }
@@ -148,14 +174,16 @@ function readTranscriptSummary(
     const lines = headBuf.toString('utf8').split('\n');
     for (const line of lines) {
       if (!line) continue;
+      // Past the first prompt only title records matter — skip the JSON.parse
+      // for everything else (a 256 KB head can be thousands of records).
+      if (firstPrompt && !line.includes('-title"')) continue;
       const data = safeParse(line);
       if (!data) continue;
+      noteTitle(data);
       if (!cwd && typeof data.cwd === 'string') cwd = data.cwd;
+      if (firstPrompt) continue;
       const prompt = extractUserPrompt(data);
-      if (prompt && !firstPrompt) {
-        firstPrompt = prompt;
-        break;
-      }
+      if (prompt) firstPrompt = prompt;
     }
   }
 
@@ -171,6 +199,7 @@ function readTranscriptSummary(
         if (!line) continue;
         const data = safeParse(line);
         if (!data) continue;
+        noteTitle(data);
         if (!cwd && typeof data.cwd === 'string') cwd = data.cwd;
         const prompt = extractUserPrompt(data);
         if (prompt) { firstPrompt = prompt; break; }
@@ -186,6 +215,11 @@ function readTranscriptSummary(
       const text = tailBuf.toString('utf8');
       // Skip first (possibly partial) line
       const lines = text.split('\n').slice(start === 0 ? 0 : 1);
+      // Forward pass for title records (last in file order wins) …
+      for (const line of lines) {
+        if (line && line.includes('-title"')) { const d = safeParse(line); if (d) noteTitle(d); }
+      }
+      // … backward pass for the last prompt.
       for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i];
         if (!line) continue;
@@ -227,6 +261,8 @@ function readTranscriptSummary(
       transcriptPath: fpath,
       cwd,
       title: fallback.slice(0, 80),
+      customTitle: readClaudeCustomTitle(fpath) ?? customTitle,
+      aiTitle,
       firstPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
       lastPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
       turns,
@@ -239,11 +275,18 @@ function readTranscriptSummary(
     transcriptPath: fpath,
     cwd,
     title,
+    customTitle: readClaudeCustomTitle(fpath) ?? customTitle,
+    aiTitle,
     firstPrompt: firstPrompt.slice(0, MAX_PREVIEW),
     lastPrompt: (lastPrompt || firstPrompt).slice(0, MAX_PREVIEW),
     turns,
     lastModified,
   };
+}
+
+function sidecarMtime(transcriptPath: string): number {
+  try { return fs.statSync(claudeCustomTitlePath(transcriptPath)).mtimeMs; }
+  catch { return 0; }
 }
 
 function readRange(fpath: string, offset: number, length: number): Buffer | undefined {

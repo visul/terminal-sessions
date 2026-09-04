@@ -177,6 +177,7 @@ export const COMMAND = {
   fixTranscriptCleanup: 'terminalSessions.fixTranscriptCleanup',
   dismissCleanupNotice: 'terminalSessions.dismissCleanupNotice',
   fixClaudeRendering: 'terminalSessions.fixClaudeRendering',
+  fixClaudeMouseEnv: 'terminalSessions.fixClaudeMouseEnv',
   openSubagentTranscript: 'terminalSessions.openSubagentTranscript',
   viewConversation: 'terminalSessions.viewConversation',
   nameSession: 'terminalSessions.nameSession',

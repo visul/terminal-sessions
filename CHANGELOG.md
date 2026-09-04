@@ -4,6 +4,20 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.20.41] — 2026-09-04
+
+### Fixed
+- **Drag-select and clicks dead inside Claude Code — caused by our own `CLAUDE_CODE_DISABLE_MOUSE_CLICKS=1`.** Versions 0.10–0.20.13 recommended and wrote that variable: "Fix Claude Code Rendering in Shell" appended it to your rc file, and the managed tmux.conf set it with `set-environment -g`. In Claude's fullscreen view it makes Claude ignore every mouse click and drag (only wheel scroll survives), so drag-select, copy on release and buttons (e.g. the `/diff` panel's `×`) silently do nothing. 0.20.14 stopped setting it in the conf, but a tmux server started under the old conf keeps it until restart, and an rc export lives forever. Now: (1) tmux.conf v17 unsets it (and the older `CLAUDE_CODE_DISABLE_MOUSE`) on the server at every load/reload — you'll be offered the conf update once; (2) at startup the extension scans your rc files, the tmux server environment, `~/.claude/settings.json` `env` and its own process, and offers a one-click fix that comments the line out (backup next to the file) and clears the server environment; (3) "Fix Claude Code Rendering in Shell" no longer writes the variable and offers to comment out a leftover; (4) new command **Fix Claude Code Mouse (drag-select)** runs the check on demand. Restart running Claude sessions afterwards — the environment is read at launch.
+- **Cleanup notice fix failed on an empty `~/.claude/settings.json`.** Inserting `cleanupPeriodDays` into `{}` produced a trailing comma, so the corruption guard aborted with "edit would corrupt ~/.claude/settings.json" and the fix could never be applied.
+- **Codex turn outcome could inherit the previous turn's failure.** Sessions whose rollouts carry only the `event_msg` form of the user message never reset the turn evidence, so a failed tool result from the last turn coloured the next one.
+
+### Added
+- **Session actions on the terminal tab menu.** Right-click a terminal tab (or inside the terminal) for what used to be sidebar-only: Switch to YOLO / Normal Mode, Mute / Unmute Notifications, Lock (Protect from Kill), Fork Conversation, View Conversation, Rename Conversation…, Copy Last Conversation ID and Copy Last Conversation Path. State-dependent entries follow the active terminal via new context keys (`activeTerminalMuted`, `activeTerminalYolo`, `activeTerminalForkable`, next to the existing `activeTerminalLocked`).
+- **One conversation name, shared with the agent.** "Name Conversation…" is now "Rename Conversation…" and, for Claude, writes Claude's own `<id>/custom-title.json` — the file `/rename` writes and `claude --resume` reads — so a name given in the sidebar and one given with `/rename` inside Claude are the same thing. Everywhere the extension shows a conversation (resume pickers, Find Session, View Conversation, the rename prefill) now uses one rule: the title set inside the agent (Claude `/rename`, Grok `/rename`) → the extension's name → the agent's generated title (Claude `ai-title`, Codex `thread_name`, Antigravity's summaries db via `sqlite3`, Grok `generated_title`) → the first prompt. Find Session also matches on those titles; its cache is rebuilt once (`search-index.v2.json`).
+
+### Changed
+- README no longer recommends `CLAUDE_CODE_DISABLE_MOUSE_CLICKS`; new troubleshooting section "Drag-select or clicks dead inside Claude?".
+
 ## [0.20.40] — 2026-09-03
 
 ### Added

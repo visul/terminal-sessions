@@ -53,6 +53,12 @@ export interface AgentSessionSummary {
   transcriptPath?: string;
   cwd?: string;
   firstUserMessage?: string;
+  /** Title the user set inside the agent (Claude `/rename` → custom-title.json,
+   *  Grok `/rename`). Wins over every other name — see conversation-title.ts. */
+  customTitle?: string;
+  /** The agent's own generated title (Claude `ai-title`, Codex `thread_name`,
+   *  Antigravity summaries db, Grok `generated_title`). */
+  autoTitle?: string;
   lineCount?: number;
   byteSize?: number;
   mtimeMs?: number;
@@ -184,6 +190,8 @@ export interface AgentProvider {
   readTranscriptSummary?(transcriptPath: string): {
     cwd?: string;
     firstUserMessage?: string;
+    customTitle?: string;
+    autoTitle?: string;
     lineCount?: number;
     byteSize?: number;
     mtimeMs?: number;

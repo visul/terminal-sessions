@@ -187,6 +187,7 @@ export const grokProvider: AgentProvider = {
           transcriptPath: u,
           cwd: s?.cwd ?? safeDecode(enc),
           firstUserMessage: s?.firstUserMessage,
+          autoTitle: s?.autoTitle,
           lineCount: s?.lineCount,
           byteSize: s?.byteSize,
           mtimeMs: s?.mtimeMs,

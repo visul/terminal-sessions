@@ -164,6 +164,8 @@ export function reduceGrokTranscriptLine(state: TranscriptTailState, line: strin
 export interface GrokTranscriptSummary {
   cwd?: string;
   firstUserMessage?: string;
+  /** `session_summary` / `generated_title` from summary.json — Grok's own title. */
+  autoTitle?: string;
   lineCount?: number;
   byteSize?: number;
   mtimeMs?: number;
@@ -189,6 +191,7 @@ export function readGrokTranscriptSummary(transcriptPath: string): GrokTranscrip
   return {
     cwd,
     firstUserMessage: title ? compactPreview(title, 200) : undefined,
+    autoTitle: title ? compactPreview(title, 200) : undefined,
     lineCount: msgs,
     byteSize: stat.size,
     mtimeMs: stat.mtimeMs,
