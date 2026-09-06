@@ -4,6 +4,19 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.30.3] — 2026-09-06
+
+### Fixed
+- **A finished turn stayed 🔵 for minutes instead of turning 🟢.** Hook events carry whole seconds (`date +%s`), transcript rows carry milliseconds, and the Stop hook fires a fraction of a second after the assistant row that ends the turn — so the floored stamp landed *before* that row and the tracker read the ordering backwards: Stop said idle, then the very next render decided Claude was still composing and put the row (and the tab mark) back on working until the transcript went quiet for five minutes. Measured on live sessions the gap is 0.1-0.4s, so it hit nearly every turn. A hook stamp is now compared against transcript timestamps as the second it covers, not as its floor. The same comparison guarded a permission prompt's ⚠, which could be cleared by the assistant row it was blocked on.
+
+## [0.30.2] — 2026-09-05
+
+### Fixed
+- **Working mark no longer blinks off during a long thought.** Claude Code writes nothing to its transcript while it reasons, and a 30-second silence after a tool result was enough for the tracker to call the turn finished: the sidebar row flipped to stopped and the 🔵 on the tab vanished mid-turn, only to return with the next tool call. That 30-second rule exists for sessions seen only through their transcript. While a session's hooks are demonstrably firing, the Stop hook reports the real end of the turn, so the transcript-silence leash is now 5 minutes there; the short rule still applies to hookless sessions.
+- **Renaming a reload-restored tab now reaches the sidebar.** Terminals that survive a window reload come back without the launch arguments the rename watcher used to identify them, so a right-click → Rename on such a tab was never saved: the tab carried the new name, the sidebar kept showing the bare `#<id>`. Restored tabs are now identified through their live process, and a name they already carry that the extension would not have rendered itself is adopted as the session label on the spot.
+- **Opening a session no longer attaches a second tmux client when its tab is already open.** The duplicate check looked at launch arguments, then at the tab name; a reload-restored tab has neither reliably (no arguments, and a name the user may have changed or an empty title sequence may have reset to "tmux"), so clicking the session opened a second tab mirroring the first keystroke for keystroke. The live process is now consulted before a new terminal is created.
+- **A finish you watched now gets its 🟢 too.** In `seen` mode the tab mark borrowed the sidebar's unread rule, which is never set for a turn that ends while you are on that terminal — so a session you were looking at never turned green, and one you weren't lost its mark the instant you clicked it. The tab now marks every finish (the age reads as "done 2m ago") and clears it on your next visit to that terminal after the finish, or on Dismiss. The sidebar's unread rows are unchanged.
+
 ## [0.30.1] — 2026-09-05
 
 ### Added

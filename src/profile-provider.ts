@@ -221,6 +221,22 @@ async function tmuxNameFromTerminalProcess(t: vscode.Terminal): Promise<string |
 }
 
 /**
+ * Among the live terminals whose shellArgs are gone (reload-restored), find the
+ * one whose tmux client is attached to `name`. One `ps` per candidate, so only
+ * called on the miss path of openTerminalForSession.
+ */
+async function findLiveTerminalByProcess(name: string): Promise<vscode.Terminal | undefined> {
+  for (const t of vscode.window.terminals) {
+    if (t.exitStatus) continue;
+    if (sessionNameForTerminal(t) !== undefined) continue;
+    const opts = t.creationOptions;
+    if (opts && typeof opts === 'object' && 'pty' in opts) continue;
+    if (await tmuxNameFromTerminalProcess(t) === name) return t;
+  }
+  return undefined;
+}
+
+/**
  * Resolve a terminal's tmux session name, robust to BOTH window reloads (trimmed
  * shellArgs) AND user-renamed tabs (no `#<tabId>` in the label). Tries the cheap
  * synchronous paths first (shellArgs, then tab label), then falls back to the
@@ -262,6 +278,20 @@ export async function openTerminalForSession(
     // the user doesn't end up with both the dead pane and a live one.
     if (existing) {
       try { existing.dispose(); } catch { /* already gone */ }
+    }
+    // Neither shellArgs nor the tab name identified a live tab. Before opening
+    // a SECOND tmux client on this session (a duplicate tab that mirrors the
+    // first keystroke for keystroke), ask the live processes: a reload-restored
+    // tab has no shellArgs, and its name may have been changed by the user (or
+    // reset to "tmux" by an empty title sequence), so both cheap stages miss it.
+    const byPid = await findLiveTerminalByProcess(name);
+    if (byPid) {
+      byPid.show();
+      setTimeout(() => { try { byPid.show(); } catch { /* disposed */ } }, 0);
+      void tmux.detectTmuxPath(getConfig().tmuxPath).then(tp => {
+        if (tp) void tmux.exitCopyMode(tp, name);
+      });
+      return byPid;
     }
   }
 

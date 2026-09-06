@@ -45,6 +45,10 @@ export interface ClaudeSnapshot {
   toolName?: string;
   toolInput?: string;
   toolSince?: Date;
+  /** Latest hook event for this pane, any kind. While hooks are demonstrably
+   *  live, transcript-mtime heuristics get a much longer leash — the Stop hook
+   *  will report the real end of the turn. */
+  lastHookAt?: Date;
   // Enriched from transcript
   model?: string;
   lastUserMessage?: string;
@@ -74,6 +78,9 @@ export interface ClaudeSnapshot {
   /** True when a 'waiting' state is being shown as idle because the user
    *  dismissed it; any newer agent activity un-dismisses automatically. */
   dismissed?: boolean;
+  /** When the user last focused this session's terminal (window focused).
+   *  The tab mark's 'seen' rule: a finish older than this has been looked at. */
+  tabSeenAt?: Date;
 }
 
 interface ClaudeEvent {
@@ -154,6 +161,33 @@ const STALE_TOOL_MS = 30 * 60 * 1000;
 // Common trigger: user hits Esc to cancel, and Claude exits without writing
 // an interrupt marker the tailer can pick up.
 const STALE_WORKING_MS = 2 * 60 * 1000;
+// Transcript-freshness windows that decide whether a 'working' row is still
+// live. Claude Code writes NOTHING to the JSONL while it thinks — a 40-second
+// reasoning pause after a tool result leaves the file untouched — so the short
+// window (all we have for sessions seen only through their transcript) reads
+// every long thought as "done", and the tab mark blinks off mid-turn. When this
+// session's hooks are demonstrably firing, the Stop hook reports the real end
+// of the turn and the mtime is only a crash backstop, so the leash is longer.
+const TRANSCRIPT_FRESH_MS = 30_000;
+const TRANSCRIPT_FRESH_HOOKED_MS = 5 * 60 * 1000;
+const WORKING_STALE_MS = 90_000;
+// A hook event this recent means the session still has live hooks.
+const HOOKS_LIVE_MS = 30 * 60 * 1000;
+// Hook events are stamped with whole seconds (`date +%s` in the shell hook),
+// transcript rows with milliseconds. A Stop hook fires a fraction of a second
+// AFTER the assistant row that ends the turn, so the floor puts its timestamp
+// BEFORE that row and any ordering test against a transcript timestamp reads
+// backwards — measured on live sessions, the gap is 0.1-0.4s and the collision
+// hits nearly every turn. So a hook stamped `t` is treated as having happened
+// anywhere in [t, t+1s) whenever it is compared against a transcript timestamp.
+const HOOK_TS_GRANULARITY_MS = 1000;
+
+/** Did a hook event (whole seconds) happen at or after a transcript timestamp
+ *  (milliseconds)? Undefined/0 hook time means "never fired" — false. */
+function hookAtOrAfter(hookMs: number | undefined, transcriptMs: number): boolean {
+  if (!hookMs) return false;
+  return hookMs + HOOK_TS_GRANULARITY_MS > transcriptMs;
+}
 
 // Grok has no global hook, so we discover its live sessions by polling
 // ~/.grok/active_sessions.json and matching each session's pid to a tmux pane.
@@ -178,6 +212,10 @@ export class ClaudeTracker {
   private dismissedAt = new Map<string, number>();
   /** tmux session behind the currently active terminal tab (fed by extension.ts). */
   private activeTmux?: string;
+  /** tmux → Date.now() of the last focus on that session's terminal. Unlike the
+   *  sidebar's unread marker (set only for a finish you did NOT watch), this
+   *  lets the tab mark show every finish and clear on the next visit. */
+  private tabSeenAt = new Map<string, number>();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
 
@@ -340,12 +378,19 @@ export class ClaudeTracker {
    *  session's terminal is what "reads" it. */
   setActiveTmuxSession(name: string | undefined): void {
     this.activeTmux = name;
-    if (name && vscode.window.state.focused) this.markSeen(name);
+    if (name && vscode.window.state.focused) { this.markSeen(name); this.noteTabSeen(name); }
   }
 
   /** Re-apply "seen" for the active tab when the window regains focus. */
   onWindowFocused(): void {
-    if (this.activeTmux) this.markSeen(this.activeTmux);
+    if (this.activeTmux) { this.markSeen(this.activeTmux); this.noteTabSeen(this.activeTmux); }
+  }
+
+  /** The user is looking at this session's terminal now: any finish before this
+   *  moment counts as seen for the tab mark. Repaint so the mark leaves at once. */
+  private noteTabSeen(tmuxSession: string): void {
+    this.tabSeenAt.set(tmuxSession, Date.now());
+    this._onChange.fire();
   }
 
   private isLookingAt(tmuxSession: string): boolean {
@@ -461,12 +506,14 @@ export class ClaudeTracker {
       catch { /* transcript gone */ }
     }
     const sinceWriteMs = transcriptMtimeMs > 0 ? Date.now() - transcriptMtimeMs : Infinity;
-    const transcriptIsFresh = sinceWriteMs < 30_000;
+    const hooksLive = !!snap.lastHookAt && Date.now() - snap.lastHookAt.getTime() < HOOKS_LIVE_MS;
+    const transcriptIsFresh = sinceWriteMs < (hooksLive ? TRANSCRIPT_FRESH_HOOKED_MS : TRANSCRIPT_FRESH_MS);
 
     // 'working' stale-out: if Claude is supposedly working but the transcript
-    // hasn't been touched in 90 seconds, the Stop hook was probably missed
-    // (Esc cancellation, network drop, etc.) and we shouldn't keep claiming
-    // it's working. Long-thinking turns producing output keep mtime fresh.
+    // hasn't been touched in 90 seconds (5 minutes while hooks are live), the
+    // Stop hook was probably missed (Esc cancellation, network drop, etc.) and
+    // we shouldn't keep claiming it's working. Tool calls and text keep the
+    // mtime fresh; a long thought does not, hence the longer hooked leash.
     // Only apply the mtime rule once the transcript actually EXISTS — a
     // brand-new session sits at working after UserPromptSubmit before Claude
     // writes its first line (mtime 0 → sinceWriteMs Infinity), and we must not
@@ -474,7 +521,7 @@ export class ClaudeTracker {
     // age (STALE_WORKING_MS) so a truly abandoned prompt still clears.
     if (snap.state === 'working') {
       if (transcriptMtimeMs > 0) {
-        if (sinceWriteMs > 90_000) snap.state = 'idle';
+        if (sinceWriteMs > (hooksLive ? TRANSCRIPT_FRESH_HOOKED_MS : WORKING_STALE_MS)) snap.state = 'idle';
       } else if (snap.lastPromptAt && Date.now() - snap.lastPromptAt.getTime() > STALE_WORKING_MS) {
         snap.state = 'idle';
       }
@@ -528,7 +575,9 @@ export class ClaudeTracker {
         // those entries would otherwise be stuck forever.
         const waitingSinceMs = snap.waitingSince?.getTime() ?? 0;
         const waitingIsStale = snap.state === 'waiting'
-          && (waitingSinceMs === 0 || ta > waitingSinceMs || tu > waitingSinceMs);
+          && (waitingSinceMs === 0
+            || !hookAtOrAfter(waitingSinceMs, ta)
+            || !hookAtOrAfter(waitingSinceMs, tu));
         if (waitingIsStale) snap.waitingSince = undefined;
 
         // Esc during a tool call writes the interrupt marker but fires no
@@ -579,12 +628,13 @@ export class ClaudeTracker {
             //
             // Three signals disambiguate:
             //   1. A Stop hook at-or-after `ta` → Claude genuinely finished.
+            //      (Compared through `hookAtOrAfter`: the hook's second-resolution
+            //      stamp would otherwise land just before the row it follows.)
             //   2. Transcript file mtime fresh (< 30s) → Claude is still
             //      writing chunks (thinking, tool calls, text deltas) → live.
             //   3. Neither → Stop hook missed; treat as idle to avoid a
             //      session that looks "working" forever.
-            const stoppedAfterLastAssistant = snap.lastStopAt
-              && snap.lastStopAt.getTime() >= ta;
+            const stoppedAfterLastAssistant = hookAtOrAfter(snap.lastStopAt?.getTime(), ta);
             if (!stoppedAfterLastAssistant && transcriptIsFresh) {
               snap.state = 'working';
               if (!snap.lastPromptAt && t.lastUserMessageAt) {
@@ -663,6 +713,8 @@ export class ClaudeTracker {
       const unread = this.unreadOf(tmuxSession);
       if (unread) snap.unread = unread.kind;
     }
+    const seenAt = this.tabSeenAt.get(tmuxSession);
+    if (seenAt !== undefined) snap.tabSeenAt = new Date(seenAt);
     return snap;
   }
 
@@ -1071,6 +1123,10 @@ export class ClaudeTracker {
       this.snapshots.set(e.tmuxSession, snap);
       return true;
     }
+
+    // Any lifecycle hook proves this session's hooks are wired up; the
+    // transcript-freshness heuristics relax while that stays recent.
+    snap.lastHookAt = new Date(tsMs);
 
     switch (e.event) {
       case 'SessionStart':

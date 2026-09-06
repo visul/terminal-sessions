@@ -122,12 +122,15 @@ export function formatTabState(
       if (snap.lastStartAt && snap.lastStartAt.getTime() > at) return '';
       const dt = now - at;
       if (dt < 0) return '';
-      // 'seen': the sidebar's unread rule — the mark stays until you focus that
-      // terminal (or Dismiss), however long that takes, and never appears for a
-      // turn you watched finish. 'timer': 30 minutes after it finished, looked
-      // or not.
+      // 'seen': every finish gets the mark, even one you watched — the tab then
+      // reads "done 2m ago" — and it leaves on your next visit to that terminal
+      // after the finish (or Dismiss), however long that takes. The sidebar's
+      // unread marker is stricter (never set for a watched finish); using it
+      // here made a turn that ended under your eyes never show green at all.
+      // 'timer': 30 minutes after it finished, looked or not.
       if (clear === 'seen') {
-        if (!snap.unread || snap.dismissed) return '';
+        if (snap.dismissed) return '';
+        if (snap.tabSeenAt && snap.tabSeenAt.getTime() >= at) return '';
       } else if (dt > DONE_TTL_MS) {
         return '';
       }

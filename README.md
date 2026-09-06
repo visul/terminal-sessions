@@ -658,7 +658,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
 | `terminalSessions.tabStateText` | `"on"` | Write the agent's state into the native terminal tab description: 🔵 working, 🟢 + age once it is your turn. Needs `${sequence}` in `terminal.integrated.tabs.description` (the extension offers to add it) |
-| `terminalSessions.tabStateClear` | `"seen"` | When a finished session's tab mark leaves: `seen` — until you focus that terminal or Dismiss it (the sidebar's unread rule); `timer` — 30 minutes after it finished. Also in the view's `⋯` menu |
+| `terminalSessions.tabStateClear` | `"seen"` | When a finished session's tab mark leaves: `seen` — until your next visit to that terminal after the finish, or Dismiss (every finish gets the mark, even one you watched); `timer` — 30 minutes after it finished. Also in the view's `⋯` menu |
 | `terminalSessions.tabStateStyle` | `"blue"` | Glyph set for that state: `blue` 🔵🟢, `dark` ⚫🟢, `glyphs` `⟳✓⚠✗`, or `words` (`running` / `done 2m` / `needs you 12m`) |
 | `terminalSessions.activityLimit` | `50` | Max sessions listed in Recent Sessions |
 | `terminalSessions.killedLimit` | `50` | Max killed sessions kept in the graveyard (older entries fall off) |

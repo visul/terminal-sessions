@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.30.1",
+  "version": "0.30.3",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -356,7 +356,7 @@
             "timer"
           ],
           "enumDescriptions": [
-            "The mark stays until you focus that terminal (or Dismiss it in the sidebar) — the same rule as the sidebar's unread rows. A turn you watched finish never gets one.",
+            "Every finish gets the mark, even one you watched; it stays until your next visit to that terminal after the finish (or Dismiss in the sidebar), however long that takes.",
             "The mark clears 30 minutes after the agent finished, whether you looked or not."
           ],
           "default": "seen",
