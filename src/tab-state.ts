@@ -5,11 +5,19 @@
 // `changeIconActiveTab` commands drop it and open the picker). Status entries —
 // the yellow ⚠ that replaces a tab's icon — are internal to VS Code too.
 //
-// What IS reachable: the tab DESCRIPTION template. `terminal.integrated.tabs.description`
-// expands `${sequence}`, the title an application inside the terminal sets with an
-// OSC 2 escape sequence. So a short state string written into the pane reaches the
-// tab row. The title template can't be used: our terminals are created with a `name`,
-// which VS Code treats as a static title that bypasses the template entirely.
+// What IS reachable: the tab DESCRIPTION template, `terminal.integrated.tabs.description`.
+// Two variables in it are driven by escape sequences written into the pane:
+//   `${progress}` — the ConEmu/Windows-Terminal progress report, OSC 9;4;<state>;<pct>,
+//     rendered by VS Code as a spinner (state 3), a warning glyph (4) or an error
+//     glyph (2), cleared by state 0. Works on EVERY tab.
+//   `${sequence}` — the window title an application sets with OSC 2. VS Code only
+//     records it on a terminal it has NOT been given a name for (a `name` makes the
+//     title static and the OSC 2 listener is never attached), i.e. only on tabs
+//     restored across a window reload — every tab this extension creates is named.
+// So the progress channel carries the state; the title channel is written as well,
+// with a richer text (glyph + age), for the reload-restored tabs and anyone who
+// keeps `${sequence}` in the template. The title template itself can't be used:
+// a named terminal bypasses it entirely.
 //
 // The write goes to the ACTIVE pane's tty wrapped in tmux passthrough (DCS tmux; …),
 // so tmux forwards it verbatim to the attached client instead of eating it. Claude's
@@ -78,6 +86,11 @@ const TEMPLATE_KEY = 'tabStateTemplateAsked-v1';
 const PASSTHROUGH_KEY = 'tabStatePassthroughWarned-v1';
 const DESCRIPTION_SETTING = 'terminal.integrated.tabs.description';
 const SEQ_VAR = '${sequence}';
+const PROGRESS_VAR = '${progress}';
+
+/** OSC 9;4 progress states VS Code renders in `${progress}`. */
+export const PROGRESS = { clear: 0, error: 2, spin: 3, alert: 4 } as const;
+export type ProgressCode = typeof PROGRESS[keyof typeof PROGRESS];
 
 /** Coarse age: nothing under a minute (the glyph alone reads as "just now"). */
 export function shortAge(ms: number): string {
@@ -87,6 +100,68 @@ export function shortAge(ms: number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h`;
   return `${Math.floor(h / 24)}d`;
+}
+
+export type TabStateKind = 'none' | 'working' | 'waiting' | 'done' | 'failed';
+
+/**
+ * What the tab should say about one session, and for how long it has been so.
+ * One decision shared by both channels (progress glyph, title text).
+ */
+export function tabStateKind(
+  snap: ClaudeSnapshot | undefined,
+  now = Date.now(),
+  clear: TabStateClear = 'seen',
+): { kind: TabStateKind; ageMs: number } {
+  if (!snap) return { kind: 'none', ageMs: 0 };
+  switch (snap.state) {
+    case 'working':
+    case 'tool':
+      return { kind: 'working', ageMs: 0 };
+    case 'waiting':
+      // Grows without limit on purpose: an agent blocked on a permission prompt
+      // for an hour is exactly what this feature exists to surface.
+      return { kind: 'waiting', ageMs: snap.waitingSince ? now - snap.waitingSince.getTime() : 0 };
+    case 'idle': {
+      const at = snap.lastStopAt?.getTime();
+      if (!at) return { kind: 'none', ageMs: 0 };
+      // Relaunched since that stop (Start on a stopped row, `--resume` in a new
+      // tab): the green belongs to the previous run, and this one has not
+      // finished anything yet.
+      if (snap.lastStartAt && snap.lastStartAt.getTime() > at) return { kind: 'none', ageMs: 0 };
+      const dt = now - at;
+      if (dt < 0) return { kind: 'none', ageMs: 0 };
+      // 'seen': every finish gets the mark, even one you watched — the tab then
+      // reads "done 2m ago" — and it leaves on your next visit to that terminal
+      // after the finish (or Dismiss), however long that takes. The sidebar's
+      // unread marker is stricter (never set for a watched finish); using it
+      // here made a turn that ended under your eyes never show green at all.
+      // 'timer': 30 minutes after it finished, looked or not.
+      if (clear === 'seen') {
+        if (snap.dismissed) return { kind: 'none', ageMs: 0 };
+        if (snap.tabSeenAt && snap.tabSeenAt.getTime() >= at) return { kind: 'none', ageMs: 0 };
+      } else if (dt > DONE_TTL_MS) {
+        return { kind: 'none', ageMs: 0 };
+      }
+      return { kind: outcomeIsBad(snap.outcome) ? 'failed' : 'done', ageMs: dt };
+    }
+    default:
+      return { kind: 'none', ageMs: 0 };
+  }
+}
+
+/** The `${progress}` glyph for a state: spinner while working, the alert glyph
+ *  the moment it is your turn (finished or blocked — the two-mark read, as with
+ *  the coloured text sets), the error glyph for a failed turn, nothing otherwise.
+ *  `${progress}` carries no text, so the age lives only in the title channel. */
+export function progressFor(kind: TabStateKind): ProgressCode {
+  switch (kind) {
+    case 'working': return PROGRESS.spin;
+    case 'waiting':
+    case 'done': return PROGRESS.alert;
+    case 'failed': return PROGRESS.error;
+    default: return PROGRESS.clear;
+  }
 }
 
 /**
@@ -101,45 +176,18 @@ export function formatTabState(
   style: TabStateStyle = 'blue',
   clear: TabStateClear = 'seen',
 ): string {
-  if (!snap) return '';
   const SYM = STYLES[style] ?? STYLES.blue;
-  switch (snap.state) {
-    case 'working':
-    case 'tool':
-      return SYM.working;
-    case 'waiting': {
-      // Grows without limit on purpose: an agent blocked on a permission prompt
-      // for an hour is exactly what this feature exists to surface.
-      const age = snap.waitingSince ? shortAge(now - snap.waitingSince.getTime()) : '';
-      return age ? `${SYM.waiting} ${age}` : SYM.waiting;
-    }
-    case 'idle': {
-      const at = snap.lastStopAt?.getTime();
-      if (!at) return '';
-      // Relaunched since that stop (Start on a stopped row, `--resume` in a new
-      // tab): the green belongs to the previous run, and this one has not
-      // finished anything yet.
-      if (snap.lastStartAt && snap.lastStartAt.getTime() > at) return '';
-      const dt = now - at;
-      if (dt < 0) return '';
-      // 'seen': every finish gets the mark, even one you watched — the tab then
-      // reads "done 2m ago" — and it leaves on your next visit to that terminal
-      // after the finish (or Dismiss), however long that takes. The sidebar's
-      // unread marker is stricter (never set for a watched finish); using it
-      // here made a turn that ended under your eyes never show green at all.
-      // 'timer': 30 minutes after it finished, looked or not.
-      if (clear === 'seen') {
-        if (snap.dismissed) return '';
-        if (snap.tabSeenAt && snap.tabSeenAt.getTime() >= at) return '';
-      } else if (dt > DONE_TTL_MS) {
-        return '';
-      }
-      const sym = outcomeIsBad(snap.outcome) ? SYM.failed : SYM.done;
-      const age = shortAge(dt);
-      return age ? `${sym} ${age}` : sym;
-    }
-    default:
-      return '';
+  const { kind, ageMs } = tabStateKind(snap, now, clear);
+  const withAge = (sym: string): string => {
+    const age = shortAge(ageMs);
+    return age ? `${sym} ${age}` : sym;
+  };
+  switch (kind) {
+    case 'working': return SYM.working;
+    case 'waiting': return withAge(SYM.waiting);
+    case 'done': return withAge(SYM.done);
+    case 'failed': return withAge(SYM.failed);
+    default: return '';
   }
 }
 
@@ -154,6 +202,18 @@ export function titleSequence(text: string): string {
   const safe = text.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, MAX_TEXT) || ' ';
   const osc = `\x1b]2;${safe}\x07`;
   return `\x1bPtmux;${osc.replace(/\x1b/g, '\x1b\x1b')}\x1b\\`;
+}
+
+/** OSC 9;4 (progress report) wrapped in tmux passthrough. Indeterminate states
+ *  carry no percentage; 0 is what VS Code expects there. */
+export function progressSequence(code: ProgressCode): string {
+  const osc = `\x1b]9;4;${code};0\x07`;
+  return `\x1bPtmux;${osc.replace(/\x1b/g, '\x1b\x1b')}\x1b\\`;
+}
+
+/** Both channels in one write, so the pane sees them back to back. */
+export function stateSequence(text: string, code: ProgressCode): string {
+  return progressSequence(code) + titleSequence(text);
 }
 
 interface PaneRow { session: string; tty: string; attached: boolean }
@@ -192,6 +252,10 @@ class TabStateWriter {
   /** Feature off: the previous extension host may have left marks on the tabs
    *  of this window (host restart keeps terminals alive). Blank them once. */
   private blankedOnce = false;
+  /** `terminalSessions.tabStateDebug` — one line per session per tick, so a
+   *  mark that never appears (or never clears) can be traced without guessing
+   *  which of state, terminal lookup and tty write went wrong. */
+  private log?: vscode.OutputChannel;
   private disposed = false;
 
   constructor(
@@ -217,6 +281,11 @@ class TabStateWriter {
 
   /** Force a redraw now (an option changed under us). */
   refreshNow(): void { this.schedule(); }
+
+  private dbg(line: string): void {
+    if (!this.log) this.log = vscode.window.createOutputChannel('Terminal Sessions');
+    this.log.appendLine(`${new Date().toISOString().slice(11, 23)} ${line}`);
+  }
 
   private schedule(): void {
     if (this.disposed) return;
@@ -248,21 +317,39 @@ class TabStateWriter {
       if (this.disposed) return;
       const now = Date.now();
       const live = new Set<string>();
+      const debug = cfg.tabStateDebug;
+      if (debug) this.dbg(`tick panes=${panes.length} terminals=${vscode.window.terminals.length}`);
       for (const p of panes) {
         // Only sessions with a tab in THIS window: the passthrough lands in the
         // client attached here, and every window runs its own writer.
-        if (!findTerminalForSession(p.session)) continue;
+        const term = findTerminalForSession(p.session);
+        if (!term) {
+          if (debug) this.dbg(`${p.session} skip: no terminal in this window`);
+          continue;
+        }
         live.add(p.session);
         if (!p.attached) {
           // Nobody to receive it — tmux drops passthrough without a client.
           // Forget the text so it is written again once a client is back.
           this.last.delete(p.session);
+          if (debug) this.dbg(`${p.session} skip: no tmux client attached`);
           continue;
         }
         // 'seen' needs the unread markers; with those disabled, fall back to the clock.
         const clear: TabStateClear = cfg.unreadBadges ? cfg.tabStateClear : 'timer';
-        const text = formatTabState(this.tracker.getSnapshot(p.session), now, cfg.tabStateStyle, clear);
-        this.write(p.session, p.tty, text);
+        const snap = this.tracker.getSnapshot(p.session);
+        const text = formatTabState(snap, now, cfg.tabStateStyle, clear);
+        const code = progressFor(tabStateKind(snap, now, clear).kind);
+        if (debug) {
+          const t = (d?: Date): string => (d ? d.toISOString().slice(11, 23) : '-');
+          this.dbg(
+            `${p.session} tab=${JSON.stringify(term.name)} state=${snap?.state ?? 'no-snapshot'}`
+            + ` stop=${t(snap?.lastStopAt)} start=${t(snap?.lastStartAt)} assistant=${t(snap?.lastAssistantMessageAt)}`
+            + ` seen=${t(snap?.tabSeenAt)} unread=${snap?.unread ?? '-'} outcome=${snap?.outcome?.kind ?? '-'}`
+            + ` text=${JSON.stringify(text)} progress=${code} last=${JSON.stringify(this.last.get(p.session) ?? null)}`,
+          );
+        }
+        this.write(p.session, p.tty, text, code, debug);
       }
       // A session that disappeared took its tab with it; drop the memory so a
       // reused name starts clean.
@@ -299,15 +386,21 @@ class TabStateWriter {
     return false;
   }
 
-  private write(session: string, tty: string, text: string): void {
+  private write(session: string, tty: string, text: string, code: ProgressCode, debug = false): void {
     if (this.disposed) return;
-    if (this.last.get(session) === text) return;
+    const key = `${code}|${text}`;
+    if (this.last.get(session) === key) { if (debug) this.dbg(`${session} write skipped: unchanged`); return; }
     const retry = this.retryAt.get(session);
-    if (retry !== undefined && Date.now() < retry) return;
-    if (writeToTty(tty, titleSequence(text))) {
-      this.last.set(session, text);
+    if (retry !== undefined && Date.now() < retry) {
+      if (debug) this.dbg(`${session} write skipped: backing off for ${Math.round((retry - Date.now()) / 1000)}s`);
+      return;
+    }
+    if (writeToTty(tty, stateSequence(text, code))) {
+      if (debug) this.dbg(`${session} wrote ${JSON.stringify(text)} progress=${code} to ${tty}`);
+      this.last.set(session, key);
       this.retryAt.delete(session);
     } else {
+      if (debug) this.dbg(`${session} WRITE FAILED on ${tty}`);
       // Pane died between listing and writing, tty not writable, or not
       // draining right now (EAGAIN) — never block the host, try again later.
       this.retryAt.set(session, Date.now() + RETRY_AFTER_MS);
@@ -323,7 +416,7 @@ class TabStateWriter {
     try { panes = await activePanes(tmux, prefix); } catch { return; }
     for (const p of panes) {
       if (!p.attached || !findTerminalForSession(p.session)) continue;
-      writeToTty(p.tty, titleSequence(''));
+      writeToTty(p.tty, stateSequence('', PROGRESS.clear));
     }
   }
 
@@ -347,6 +440,7 @@ class TabStateWriter {
     this.disposed = true;
     if (this.timer) clearInterval(this.timer);
     if (this.debounce) clearTimeout(this.debounce);
+    this.log?.dispose();
     void this.clearAll();
   }
 }
@@ -371,19 +465,21 @@ function writeToTty(tty: string, data: string): boolean {
   }
 }
 
-/** The template with `${sequence}` at the FRONT. VS Code truncates a tab's
+/** The template with `${progress}` at the FRONT. VS Code truncates a tab's
  *  description from the end, so a mark appended after `${cwdFolder}` is the first
  *  thing to vanish in a narrow tab list; in front, the folder name gives way
- *  instead. Also migrates our own earlier placement (`… ${sequence}` at the end). */
+ *  instead. Also migrates our own earlier placements: `${sequence}` (which only
+ *  ever rendered on reload-restored tabs) is replaced, and a mark at the end is
+ *  moved to the front. */
 export function withSequenceFirst(current: string): string {
-  const rest = current.replace(/\s*\$\{sequence\}\s*/g, ' ').trim();
-  return rest ? `${SEQ_VAR} ${rest}` : SEQ_VAR;
+  const rest = current.replace(/\s*\$\{(sequence|progress)\}\s*/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  return rest ? `${PROGRESS_VAR} ${rest}` : PROGRESS_VAR;
 }
 
-/** Does the tab description template expand the sequence title we write? */
+/** Does the tab description template expand the progress glyph we write? */
 export function templateShowsSequence(): boolean {
   const v = vscode.workspace.getConfiguration().get<string>(DESCRIPTION_SETTING) ?? '';
-  return v.includes(SEQ_VAR);
+  return v.includes(PROGRESS_VAR);
 }
 
 /**
@@ -401,19 +497,21 @@ export async function maybeOfferDescriptionTemplate(ctx: vscode.ExtensionContext
   const target = info?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
     : info?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace
     : vscode.ConfigurationTarget.Global;
-  if (current.includes(SEQ_VAR)) {
-    // Our earlier placement appended it; a narrow tab list cut the mark off.
-    if (!current.trimStart().startsWith(SEQ_VAR)) {
+  if (current.includes(PROGRESS_VAR) || current.includes(SEQ_VAR)) {
+    // Our own earlier placements: `${sequence}` (dead on every tab the extension
+    // creates — VS Code never records OSC 2 titles on a named terminal) becomes
+    // `${progress}`, and a mark at the end moves to the front where a narrow tab
+    // list cannot cut it off.
+    if (!current.includes(PROGRESS_VAR) || !current.trimStart().startsWith(PROGRESS_VAR)) {
       try { await cfg.update(DESCRIPTION_SETTING, withSequenceFirst(current), target); } catch { /* keep as is */ }
     }
     return;
   }
   if (ctx.globalState.get<boolean>(TEMPLATE_KEY)) return;
-  const sym = STYLES[getConfig().tabStateStyle] ?? STYLES.blue;
   const pick = await vscode.window.showInformationMessage(
-    `Show agent state in terminal tabs? This puts ${SEQ_VAR} in front of ${DESCRIPTION_SETTING}, `
-    + `where the extension writes ${sym.working} while an agent runs and `
-    + `${sym.done} with an age once it is your turn again.`,
+    `Show agent state in terminal tabs? This puts ${PROGRESS_VAR} in front of ${DESCRIPTION_SETTING}, `
+    + 'where the extension shows a spinner while an agent runs and a warning glyph '
+    + 'the moment it is your turn again (an error glyph when the turn failed).',
     'Add it', 'Not now', 'Never ask',
   );
   if (pick === 'Never ask') { void ctx.globalState.update(TEMPLATE_KEY, true); return; }

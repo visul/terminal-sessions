@@ -226,6 +226,7 @@ function agentLabel(agent: ClaudeSnapshot['agent']): string {
     case 'codex': return 'Codex';
     case 'agy': return 'Antigravity';
     case 'grok': return 'Grok';
+    case 'opencode': return 'OpenCode';
     default: return '';
   }
 }

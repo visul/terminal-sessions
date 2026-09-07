@@ -1833,7 +1833,8 @@ function disposeAndWait(term: vscode.Terminal, timeoutMs: number): Promise<void>
 
 async function cmdInstallClaudeHook(tracker: ClaudeTracker): Promise<void> {
   // Installs the unified forwarder as hooks for every ENABLED agent (Claude
-  // always; Codex/Antigravity when their CLI is detected or explicitly enabled).
+  // always; Codex/Antigravity/OpenCode when their CLI is detected or explicitly
+  // enabled; Grok needs none). OpenCode gets a plugin file, not a settings entry.
   // Also migrates an existing Claude install from the legacy claude-hook.sh to
   // the shared agent-hook.sh.
   const installed = await tracker.installHooksForEnabledAgents();

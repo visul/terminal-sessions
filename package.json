@@ -1,8 +1,8 @@
 {
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
-  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, and Grok: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.30.3",
+  "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
+  "version": "0.31.0",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -31,6 +31,7 @@
     "codex",
     "antigravity",
     "grok",
+    "opencode",
     "ai-agents",
     "cursor",
     "resume"
@@ -61,11 +62,12 @@
               "claude",
               "codex",
               "agy",
-              "grok"
+              "grok",
+              "opencode"
             ]
           },
           "default": [],
-          "markdownDescription": "Which AI CLIs to track in the sidebar (status, context %, auto-resume, notifications). Leave empty to auto-detect: Claude is always on; Codex, Antigravity (`agy`) and Grok turn on when their CLI is found on PATH. Set explicitly to override, e.g. `[\"claude\", \"codex\"]`."
+          "markdownDescription": "Which AI CLIs to track in the sidebar (status, context %, auto-resume, notifications). Leave empty to auto-detect: Claude is always on; Codex, Antigravity (`agy`), Grok and OpenCode turn on when their CLI is found on PATH. Set explicitly to override, e.g. `[\"claude\", \"codex\"]`."
         },
         "terminalSessions.autoRestore": {
           "type": "string",
@@ -330,7 +332,12 @@
             "Write the agent's state into the tab description."
           ],
           "default": "on",
-          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written as text into the tab description, which needs `${sequence}` in #terminal.integrated.tabs.description# — the extension offers to add it (“Not now” asks again next start, “Never ask” is final); until it is there nothing is written. Requires the managed tmux config (`allow-passthrough on`)."
+          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works, a warning glyph once it is your turn, an error glyph after a failed turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well and shows on tabs that carry `${sequence}` — VS Code only honours it on terminals restored across a window reload. Requires the managed tmux config (`allow-passthrough on`)."
+        },
+        "terminalSessions.tabStateDebug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log every tab-state decision to the Terminal Sessions output channel. For diagnosing a mark that will not appear or will not clear; off in normal use."
         },
         "terminalSessions.tabStateStyle": {
           "type": "string",

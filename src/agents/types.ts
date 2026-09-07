@@ -11,7 +11,7 @@ import type {
   MsgInfo,
 } from '../claude-transcript';
 
-export type AgentId = 'claude' | 'codex' | 'agy' | 'grok';
+export type AgentId = 'claude' | 'codex' | 'agy' | 'grok' | 'opencode';
 
 /** Normalized lifecycle state every provider maps its native events onto. */
 export type AgentState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';

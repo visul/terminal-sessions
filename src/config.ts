@@ -56,6 +56,7 @@ export interface Config {
   tabStateText: TabStateTextMode;
   tabStateStyle: TabStateStyle;
   tabStateClear: TabStateClear;
+  tabStateDebug: boolean;
 }
 
 export function getConfig(): Config {
@@ -119,6 +120,7 @@ export function getConfig(): Config {
     tabStateStyle: (TAB_STATE_STYLES as string[]).includes(c.get<string>('tabStateStyle', 'blue'))
       ? (c.get<string>('tabStateStyle', 'blue') as TabStateStyle) : 'blue',
     tabStateClear: c.get<string>('tabStateClear', 'seen') === 'timer' ? 'timer' : 'seen',
+    tabStateDebug: c.get<boolean>('tabStateDebug', false) === true,
   };
 }
 

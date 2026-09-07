@@ -4,6 +4,20 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.31.0] — 2026-09-07
+
+### Fixed
+- **The tab mark now shows on every tab, not only on tabs restored across a reload.** The state used to be written as a terminal title (OSC 2) for `${sequence}` in the tab description — and VS Code only records that title on a terminal it was not given a name for. Every tab this extension creates is named, so on a fresh tab the mark was written and never rendered; it appeared only after a window reload, when the terminals come back nameless. The state is now written as a terminal progress report (OSC 9;4) and rendered through `${progress}`, which VS Code honours on any tab: a spinner while the agent works, a warning glyph the moment it is your turn (finished, or blocked on a prompt), an error glyph after a failed turn. The extension migrates a template that carries its earlier `${sequence}` to `${progress}` on its own. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is still written as a title for anyone who keeps `${sequence}` — it renders on reload-restored tabs only.
+
+### Added
+- **OpenCode is the fifth tracked agent.** The same sidebar row, tab mark, notifications, context %, cost, resume and fork now work for [OpenCode](https://opencode.ai) sessions. OpenCode has no shell hooks and no per-conversation file — every project's history lives in one SQLite database — so the integration is a plugin: `Install AI Agent Hooks` writes `~/.config/opencode/plugin/terminal-sessions.js` (nothing in `opencode.json` is touched; restart running `opencode` instances afterwards, it does not hot-reload plugins). The plugin runs inside the `opencode` process, inherits the pane's tmux identity, and reports the lifecycle through the shared forwarder: prompt, tool start/finish, a permission or `question` prompt waiting on you, turn finished, exit. Turn finished means the session went busy and came back idle — a subagent finishing does not count, and a failed turn is reported as such. It also writes a compact JSONL per conversation under `~/.terminal-sessions/opencode/`, which the sidebar reads for model, tokens, OpenCode's own cost figure, context usage by OpenCode's own formula and catalog (`~/.cache/opencode/models.json`, so a provider with a smaller window is respected), tool calls and results, and subagent sessions. The resume picker lists conversations from before the plugin too, read from OpenCode's database through `sqlite3 -readonly`, and resumes them with `opencode -s <id>` from their recorded directory. Fork runs `opencode -s <id> --fork`. Auto-approve is `--auto` (its hidden aliases `--yolo` and `--dangerously-skip-permissions` count). Enabled automatically when `opencode` is on `PATH` or at `~/.opencode/bin`; listed in `terminalSessions.enabledAgents` as `opencode`.
+- **An agent that exits without a SessionEnd is still noticed.** OpenCode's plugin reports its process id with every event; when that process is gone the tracker treats it exactly like a SessionEnd, so an OpenCode session that was killed rather than quit ends up in the same state a closed Claude session does.
+
+## [0.30.4] — 2026-09-07
+
+### Added
+- **`terminalSessions.tabStateDebug`.** Logs one line per session per tick to the **Terminal Sessions** output channel — the terminal it matched, the tracked state and its timestamps, the text it computed, and whether the write happened, was skipped as unchanged, or failed. Off by default; for tracing a mark that will not appear or will not clear.
+
 ## [0.30.3] — 2026-09-06
 
 ### Fixed

@@ -8,6 +8,7 @@ import { parseSessionName } from './workspace-id';
 import { detectTmuxPath, panePids, listSessions } from './tmux';
 import { readAgentArgv, processTree, collectDescendantPids } from './agents/launch-flags';
 import { readGrokActiveSessions } from './agents/grok/provider';
+import { setOpencodePluginSource } from './agents/opencode/provider';
 import type { SessionIndex } from './session-manager';
 import type { AgentId, AgentProvider } from './agents/types';
 import type { AgentRegistry } from './agents/registry';
@@ -81,6 +82,12 @@ export interface ClaudeSnapshot {
   /** When the user last focused this session's terminal (window focused).
    *  The tab mark's 'seen' rule: a finish older than this has been looked at. */
   tabSeenAt?: Date;
+  /** Agent process pid reported by its hook (OpenCode). While set, a dead pid
+   *  resets the session to 'none' — OpenCode kills its plugin worker before
+   *  the plugin's dispose (our SessionEnd) can run, so the exit is otherwise
+   *  invisible. */
+  agentPid?: number;
+  agentPidCheckedAt?: number;
 }
 
 interface ClaudeEvent {
@@ -114,6 +121,9 @@ interface ClaudeEvent {
   agentState?: string;
   contextWindow?: Record<string, unknown>;
   model?: string;
+  /** Pid of the agent process, when its hook reports one (OpenCode's plugin
+   *  does). Lets the tracker notice a TUI that exited without a SessionEnd. */
+  pid?: number;
 }
 
 /** Returns true when a Notification event is the harmless "Claude is waiting
@@ -124,6 +134,12 @@ interface ClaudeEvent {
 function isIdleNudgeNotification(message: string | undefined): boolean {
   if (!message) return false; // legacy hook or empty payload — assume permission
   return /waiting for your input/i.test(message);
+}
+
+/** True when `pid` exists (EPERM counts: it exists, just not ours). */
+function pidAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return (err as NodeJS.ErrnoException).code === 'EPERM'; }
 }
 
 const ROOT = path.join(os.homedir(), '.terminal-sessions');
@@ -460,6 +476,23 @@ export class ClaudeTracker {
   getSnapshot(tmuxSession: string): ClaudeSnapshot | undefined {
     const raw = this.snapshots.get(tmuxSession);
     if (!raw) return undefined;
+    // Hook-reported pid gone → the agent exited without a SessionEnd. Checked
+    // at most every 5s (one signal-0 syscall); mutates the stored snapshot so
+    // the reset sticks.
+    if (raw.agentPid && raw.state !== 'none') {
+      const now = Date.now();
+      if (!raw.agentPidCheckedAt || now - raw.agentPidCheckedAt > 5000) {
+        raw.agentPidCheckedAt = now;
+        if (!pidAlive(raw.agentPid)) {
+          raw.state = 'none';
+          raw.toolName = undefined;
+          raw.toolInput = undefined;
+          raw.toolSince = undefined;
+          raw.waitingSince = undefined;
+          raw.agentPid = undefined;
+        }
+      }
+    }
     const snap: ClaudeSnapshot = { ...raw };
 
     // Ownership check: if our snap.sessionId no longer matches the active
@@ -770,6 +803,14 @@ export class ClaudeTracker {
         fs.copyFileSync(agentSrc, AGENT_HOOK_DEST);
         fs.chmodSync(AGENT_HOOK_DEST, 0o755);
       }
+      // OpenCode has no shell hooks: its provider installs a plugin file whose
+      // source ships with the extension. Hand it a reader here so the provider
+      // stays free of the extension context.
+      const pluginSrc = path.join(this.ctx.extensionPath, 'media', 'opencode-plugin.js');
+      setOpencodePluginSource(() => {
+        try { return fs.readFileSync(pluginSrc, 'utf8'); }
+        catch { return undefined; }
+      });
     } catch (e) {
       console.error('[terminal-sessions] claude-tracker ensureFiles:', e);
     }
@@ -1044,6 +1085,7 @@ export class ClaudeTracker {
       snap.toolName = undefined;
       snap.toolInput = undefined;
       snap.toolSince = undefined;
+      snap.agentPid = undefined;
       this.snapshots.set(e.tmuxSession, snap);
       return true;
     }
@@ -1127,6 +1169,7 @@ export class ClaudeTracker {
     // Any lifecycle hook proves this session's hooks are wired up; the
     // transcript-freshness heuristics relax while that stays recent.
     snap.lastHookAt = new Date(tsMs);
+    if (typeof e.pid === 'number' && e.pid > 0) { snap.agentPid = e.pid; snap.agentPidCheckedAt = undefined; }
 
     switch (e.event) {
       case 'SessionStart':

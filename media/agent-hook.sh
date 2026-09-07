@@ -101,6 +101,12 @@ if agent_id:
 if agent_type:
     out["agentType"] = str(agent_type)
 
+# OpenCode (plugin) reports its own pid so the tracker can notice a TUI that
+# quit without a SessionEnd (its plugin worker is killed before dispose runs).
+pid = data.get("pid")
+if isinstance(pid, int) and pid > 0:
+    out["pid"] = pid
+
 # Antigravity statusLine payload carries live state + context usage; forward the
 # extra fields so the tracker can map agent_state and context %.
 st = pick(data, "agent_state", "agentState")
