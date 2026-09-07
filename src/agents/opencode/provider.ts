@@ -12,16 +12,13 @@ import {
   isDefaultOpencodeTitle,
 } from './transcript';
 import {
+  OPENCODE_SESSION_ID_RE,
   contextLimitForModelString,
   listOpencodeSessions,
   opencodeSessionDirectory,
 } from './storage';
 
-// OpenCode session ids: `ses_` + 12 hex (time field) + 14 base-62 chars. The
-// strict shape is what the generator produces; OpenCode itself only checks the
-// `ses` prefix, so accept the loose form too (older/foreign ids) but never
-// anything that could carry path characters.
-const SESSION_ID_RE = /^ses_[0-9A-Za-z]{20,40}$/;
+const SESSION_ID_RE = OPENCODE_SESSION_ID_RE;
 
 const CONFIG_DIR = process.env.XDG_CONFIG_HOME
   ? path.join(process.env.XDG_CONFIG_HOME, 'opencode')
@@ -63,13 +60,14 @@ const OPENCODE_HOOK_EVENTS = [
 /** Reads the version marker of an installed plugin file, 0 when absent/foreign. */
 function installedPluginVersion(): number {
   let head: string;
+  let fd: number | undefined;
   try {
-    const fd = fs.openSync(PLUGIN_PATH, 'r');
+    fd = fs.openSync(PLUGIN_PATH, 'r');
     const b = Buffer.alloc(512);
     const n = fs.readSync(fd, b, 0, 512, 0);
-    fs.closeSync(fd);
     head = b.toString('utf8', 0, n);
   } catch { return 0; }
+  finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } } }
   const m = head.match(HOOK_VERSION_RE);
   return m ? parseInt(m[1], 10) : 0;
 }
@@ -250,7 +248,8 @@ export const opencodeProvider: AgentProvider = {
       if (!SESSION_ID_RE.test(sessionId) || out.has(sessionId)) continue;
       const tp = path.join(TRANSCRIPT_DIR, f);
       const s = readOpencodeTranscriptSummary(tp);
-      if (!s) continue;
+      // No root header = a subagent's stray file (older plugin), not a conversation.
+      if (!s || !s.isRoot) continue;
       if (cwd && s.cwd) {
         const a = s.cwd.replace(/\/+$/, '');
         const b = cwd.replace(/\/+$/, '');

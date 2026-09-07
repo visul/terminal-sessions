@@ -490,6 +490,10 @@ export class ClaudeTracker {
           raw.toolSince = undefined;
           raw.waitingSince = undefined;
           raw.agentPid = undefined;
+          // Same exit as a SessionEnd: the transcript reconciliation below must
+          // not read the file's last lines as "idle, just finished" and undo it.
+          this.lastDerived.set(tmuxSession, 'none');
+          return { ...raw };
         }
       }
     }
@@ -1169,7 +1173,11 @@ export class ClaudeTracker {
     // Any lifecycle hook proves this session's hooks are wired up; the
     // transcript-freshness heuristics relax while that stays recent.
     snap.lastHookAt = new Date(tsMs);
-    if (typeof e.pid === 'number' && e.pid > 0) { snap.agentPid = e.pid; snap.agentPidCheckedAt = undefined; }
+    // The pid is per-event evidence. An agent that reports none (every one but
+    // OpenCode) also drops the pid an earlier OpenCode left on this pane —
+    // otherwise that stale pid would reset the new agent's session at the next check.
+    const pid = typeof e.pid === 'number' && e.pid > 0 ? e.pid : undefined;
+    if (snap.agentPid !== pid) { snap.agentPid = pid; snap.agentPidCheckedAt = undefined; }
 
     switch (e.event) {
       case 'SessionStart':

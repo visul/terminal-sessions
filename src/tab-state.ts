@@ -150,15 +150,18 @@ export function tabStateKind(
   }
 }
 
-/** The `${progress}` glyph for a state: spinner while working, the alert glyph
- *  the moment it is your turn (finished or blocked — the two-mark read, as with
- *  the coloured text sets), the error glyph for a failed turn, nothing otherwise.
- *  `${progress}` carries no text, so the age lives only in the title channel. */
+/** The `${progress}` glyph for a state: spinner while working, ONE mark the
+ *  moment it is your turn — finished, blocked or failed all draw the same
+ *  `$(error)` glyph. The alert glyph is not used: the outcome guess behind
+ *  done-vs-failed is a text heuristic that misfires on conversations ABOUT
+ *  errors, and two marks for "come back here" read as noise. The sidebar row
+ *  still carries the real outcome. `${progress}` has no text, so the age lives
+ *  only in the title channel. */
 export function progressFor(kind: TabStateKind): ProgressCode {
   switch (kind) {
     case 'working': return PROGRESS.spin;
     case 'waiting':
-    case 'done': return PROGRESS.alert;
+    case 'done':
     case 'failed': return PROGRESS.error;
     default: return PROGRESS.clear;
   }
@@ -430,7 +433,8 @@ class TabStateWriter {
     try { panes = await activePanes(tmux, cfg.sessionPrefix); } catch { /* nothing to clear */ }
     for (const p of panes) {
       if (!this.last.has(p.session) || !p.attached) continue;
-      writeToTty(p.tty, titleSequence(''));
+      // Both channels: a progress glyph left behind would sit on the tab for good.
+      writeToTty(p.tty, stateSequence('', PROGRESS.clear));
     }
     this.last.clear();
     this.retryAt.clear();
@@ -477,6 +481,9 @@ export function withSequenceFirst(current: string): string {
 }
 
 /** Does the tab description template expand the progress glyph we write? */
+/** True when the tab description can render what we write: `${progress}` is the
+ *  channel every tab honours. A template with only `${sequence}` gets nothing —
+ *  the title form is written alongside, never on its own. */
 export function templateShowsSequence(): boolean {
   const v = vscode.workspace.getConfiguration().get<string>(DESCRIPTION_SETTING) ?? '';
   return v.includes(PROGRESS_VAR);

@@ -262,12 +262,22 @@ export function reduceOpencodeTranscriptLine(state: TranscriptTailState, line: s
       }
       if (!isRoot) return false;
       scratch.pendingCall = undefined;
+      // The plugin flags a turn that ended on `session.error`; when no `error`
+      // line explained it (event lost), the verdict must still not read "done".
+      if (o.error === true) {
+        const ev = (snap.turn ??= emptyTurnEvidence());
+        if (!ev.lastToolErrored && !ev.rateLimitHint) {
+          ev.toolErrors++;
+          ev.lastToolErrored = true;
+          ev.lastToolErrorPreview = 'turn ended with an error';
+        }
+      }
       if (snap.currentToolName) {
         snap.currentToolName = undefined;
         snap.currentToolInput = undefined;
         return true;
       }
-      return false;
+      return o.error === true;
     }
 
     case 'error': {
@@ -288,6 +298,8 @@ export function reduceOpencodeTranscriptLine(state: TranscriptTailState, line: s
 // ───────────────────────────── summary reader ─────────────────────────────
 
 export interface OpencodeTranscriptSummary {
+  /** A root `session` header was seen (a subagent's file has only child headers). */
+  isRoot: boolean;
   cwd?: string;
   firstUserMessage?: string;
   autoTitle?: string;
@@ -310,17 +322,20 @@ export function readOpencodeTranscriptSummary(transcriptPath: string): OpencodeT
   const HEAD_BYTES = 256 * 1024;
   const readLen = Math.min(HEAD_BYTES, stat.size);
   let buf: string;
+  let fd: number | undefined;
   try {
-    const fd = fs.openSync(transcriptPath, 'r');
+    fd = fs.openSync(transcriptPath, 'r');
     const b = Buffer.alloc(readLen);
-    fs.readSync(fd, b, 0, readLen, 0);
-    fs.closeSync(fd);
-    buf = b.toString('utf8');
+    const n = fs.readSync(fd, b, 0, readLen, 0);
+    buf = b.toString('utf8', 0, n);   // only what was read: the file may have shrunk since stat
   } catch {
     return undefined;
+  } finally {
+    if (fd !== undefined) { try { fs.closeSync(fd); } catch { /* already closed */ } }
   }
 
   const truncated = stat.size > readLen;
+  let isRoot = false;
   let cwd: string | undefined;
   let firstUser: string | undefined;
   let autoTitle: string | undefined;
@@ -337,6 +352,7 @@ export function readOpencodeTranscriptSummary(transcriptPath: string): OpencodeT
         try {
           const o = JSON.parse(line) as Line;
           if (o.type === 'session' && !o.parentID) {
+            isRoot = true;
             if (!cwd && typeof o.directory === 'string' && o.directory.startsWith('/')) cwd = o.directory;
             if (!isDefaultOpencodeTitle(o.title)) autoTitle = o.title;
           } else if (o.type === 'user' && !firstUser && typeof o.text === 'string') {
@@ -355,6 +371,7 @@ export function readOpencodeTranscriptSummary(transcriptPath: string): OpencodeT
     : headLines;
 
   return {
+    isRoot,
     cwd,
     firstUserMessage: firstUser?.slice(0, 200),
     autoTitle,

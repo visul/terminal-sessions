@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.31.0",
+  "version": "0.31.1",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -15,7 +15,7 @@
   },
   "homepage": "https://github.com/visul/terminal-sessions#readme",
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.98.0"
   },
   "categories": [
     "AI",
@@ -332,7 +332,7 @@
             "Write the agent's state into the tab description."
           ],
           "default": "on",
-          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works, a warning glyph once it is your turn, an error glyph after a failed turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well and shows on tabs that carry `${sequence}` — VS Code only honours it on terminals restored across a window reload. Requires the managed tmux config (`allow-passthrough on`)."
+          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works and one mark (the `$(error)` glyph) the moment it is your turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well; it shows only when `${sequence}` sits NEXT TO `${progress}` in the template, and only on terminals restored across a window reload (VS Code records that title on nameless terminals alone). Requires the managed tmux config (`allow-passthrough on`)."
         },
         "terminalSessions.tabStateDebug": {
           "type": "boolean",

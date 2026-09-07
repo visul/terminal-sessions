@@ -37,6 +37,12 @@ export const OPENCODE_MODELS_CACHE = path.join(CACHE_DIR, 'models.json');
 
 const SQLITE_TIMEOUT_MS = 2000;
 
+/** OpenCode session ids: `ses_` + 12 hex (time field) + 14 base-62 chars is
+ *  what the generator produces; OpenCode itself only checks the `ses` prefix,
+ *  so older/foreign ids are accepted too — but never anything that could carry
+ *  path characters. Shared by the provider, the picker and the trash guard. */
+export const OPENCODE_SESSION_ID_RE = /^ses_[0-9A-Za-z]{20,40}$/;
+
 /** Resolve the database OpenCode is writing to, or undefined when none exists. */
 export function opencodeDbPath(): string | undefined {
   const override = process.env.OPENCODE_DB;
@@ -65,11 +71,17 @@ function sqlite3Binary(): string | undefined {
   for (const cand of ['/usr/bin/sqlite3', '/opt/homebrew/bin/sqlite3', '/usr/local/bin/sqlite3']) {
     if (fs.existsSync(cand)) { sqliteBin = cand; return cand; }
   }
+  // Same PATH the queries will run with (no login shell: an nvm/pyenv profile
+  // can eat the whole timeout, and a hit on the login PATH only would cache a
+  // name that ENOENTs on every query).
   try {
-    execFileSync('/bin/sh', ['-lc', 'command -v sqlite3'], { stdio: 'ignore', timeout: 3000 });
-    sqliteBin = 'sqlite3';
-    return sqliteBin;
-  } catch { sqliteBin = null; return undefined; }
+    const out = execFileSync('/bin/sh', ['-c', 'command -v sqlite3'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000,
+    }).trim();
+    if (out && path.isAbsolute(out) && fs.existsSync(out)) { sqliteBin = out; return out; }
+  } catch { /* not on PATH */ }
+  sqliteBin = null;
+  return undefined;
 }
 
 /** Run a read-only query, rows as objects. Empty array on any failure — callers
@@ -95,6 +107,12 @@ export function querySqlite<T = Record<string, unknown>>(dbPath: string, sql: st
 
 function sqlString(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
+}
+
+/** `LIKE` operand for "under this directory": `%`, `_` and `\` in the path are
+ *  wildcards/escape to LIKE, so they are escaped (paired with `ESCAPE '\'`). */
+function likeUnder(base: string): string {
+  return base.replace(/[\\%_]/g, '\\$&') + '/%';
 }
 
 /** Tables present in the db (cached per path for the extension's lifetime;
@@ -133,7 +151,7 @@ export function listOpencodeSessions(cwd?: string, limit = 200): OpencodeSession
   const where = ['parent_id IS NULL', 'time_archived IS NULL'];
   if (cwd) {
     const base = cwd.replace(/\/+$/, '');
-    where.push(`(directory = ${sqlString(base)} OR directory LIKE ${sqlString(base + '/%')})`);
+    where.push(`(directory = ${sqlString(base)} OR directory LIKE ${sqlString(likeUnder(base))} ESCAPE '\\')`);
   }
   const rows = querySqlite<{
     id: string; directory: string; title: string; agent: string | null; model: string | null;
@@ -185,7 +203,7 @@ export function listOpencodeSessions(cwd?: string, limit = 200): OpencodeSession
 
 /** The recorded directory of one conversation (for resume when we have no transcript). */
 export function opencodeSessionDirectory(sessionId: string): string | undefined {
-  if (!/^ses_[0-9A-Za-z]{26}$/.test(sessionId)) return undefined;
+  if (!OPENCODE_SESSION_ID_RE.test(sessionId)) return undefined;
   const db = opencodeDbPath();
   if (!db) return undefined;
   const rows = querySqlite<{ directory: string }>(db,

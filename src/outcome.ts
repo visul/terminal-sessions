@@ -57,7 +57,19 @@ const TEST_PASS_RES: RegExp[] = [
   /\bok\s+\d+\s+tests?\b/i,
   /\bBUILD SUCCESS(?:FUL)?\b/i,
 ];
-const RATE_LIMIT_RE = /\b(rate.?limit|overloaded|usage limit|quota exceeded|429|529)\b/i;
+// A limit that actually HIT, not a conversation about limits: a bare "429" or
+// "rate limit" in prose (an agent discussing an API's quota, a reviewer quoting
+// this file) used to turn a finished turn red. Require the error shape.
+const RATE_LIMIT_RE = new RegExp([
+  String.raw`\brate.?limit(?:ed|s)?\b[^\n]{0,40}\b(?:exceeded|reached|hit|error)\b`,
+  String.raw`\b(?:exceeded|reached|hit)\b[^\n]{0,20}\brate.?limits?\b`,
+  String.raw`\btoo many requests\b`,
+  String.raw`\b(?:HTTP|status(?: code)?|error(?: code)?|code)[:=]?\s*(?:429|529)\b`,
+  String.raw`\b(?:429|529)\b\s*(?:too many requests|overloaded|rate)`,
+  String.raw`\b(?:overloaded_error|rate_limit_error)\b`,
+  String.raw`\b(?:usage|spending) limit\b`,
+  String.raw`\bquota (?:exceeded|exhausted)\b`,
+].join('|'), 'i');
 
 function firstLine(s: string, max = 90): string {
   const line = s.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0) || '';

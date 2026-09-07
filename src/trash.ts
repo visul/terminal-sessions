@@ -21,6 +21,10 @@ import type { SessionLabel } from './types';
 import type { AgentId } from './agents/types';
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// OpenCode ids are not UUIDs (`ses_` + base-62); same shape the provider accepts.
+const OPENCODE_ID_RE = /^ses_[0-9A-Za-z]{20,40}$/;
+const idLooksValid = (agent: AgentId, id: string): boolean =>
+  agent === 'opencode' ? OPENCODE_ID_RE.test(id) : UUID_RE.test(id);
 
 export interface TrashTarget {
   agent: AgentId;
@@ -163,7 +167,7 @@ export function planTrash(
   const claimed = new Set<string>();
   let totalBytes = 0, fileCount = 0;
   for (const { agent, id } of collectConversationIds(meta)) {
-    if (!UUID_RE.test(id)) {
+    if (!idLooksValid(agent, id)) {
       skipped.push({ agent, conversationId: id, reason: 'unrecognized id format' });
       continue;
     }

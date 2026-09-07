@@ -1,5 +1,5 @@
 // terminal-sessions opencode hook
-// @terminal-sessions-hook-version 2
+// @terminal-sessions-hook-version 3
 // Managed by the Terminal Sessions VS Code extension. Regenerated on hook
 // install/upgrade — edits here are overwritten. Uninstall via the extension's
 // "Uninstall AI Agent Hooks" command, or delete this file.
@@ -17,7 +17,10 @@
 //
 // Design notes (from the plugin ecosystem, see the extension's docs):
 //   • `event` is fire-and-forget: handlers race, so file writes go through a
-//     per-file queue and the state below is updated synchronously.
+//     per-file queue and the state below is updated synchronously. Forwarder
+//     calls are serialised too (one child at a time) so the log keeps emit order.
+//   • Nothing is forwarded for a session whose lineage is unknown until the
+//     server has answered — a subagent taken for a root would flip the pane.
 //   • Turn end = `session.status` idle AFTER a busy/retry latch for that session;
 //     `session.error` suppresses the following idle. `retry` counts as busy.
 //   • Only the v1 names reach the plugin bus (`permission.asked`,
@@ -75,21 +78,37 @@ const pendingLines = new Map()   // file → string[]
 const flushing = new Set()
 let dirReady = false
 
+const MAX_QUEUED_LINES = 5000
+const RETRY_MS = 2000
+
 function ensureDir() {
-  if (dirReady) return
-  try { fs.mkdirSync(TRANSCRIPT_DIR, { recursive: true, mode: 0o700 }) } catch {}
-  dirReady = true
+  if (dirReady) return true
+  try { fs.mkdirSync(TRANSCRIPT_DIR, { recursive: true, mode: 0o700 }); dirReady = true } catch {}
+  return dirReady
+}
+
+function retryLater(file) {
+  const t = setTimeout(() => flush(file), RETRY_MS)
+  if (t && typeof t.unref === "function") t.unref()
 }
 
 function flush(file) {
   if (flushing.has(file)) return
   const lines = pendingLines.get(file)
-  if (!lines || lines.length === 0) return
+  if (!lines || lines.length === 0) { pendingLines.delete(file); return }
+  if (!ensureDir()) { retryLater(file); return }
   pendingLines.set(file, [])
   flushing.add(file)
-  ensureDir()
-  fs.appendFile(file, lines.join(""), { mode: 0o600 }, () => {
+  fs.appendFile(file, lines.join(""), { mode: 0o600 }, (err) => {
     flushing.delete(file)
+    if (err) {
+      // Transient failure (dir removed, disk full): put the batch back in front
+      // of whatever queued meanwhile and try again later — never drop silently.
+      const later = pendingLines.get(file) || []
+      pendingLines.set(file, lines.concat(later).slice(-MAX_QUEUED_LINES))
+      retryLater(file)
+      return
+    }
     flush(file)
   })
 }
@@ -98,34 +117,54 @@ function appendLine(file, obj) {
   try {
     const line = JSON.stringify(obj) + "\n"
     const q = pendingLines.get(file)
-    if (q) q.push(line)
+    if (q) { q.push(line); if (q.length > MAX_QUEUED_LINES) q.shift() }
     else pendingLines.set(file, [line])
     flush(file)
   } catch {}
 }
 
-// ───────────── forwarder (JSON on stdin, detached, never awaited) ─────────────
+// ───────────── forwarder (JSON on stdin, one child at a time) ─────────────
 let forwarderOk = null
+let forwarderCheckedAt = 0
+const FORWARDER_RECHECK_MS = 30000
+const FORWARDER_TIMEOUT_MS = 4000
+
 function forwarderAvailable() {
-  if (forwarderOk === null) {
+  const now = Date.now()
+  // A missing forwarder is re-checked every 30s: installing the extension's
+  // hooks while OpenCode is running starts the flow without a restart.
+  if (forwarderOk === null || (!forwarderOk && now - forwarderCheckedAt > FORWARDER_RECHECK_MS)) {
+    forwarderCheckedAt = now
     try { fs.accessSync(FORWARDER, fs.constants.X_OK); forwarderOk = true }
     catch { forwarderOk = false }
   }
   return forwarderOk
 }
 
+// Events leave ONE AT A TIME, each waiting for the previous forwarder to exit
+// (capped): every event is its own process, and without this the log order
+// would follow the scheduler — a Notification landing after the Stop that
+// resolves it would leave the pane "waiting" for good. The forwarder is a bash
+// script (here-strings, `${var//}`), so it runs through its own shebang —
+// never `/bin/sh`, which is dash on Debian-family hosts.
+let chain = Promise.resolve()
 function emit(event, data) {
   if (!forwarderAvailable()) return
-  try {
-    const child = spawn("/bin/sh", [FORWARDER, "opencode", event], {
-      stdio: ["pipe", "ignore", "ignore"],
-      detached: true,
-    })
-    child.on("error", () => {})
-    child.unref()
-    child.stdin.on("error", () => {})
-    child.stdin.end(JSON.stringify({ hook_event_name: event, pid: PID, ...data }))
-  } catch {}
+  let payload
+  try { payload = JSON.stringify({ hook_event_name: event, pid: PID, ...data }) } catch { return }
+  chain = chain.then(() => new Promise((resolve) => {
+    let done = false
+    let timer
+    const finish = () => { if (done) return; done = true; clearTimeout(timer); resolve() }
+    try {
+      const child = spawn(FORWARDER, ["opencode", event], { stdio: ["pipe", "ignore", "ignore"] })
+      timer = setTimeout(() => { try { child.kill("SIGKILL") } catch {} finish() }, FORWARDER_TIMEOUT_MS)
+      child.on("error", finish)
+      child.on("close", finish)
+      child.stdin.on("error", () => {})
+      child.stdin.end(payload)
+    } catch { finish() }
+  })).catch(() => {})
 }
 
 export const TerminalSessions = async ({ directory, client }) => {
@@ -203,26 +242,43 @@ export const TerminalSessions = async ({ directory, client }) => {
   }
 
   // A session we have never seen (resumed before we loaded, or created while a
-  // previous plugin instance ran): ask the server once, fail open as a root.
-  const lookups = new Set()
+  // previous plugin instance ran): ask the server once. Nothing for that id is
+  // forwarded or written until the answer is in — a subagent handled as a root
+  // would flip the pane state and leave a stray <child>.jsonl for the picker.
+  // No answer (server hiccup, timeout) = fail open as a root, the common case.
+  const LOOKUP_TIMEOUT_MS = 3000
+  const lookups = new Map()   // sessionID → handlers queued until the lookup lands
   function ensureKnown(id) {
     if (typeof id !== "string" || parentOf.has(id) || lookups.has(id)) return
-    lookups.add(id)
-    remember(parentOf, id, null)
-    try {
-      Promise.resolve(client.session.get({ path: { id } }))
-        .then((res) => {
-          const info = res && (res.data || res)
-          if (info && typeof info === "object" && info.id === id) {
-            noteSession(info)
-            emit("SessionStart", { ...base(id), title: info.title || null, resumed: true })
-          }
-        })
-        .catch(() => {})
-    } catch {}
+    const queue = []
+    lookups.set(id, queue)
+    const settle = (info) => {
+      if (!lookups.delete(id)) return
+      if (info && typeof info === "object" && info.id === id) {
+        noteSession(info)
+        if (!isChild(id)) emit("SessionStart", { ...base(id), title: info.title || null, resumed: true })
+      } else if (!parentOf.has(id)) {
+        remember(parentOf, id, null)
+      }
+      for (const fn of queue) { try { fn() } catch {} }
+    }
+    let p
+    try { p = Promise.resolve(client.session.get({ path: { id } })) } catch { settle(null); return }
+    const timer = setTimeout(() => settle(null), LOOKUP_TIMEOUT_MS)
+    p.then((res) => { clearTimeout(timer); settle(res && (res.data || res)) })
+      .catch(() => { clearTimeout(timer); settle(null) })
   }
-
-  emit("SessionStart", { session_id: "", cwd: directory, reason: "plugin_loaded" })
+  /** Run `fn` now when the session's lineage is known, else once the lookup lands. */
+  function whenKnown(id, fn) {
+    if (typeof id !== "string") return
+    if (parentOf.has(id)) { fn(); return }
+    ensureKnown(id)
+    const queue = lookups.get(id)
+    if (queue) queue.push(fn)
+    else fn()
+  }
+  const sessionIdOf = (p) =>
+    p.sessionID || (p.info && p.info.sessionID) || (p.part && p.part.sessionID) || undefined
 
   return {
     dispose: async () => {
@@ -232,10 +288,26 @@ export const TerminalSessions = async ({ directory, client }) => {
       }
     },
 
-    event: async ({ event }) => {
+    event: async ({ event }) => { handleEvent(event) },
+
+    "chat.message": async (input, output) => { onChatMessage(input, output) },
+
+    "tool.execute.before": async (input, output) => { onToolBefore(input, output) },
+
+    "tool.execute.after": async (input, output) => { onToolAfter(input, output) },
+  }
+
+  function handleEvent(event) {
       try {
         const p = (event && event.properties) || {}
-        switch (event && event.type) {
+        const type = event && event.type
+        // Lineage gate: anything about a session we cannot yet place waits for
+        // the lookup, then replays in arrival order.
+        if (type !== "session.created" && type !== "session.updated" && type !== "session.deleted") {
+          const sid = sessionIdOf(p)
+          if (typeof sid === "string" && !parentOf.has(sid)) { whenKnown(sid, () => handleEvent(event)); return }
+        }
+        switch (type) {
           case "session.created":
           case "session.updated": {
             const info = p.info
@@ -256,13 +328,12 @@ export const TerminalSessions = async ({ directory, client }) => {
           case "session.status": {
             const id = p.sessionID
             if (typeof id !== "string") break
-            ensureKnown(id)
-            const type = p.status && p.status.type
-            if (type === "busy" || type === "retry") {   // retry = still working
+            const status = p.status && p.status.type
+            if (status === "busy" || status === "retry") {   // retry = still working
               busy.add(id)
               break
             }
-            if (type !== "idle") break
+            if (status !== "idle") break
             if (!busy.delete(id)) break               // idle without a busy first: not a turn end
             const wasError = errored.delete(id)
             appendLine(transcriptOf(id), { ts: Date.now(), type: "turn_end", sessionID: id, error: wasError })
@@ -377,13 +448,16 @@ export const TerminalSessions = async ({ directory, client }) => {
           }
         }
       } catch {}
-    },
+  }
 
-    "chat.message": async (input, output) => {
+  function onChatMessage(input, output) {
       try {
         const id = input && input.sessionID
         if (typeof id !== "string") return
-        ensureKnown(id)
+        if (!parentOf.has(id)) { whenKnown(id, () => onChatMessage(input, output)); return }
+        // A new prompt starts a clean turn: an error noted while idle must not
+        // turn this turn's finish into a failure.
+        errored.delete(id)
         const text = clip(partsText(output && output.parts), TEXT_MAX)
         appendLine(transcriptOf(id), {
           ts: Date.now(),
@@ -395,13 +469,13 @@ export const TerminalSessions = async ({ directory, client }) => {
         })
         emit("UserPromptSubmit", { ...base(id), message: clip(text, PREVIEW_MAX) })
       } catch {}
-    },
+  }
 
-    "tool.execute.before": async (input, output) => {
+  function onToolBefore(input, output) {
       try {
         const id = input && input.sessionID
         if (typeof id !== "string") return
-        ensureKnown(id)
+        if (!parentOf.has(id)) { whenKnown(id, () => onToolBefore(input, output)); return }
         // `question.asked` arrives BEFORE this hook for the question tool, and a
         // PreToolUse after a Notification would flip the pane from "waiting on
         // you" back to "running a tool". The question IS the wait; PostToolUse
@@ -413,19 +487,19 @@ export const TerminalSessions = async ({ directory, client }) => {
           tool_input: toolInputPreview(output && output.args),
         })
       } catch {}
-    },
+  }
 
-    "tool.execute.after": async (input, output) => {
+  function onToolAfter(input, output) {
       try {
         const id = input && input.sessionID
         if (typeof id !== "string") return
+        if (!parentOf.has(id)) { whenKnown(id, () => onToolAfter(input, output)); return }
         emit("PostToolUse", {
           ...base(id),
           tool_name: input.tool,
           tool_input: clip(output && output.title, PREVIEW_MAX),
         })
       } catch {}
-    },
   }
 }
 
