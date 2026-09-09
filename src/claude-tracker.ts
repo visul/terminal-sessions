@@ -20,6 +20,7 @@ import {
   TranscriptTailer,
   TranscriptSnapshot,
   SubagentSnapshot,
+  SubagentState,
 } from './claude-transcript';
 
 export type ClaudeState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';
@@ -698,11 +699,19 @@ export class ClaudeTracker {
     // crashed mid-Task, user interrupted, etc.). Don't keep the sidebar
     // spinning on those forever — but wait 2 minutes before overriding so
     // short idle windows don't clobber a legitimately running subagent.
+    // Teammates are exempt: they legitimately sit idle between turns.
     if (snap.state === 'idle' && snap.lastStopAt
         && Date.now() - snap.lastStopAt.getTime() > 120_000
-        && snap.subagents?.some((s) => s.state !== 'done')) {
+        && snap.subagents?.some((s) => s.state === 'working' || s.state === 'tool')) {
       snap.subagents = snap.subagents.map((s) =>
-        s.state === 'done' ? s : { ...s, state: 'done' as const, completedAt: s.completedAt || new Date() },
+        (s.state === 'working' || s.state === 'tool')
+          ? {
+              ...s,
+              state: (s.teammate ? 'idle' : 'done') as SubagentState,
+              // The agent stopped writing when its transcript did, not now.
+              completedAt: s.teammate ? s.completedAt : (s.completedAt || s.lastActivityAt || new Date()),
+            }
+          : s,
       );
     }
 

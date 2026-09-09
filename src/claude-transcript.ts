@@ -5,7 +5,9 @@ import { costForUsage } from './claude-pricing';
 import type { AgentProvider, TranscriptTailState } from './agents/types';
 import { emptyTurnEvidence, noteAssistantText, noteToolResult, type TurnEvidence } from './outcome';
 
-export type SubagentState = 'working' | 'tool' | 'done';
+/** `idle` only ever applies to in-process teammates: they outlive a turn and
+ *  sit waiting for the next message, so "finished writing" is not "finished". */
+export type SubagentState = 'working' | 'tool' | 'idle' | 'done';
 
 export interface SubagentSnapshot {
   /** tool_use id of the `Task` call that spawned this subagent (stable key). */
@@ -27,6 +29,18 @@ export interface SubagentSnapshot {
   state: SubagentState;
   startedAt: Date;
   completedAt?: Date;
+  /** Last write to the agent's own transcript. Drives the "idle 2h" reading of
+   *  a teammate, which never gets a `completedAt`. */
+  lastActivityAt?: Date;
+  /** Model the agent actually ran on, from its transcript (`message.model`),
+   *  falling back to the alias its spawn metadata recorded ("sonnet"). */
+  model?: string;
+  /** In-process teammate (`taskKind: "in_process_teammate"`) rather than a
+   *  Task-tool subagent: it stays alive between turns. */
+  teammate?: boolean;
+  /** Discovered by scanning the `subagents/` dir (as opposed to parsed inline
+   *  from the main transcript). Only these are pruned when their file is gone. */
+  viaDir?: boolean;
   /** Byte offset of the line where this subagent's first entry appears in
    *  the transcript, used by the "Open transcript" command to jump precisely. */
   firstOffset?: number;
@@ -85,6 +99,8 @@ interface BgAgentCache {
   size: number;
   agentType?: string;
   description?: string;
+  model?: string;
+  teammate?: boolean;
   lastText: string;
   lastToolName?: string;
   lastToolInput?: string;
@@ -786,7 +802,9 @@ export function scanBackgroundAgents(state: TailState): boolean {
   const statCache = bgStatCacheOf(state);
 
   for (const entry of entries) {
-    const m = /^agent-([0-9a-zA-Z]+)\.jsonl$/.exec(entry);
+    // `agent-a<16 hex>.jsonl` for Task subagents, `agent-a<name>-<16 hex>.jsonl`
+    // for named teammates — so the id class has to allow hyphens/underscores.
+    const m = /^agent-([0-9A-Za-z][0-9A-Za-z_-]*)\.jsonl$/.exec(entry);
     if (!m) continue;
     const agentId = m[1];
     seen.add(agentId);
@@ -798,6 +816,8 @@ export function scanBackgroundAgents(state: TailState): boolean {
 
     let agentType: string | undefined;
     let description: string | undefined;
+    let model: string | undefined;
+    let teammate = false;
     let lastText = '';
     let lastToolName: string | undefined;
     let lastToolInput: string | undefined;
@@ -810,6 +830,8 @@ export function scanBackgroundAgents(state: TailState): boolean {
       // re-JSON.parsing every background-agent jsonl on each 3s tick.
       agentType = cached.agentType;
       description = cached.description;
+      model = cached.model;
+      teammate = cached.teammate === true;
       lastText = cached.lastText;
       lastToolName = cached.lastToolName;
       lastToolInput = cached.lastToolInput;
@@ -820,6 +842,11 @@ export function scanBackgroundAgents(state: TailState): boolean {
         const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
         agentType = typeof meta.agentType === 'string' ? meta.agentType : undefined;
         description = typeof meta.description === 'string' ? meta.description : undefined;
+        // Spawn metadata records the model as the user WROTE it ("sonnet",
+        // "claude-opus-5", "claude-fable-5-1[1m]") and only for teammates; the
+        // transcript below overrides it with the id the API actually answered on.
+        if (typeof meta.model === 'string' && meta.model) model = meta.model;
+        teammate = meta.taskKind === 'in_process_teammate';
       } catch { /* no meta yet — fall back to undefined */ }
 
       // Walk the whole agent file to find the last text and outstanding tool.
@@ -830,7 +857,8 @@ export function scanBackgroundAgents(state: TailState): boolean {
           if (!line) continue;
           let e: Record<string, unknown>;
           try { e = JSON.parse(line); } catch { continue; }
-          const msg = (e.message as { role?: string; content?: unknown }) || {};
+          const msg = (e.message as { role?: string; content?: unknown; model?: string }) || {};
+          if (typeof msg.model === 'string' && msg.model) model = msg.model;
           const content = msg.content;
           if (Array.isArray(content)) {
             for (const block of content) {
@@ -866,6 +894,8 @@ export function scanBackgroundAgents(state: TailState): boolean {
         size: stat.size,
         agentType,
         description,
+        model,
+        teammate,
         lastText,
         lastToolName,
         lastToolInput,
@@ -877,8 +907,10 @@ export function scanBackgroundAgents(state: TailState): boolean {
     // An unresolved tool_use keeps the agent "running" well past the idle
     // threshold; only a completed last block (text / tool_result) expires at 30s.
     const isDone = pendingToolId ? ageMs > TOOL_DONE_AFTER_MS : ageMs > DONE_AFTER_MS;
+    // A quiet Task subagent has exited; a quiet teammate is merely between
+    // turns and can be messaged again, so it goes idle instead of done.
     const newState: SubagentState = isDone
-      ? 'done'
+      ? (teammate ? 'idle' : 'done')
       : pendingToolId
         ? 'tool'
         : 'working';
@@ -890,6 +922,10 @@ export function scanBackgroundAgents(state: TailState): boolean {
       depth: 0,
       agentType,
       description: description ? compactPreview(description) : undefined,
+      model,
+      teammate: teammate || undefined,
+      viaDir: true,
+      lastActivityAt: new Date(stat.mtimeMs),
       currentTool: newState === 'done' ? undefined : lastToolName,
       currentToolInput: newState === 'done' ? undefined : lastToolInput,
       lastMessage: lastText ? compactPreview(lastText) : undefined,
@@ -907,7 +943,9 @@ export function scanBackgroundAgents(state: TailState): boolean {
         || existing.currentTool !== snap.currentTool
         || existing.lastMessage !== snap.lastMessage
         || existing.agentType !== snap.agentType
-        || existing.description !== snap.description) {
+        || existing.description !== snap.description
+        || existing.model !== snap.model
+        || existing.lastActivityAt?.getTime() !== snap.lastActivityAt?.getTime()) {
       state.subagentMap.set(agentId, snap);
       changed = true;
     }
@@ -919,10 +957,9 @@ export function scanBackgroundAgents(state: TailState): boolean {
   for (const id of Array.from(state.subagentMap.keys())) {
     const existing = state.subagentMap.get(id);
     if (!existing) continue;
-    // Heuristic: background agent ids look like `aXXXXXXXXXXXXXXX` (17 alnum
-    // chars), while Task tool_use ids start with `toolu_`. Only prune the
-    // background-agent shape.
-    if (/^a[0-9a-f]{16}$/i.test(id) && !seen.has(id)) {
+    // Only entries this scan created are ours to drop; subagents parsed inline
+    // from the main transcript have no file to disappear.
+    if (existing.viaDir && !seen.has(id)) {
       state.subagentMap.delete(id);
       statCache.delete(id);
       changed = true;

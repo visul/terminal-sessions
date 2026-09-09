@@ -182,7 +182,8 @@ function claudeStateDescription(snap: ClaudeSnapshot): string | undefined {
   // Context % moved to the expanded details row (alongside model · cost · turns)
   // to keep the main row tight. "N done" count removed entirely; only the
   // active-running counter survives because it's the only one that's actionable.
-  const active = (snap.subagents || []).filter((s) => s.state !== 'done').length;
+  const active = (snap.subagents || [])
+    .filter((s) => s.state === 'working' || s.state === 'tool').length;
   const agentSuffix = active > 0 ? ` · 🤖 ${active} running` : '';
   switch (snap.state) {
     case 'working': {
@@ -508,6 +509,7 @@ export class ClaudeDetailItem extends vscode.TreeItem {
 const SUBAGENT_ICONS: Record<SubagentSnapshot['state'], string> = {
   working: 'loading~spin',
   tool: 'tools',
+  idle: 'circle-outline',
   done: 'check',
 };
 
@@ -530,11 +532,18 @@ export class SubagentsFolderItem extends vscode.TreeItem {
     public readonly topLevelSubagents: SubagentSnapshot[],
     public readonly allSubagents: SubagentSnapshot[],
   ) {
-    const active = topLevelSubagents.filter((s) => s.state !== 'done').length;
-    const done = topLevelSubagents.length - active;
-    const label = active > 0
-      ? `Agents (${active} running${done > 0 ? ` · ${done} done` : ''})`
-      : `Agents (${done} done)`;
+    const active = topLevelSubagents
+      .filter((s) => s.state === 'working' || s.state === 'tool').length;
+    const idle = topLevelSubagents.filter((s) => s.state === 'idle').length;
+    const done = topLevelSubagents.length - active - idle;
+    // Three populations, not two: teammates sit idle between turns without
+    // being finished, so they get their own count instead of padding "done".
+    const counts = [
+      active > 0 ? `${active} running` : '',
+      idle > 0 ? `${idle} idle` : '',
+      done > 0 ? `${done} done` : '',
+    ].filter(Boolean);
+    const label = `Agents (${counts.join(' · ') || '0'})`;
     // Expand by default when any agent is live so the user sees activity
     // without an extra click; collapse when everything is already done.
     const collapse = active > 0
@@ -548,7 +557,7 @@ export class SubagentsFolderItem extends vscode.TreeItem {
     );
     const lines = [
       `**🤖 Agents** (${topLevelSubagents.length} total)`,
-      `Running: ${active}  ·  Done: ${done}`,
+      `Running: ${active}  ·  Idle: ${idle}  ·  Done: ${done}`,
     ];
     if (topLevelSubagents.length > 0) {
       const sample = topLevelSubagents.slice(0, 5)
@@ -588,7 +597,7 @@ export class SubagentTreeItem extends vscode.TreeItem {
       || !!subagent.currentTool
       || !!subagent.lastMessage;
     const initialCollapse = hasChildren
-      ? (subagent.state === 'done'
+      ? (subagent.state === 'done' || subagent.state === 'idle'
           ? vscode.TreeItemCollapsibleState.Collapsed
           : vscode.TreeItemCollapsibleState.Expanded)
       : vscode.TreeItemCollapsibleState.None;
@@ -601,6 +610,7 @@ export class SubagentTreeItem extends vscode.TreeItem {
     switch (subagent.state) {
       case 'working': color = 'terminalSessions.workingIcon'; break;
       case 'tool':    color = 'terminalSessions.toolIcon';    break;
+      case 'idle':    color = 'terminalSessions.idleIcon';    break;
       case 'done':    color = 'terminalSessions.idleIcon';    break;
     }
     this.iconPath = new vscode.ThemeIcon(icon, color ? new vscode.ThemeColor(color) : undefined);
@@ -609,13 +619,26 @@ export class SubagentTreeItem extends vscode.TreeItem {
     const end = subagent.completedAt?.getTime() || Date.now();
     const elapsedMs = Math.max(0, end - start);
     const elapsed = formatElapsedMs(elapsedMs);
+    // A finished agent reports how long it RAN plus how long ago that was —
+    // the run time alone reads as an age and makes a three-day-old agent look
+    // like it just stopped. The "ago" half is dropped while it is fresh.
+    const sinceDone = subagent.completedAt ? Date.now() - subagent.completedAt.getTime() : 0;
+    const idleFor = subagent.lastActivityAt
+      ? formatElapsedMs(Date.now() - subagent.lastActivityAt.getTime())
+      : undefined;
     let inline: string;
     switch (subagent.state) {
       case 'tool':    inline = `${subagent.currentTool || 'tool'} ${elapsed}`; break;
       case 'working': inline = `working ${elapsed}`; break;
-      case 'done':    inline = `done in ${elapsed}`; break;
+      case 'idle':    inline = idleFor ? `idle ${idleFor}` : 'idle'; break;
+      case 'done':
+        inline = sinceDone > 60_000
+          ? `${elapsed} · ${formatElapsedMs(sinceDone)} ago`
+          : `done in ${elapsed}`;
+        break;
     }
-    this.description = inline;
+    const modelBadge = subagent.model ? shortenModel(subagent.model) : undefined;
+    this.description = modelBadge ? `${modelBadge} · ${inline}` : inline;
 
     const tooltipParts: string[] = [
       `**${agentLabel}**${desc}`,
@@ -624,6 +647,11 @@ export class SubagentTreeItem extends vscode.TreeItem {
     ];
     if (subagent.completedAt) {
       tooltipParts.push(`Completed: ${subagent.completedAt.toLocaleString()}`);
+    } else if (subagent.lastActivityAt) {
+      tooltipParts.push(`Last activity: ${subagent.lastActivityAt.toLocaleString()}`);
+    }
+    if (subagent.model) {
+      tooltipParts.push(`Model: \`${subagent.model}\`${subagent.teammate ? ' (teammate)' : ''}`);
     }
     tooltipParts.push(`Depth: ${subagent.depth}`);
     if (subagent.parentId) tooltipParts.push(`Parent subagent: \`${subagent.parentId.slice(0, 12)}\``);
@@ -683,10 +711,16 @@ export function buildClaudeDetails(snap: ClaudeSnapshot, contextPctAlert: number
   return items;
 }
 
+/** `claude-opus-4-7` → `opus-4.7`, `claude-sonnet-5` → `sonnet-5`,
+ *  `claude-fable-5-1[1m]` → `fable-5.1`, `claude-haiku-4-5-20251001` →
+ *  `haiku-4.5`. Aliases a spawn recorded verbatim ("sonnet") pass through. */
 function shortenModel(m: string): string {
-  // "claude-opus-4-7" → "opus"; leave others unchanged
-  const match = m.match(/claude-(opus|sonnet|haiku)/i);
-  return match ? match[1].toLowerCase() : m;
+  const out = m
+    .replace(/^claude-/i, '')
+    .replace(/\[.*$/, '')
+    .replace(/-\d{8}$/, '')                      // trailing release date
+    .replace(/-(\d{1,2})-(\d{1,2})$/, '-$1.$2'); // version pair, not a date
+  return out || m;
 }
 
 function formatTokens(n: number): string {
