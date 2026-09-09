@@ -1608,7 +1608,7 @@
         },
         {
           "id": "terminalSessions.note",
-          "name": "Session Note",
+          "name": "Terminal Session Note",
           "type": "webview",
           "icon": "media/icon.svg",
           "visibility": "collapsed"

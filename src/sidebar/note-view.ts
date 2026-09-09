@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from '../session-manager';
 import { NoteStore, noteKey } from '../notes';
+import { NOTE_MARK } from './items';
 import { getConfig } from '../config';
 import { parseSessionName } from '../workspace-id';
 import { humanAge } from '../util';
@@ -218,6 +219,21 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
       saved: note ? `saved ${humanAge(new Date(note.updatedAt))}` : '',
     };
     void this.view.webview.postMessage({ type: 'state', state });
+    // Same signal as the tree's ✎ marker, carried by the host chrome so a note
+    // is visible from the panel without leaving the Terminal tab.
+    //
+    // The title, NOT WebviewView.badge. A panel container holding one view
+    // takes its tab label from that view's title, so this reaches the tab; the
+    // badge does too, but it cannot be turned off. VS Code's WebviewViewPane
+    // has `if (changed && (this.badge = e, e)) { …register activity… }` — a
+    // clear updates the field, short-circuits on the falsy value, and never
+    // disposes the activity that draws the badge. (The ordinary ViewPane in the
+    // same bundle has the `else this._activity.clear()` this one is missing.)
+    // So an emptied note kept showing its badge forever.
+    try {
+      this.view.title = note ? `${NOTE_VIEW_TITLE} ${NOTE_MARK}` : NOTE_VIEW_TITLE;
+      this.view.description = t ? t.label : undefined;
+    } catch { /* view disposed between the guard above and here */ }
   }
 
   private html(webview: vscode.Webview): string {
@@ -374,6 +390,11 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
 </html>`;
   }
 }
+
+/** Base title of both hosts, kept in step with the `name` in package.json.
+ *  Set explicitly (rather than left to the manifest) because the ✎ marker is
+ *  appended to it, so it has to be removable again. */
+const NOTE_VIEW_TITLE = 'Terminal Session Note';
 
 /** View ids of the two hosts the same editor is contributed to: one under the
  *  session tree in the Explorer, one as its own tab in the bottom panel. */

@@ -34,19 +34,20 @@ first session.
    1 │ TERMINAL SESSIONS        ⌕ ▽ + ↻ 🔔 🔍 ⌚ ⌄
      │ ───────────────────────────────────────────
    2 │ ▾ 📂 my-app                 12⏸ · 1⇄ 5▶
-   3 │   ▸ ⭐ Favorite Sessions
-   4 │   ▾ ▶ Open Sessions
+   3 │   ▸ 📝 Notes
+   4 │   ▸ ⭐ Favorite Sessions
+   5 │   ▾ ▶ Open Sessions
      │       ▸ Active Sessions
      │       ▸ Background Sessions
-   5 │   ▸ 🕐 Recent Sessions
-   6 │   ▸ 🗑 Killed Sessions
-   7 │   ▾ 📁 backend
-   8 │       ⟳ api · migration   working 1m
-   9 │       🔧 web · e2e        Bash 8s · 🤖 2 running
-  10 │       ⚠ worker · queue    waiting input · 🚨
-  11 │       ✓ docs · rewrite    done 3m
-  12 │       ○ api · scratch     idle 2h
-  13 │       ■ web · old branch  stopped · idle 6d · 🔒
+   6 │   ▸ 🕐 Recent Sessions
+   7 │   ▸ 🗑 Killed Sessions
+   8 │   ▾ 📁 backend
+   9 │       ⟳ api · migration   working 1m
+  10 │       🔧 web · e2e        Bash 8s · 🤖 2 running
+  11 │       ⚠ worker · queue    waiting input · 🚨
+  12 │       ✓ ✎ docs · rewrite  done 3m
+  13 │       ○ api · scratch     idle 2h
+  14 │       ■ web · old branch  stopped · idle 6d · 🔒
 ```
 
 1. **Toolbar,** left to right: filter this list as you type, change the
@@ -57,26 +58,29 @@ first session.
    whether a mark clears when seen or after 30 minutes).
 2. **Workspace.** One per project, with a count badge: `12⏸` stopped, then the
    live ones — `1⇄` detached (no tab here), `5▶` with a tab open.
-3. **Favorites.** A pinned folder of starred sessions, hidden while empty.
-4. **Open Sessions.** *Active* have a tab open in this window, in tab order;
+3. **Notes.** Sessions you left a note on, most recently edited first. Only
+   there once one exists. The `✎` in front of a session's name says it has
+   one; opening it needs neither a running session nor a tab.
+4. **Favorites.** A pinned folder of starred sessions, hidden while empty.
+5. **Open Sessions.** *Active* have a tab open in this window, in tab order;
    *Background* are running in tmux with no tab here. When only one kind
    exists, that folder stands alone.
-5. **Recent.** A flat list: running sessions first by last activity, then
+6. **Recent.** A flat list: running sessions first by last activity, then
    stopped ones by when they stopped.
-6. **Killed.** A graveyard. Right-click → *Restore Session* brings one back.
-7. **Your own folder.** Make as many as you like, drag rows in, colour them,
+7. **Killed.** A graveyard. Right-click → *Restore Session* brings one back.
+8. **Your own folder.** Make as many as you like, drag rows in, colour them,
    nest a folder inside another.
-8. **Working.** A spinner and how long this turn has been going.
-9. **Running a tool.** The tool's name replaces the word, and `🤖 2 running`
-   means two subagents are alive under it.
-10. **Waiting for you.** A warning icon; the session is frozen until you
+9. **Working.** A spinner and how long this turn has been going.
+10. **Running a tool.** The tool's name replaces the word, and `🤖 2 running`
+    means two subagents are alive under it.
+11. **Waiting for you.** A warning icon; the session is frozen until you
     answer. `🚨` marks a session launched in auto-approve (YOLO) mode.
-11. **Just finished.** A filled check for a clean turn; the icon becomes an
+12. **Just finished.** A filled check for a clean turn; the icon becomes an
     error mark when it ended badly (`✗ tests failed 2m`) or a question mark
     when the agent asked you something. Once you look, the row goes back to
     the ordinary idle description.
-12. **Detached.** A hollow circle: alive in tmux, no tab open in this window.
-13. **Stopped.** The process is gone, the row and its history stay. `🔒` means
+13. **Detached.** A hollow circle: alive in tmux, no tab open in this window.
+14. **Stopped.** The process is gone, the row and its history stay. `🔒` means
     locked — Kill is refused until you unlock it.
 
 Expand a running session and it carries nested rows: last thing you said, last
@@ -364,7 +368,15 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
   - Each folder hides while empty and sits directly at the workspace root on its own; only when **both** have sessions do they nest under an **Open Sessions** parent
 - **Recent Sessions** — a pinned virtual folder at the top of each workspace with a flat, group-free list of sessions ordered by recency: running ones first (most recently active on top), then stopped ones by when they were stopped. Rows are ordinary session rows — every action (Start, Restart, View Conversation, …) works — and mirror the sessions in their groups below, so it's a shortcut, not a move. Capped at 50 (`terminalSessions.activityLimit`)
 - **Killed Sessions** — killing a session no longer deletes it: the entry (label, folder, resume flags, full conversation history) moves into a per-workspace graveyard, so Kill is reversible. Right-click a killed row → **Restore Session** recreates it under a fresh tab id and resumes its conversation. Also available from the Command Palette — the only way back when a workspace's last session was killed. Keeps the most recent 50 kills (`terminalSessions.killedLimit`); entries with nothing restorable (no label, no conversation) aren't kept, and the folder hides while empty. To kill *without* keeping anything — and free the disk space too — use **Kill & Delete Data…** instead
-- **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showFavoritesFolder` / `showOpenFolder` / `showBackgroundFolder` / `showActivityFolder` / `showKilledFolder` settings. All default to on
+- **Enable/Disable per folder** — via the view's `⋯` menu (exactly one of Enable/Disable shows, tracking the current state), right-click on the folder row, or the `showNotesFolder` / `showFavoritesFolder` / `showOpenFolder` / `showBackgroundFolder` / `showActivityFolder` / `showKilledFolder` settings. All default to on
+
+### Session notes
+- **One free-form note per session** — plain text, nothing imposed on it. Written in a **Terminal Session Note** editor that lives in two places at once: a (collapsed) view under the session tree in the Explorer, and its own tab in the bottom panel next to Terminal. Both show the same note; type in either and the other follows
+- **Follows the terminal you're in** — the editor tracks the active persistent terminal, so the note on screen is the one for the session you're working in. Clicking a row in the **Notes** folder *pins* it instead, which is how you read a stopped session's note without starting it or opening a tab for it. The header names the session and offers the way back to following
+- **`✎` in front of the row** — a session that has a note is marked before its label, not after: long labels are ellipsised at the tail, so only the head is guaranteed to stay visible. While the active session has one, the panel tab says `Terminal Session Note ✎` too, so you can see it without leaving the Terminal tab
+- **Notes folder** — pinned above **Favorite Sessions**, listing every session in the workspace that has a note, most recently edited first, with the note's first line as the row description and the whole text in the tooltip. Absent entirely until you write one, so it costs nothing until you use it
+- **Deleting** — from the editor header, the inline button on a Notes row, or its right-click menu; always behind a confirmation that shows the text, since there's no undo. Emptying a note deletes it. Kill (and Kill & Delete Data) takes the note with the session: a restored session comes back under a *new* name and notes are keyed by name, so a note kept for the graveyard would be orphaned rather than restored
+- **Stored in `~/.terminal-sessions/notes.json`**, deliberately separate from the session index — this text is yours and irreplaceable, so it never shares a rewrite with the generated index. Keyed by workspace and session name, so a rename keeps the note, and two windows editing notes converge instead of overwriting each other
 
 ### YOLO mode switch (auto-approve)
 - **Switch to YOLO Mode / Switch to Normal Mode** — right-click a session to relaunch its agent with (or without) auto-approve flags, continuing the **same conversation**: `--dangerously-skip-permissions` for Claude and Antigravity, `--yolo` for Codex, the equivalent for Grok. The flag set is per-agent and allowlisted, so nothing else about the launch command changes
@@ -387,14 +399,17 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **OpenCode forks too** — on an OpenCode session the command runs `opencode -s <id> --fork`, which OpenCode answers with a new conversation id (`<title> (fork #N)`) opened in the new tab. The command stays hidden on Codex, Antigravity, and Grok sessions, which have no fork equivalent. In the terminal-tab menu it follows the **active** terminal (the one you right-click), since VS Code cannot gate that menu per tab
 
 ### Subagents in the sidebar
-- **`🤖 Agents (N running · M done)` folder per session** — one collapsible row groups every subagent a Claude session spawned, so sessions with lots of agents stay tidy. Auto-expanded while anything is live; collapsed when everything finishes. Tooltip previews the first five agents with their state
-- **Live per-subagent rows** — state icon (spinner / tools / check), elapsed time, current tool with input preview, last streamed message. Nests recursively for agents that spawn sub-subagents
+- **`🤖 Agents (N running · M idle · K done)` folder per session** — one collapsible row groups every subagent a Claude session spawned, so sessions with lots of agents stay tidy. Auto-expanded while anything is live; collapsed when everything finishes. Tooltip previews the first five agents with their state
+- **Live per-subagent rows** — state icon (spinner / tools / check), the model it is answering on, elapsed time, current tool with input preview, last streamed message. Nests recursively for agents that spawn sub-subagents
+- **The model each agent is running** — read from the transcript itself (what the API actually answered on), not from what the spawn asked for, and shortened to the useful part: `opus-4.7`, `sonnet-5`, `haiku-4.5`. An agent spawned with a bare alias keeps the alias
+- **Duration, and how long ago** — a finished agent reads `6m · 3h ago`: how long it ran, and when that was. The run time on its own looks like an age, which made a three-day-old agent seem to have just stopped; the second half is dropped while the result is still fresh
+- **Idle vs done** — a quiet Task subagent has exited, but an in-process teammate is merely between turns and can be messaged again. Teammates go **idle** (with the time since they last wrote) instead of being marked done
 - **Inline subagent counter in the session description** — `Terminal Sessions waiting input · 69% ctx · 🤖 2 running` (falls back to `🤖 N done` after completion). See live agent activity without expanding
 - **Agent label** — `<subagent_type> — <description>` pulled from the `Agent` / `Task` tool input (e.g. `researcher — MCP servers for note apps`). Tooltip shows depth, parent agent id, and timestamps
 - **Background-agent support** — Claude Code ≥ 2.1.119 spawns subagents via the `Agent` tool with `run_in_background: true`; their activity is written to per-agent transcripts in `<main-jsonl>/subagents/agent-<id>.jsonl` (not as sidechain messages). The tailer scans that sibling directory on a 3-second poll, so live state surfaces within ~3 s even without the main jsonl being written. The classic synchronous `Task` tool path keeps working too
 - **`terminalSessions.showCompletedSubagents`** (default `true`) — keeps completed agents visible so short runs don't flicker in and out. Flip to `false` (or run `Terminal Sessions: Toggle Show Completed Subagents`) to focus only on live work
 - **`Open Subagent Transcript` command** — right-click a subagent row → opens its transcript jsonl in an editor tab jumped to the first line where that agent was registered. For background agents this is the small per-agent file, much easier to read than the main conversation transcript
-- **Auto-done on parent idle** — when the parent session has been idle for 2+ minutes, stragglers flagged `working` are marked done in the rendered snapshot so the sidebar doesn't spin forever on interrupted agents
+- **Auto-done on parent idle** — when the parent session has been idle for 2+ minutes, stragglers flagged `working` are marked done (teammates: idle) in the rendered snapshot, so the sidebar doesn't spin forever on an interrupted agent. Any subagent whose own transcript moved in the last 30 seconds is left alone: the lead going quiet says nothing about an agent that wrote a moment ago
 
 ### Multi-agent support (Claude · Codex · Antigravity · Grok · OpenCode)
 - **One sidebar, five agents** — the same live status, context %, cost, history, and auto-resume work for **Claude Code**, **Codex**, **Antigravity** (`agy`), **Grok** (xAI), and **OpenCode**. Each tracked session shows which agent it's running, so a row reads `Codex working 12s` vs `Claude working 12s`
@@ -613,7 +628,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | ☆ / ★ button on a session row | Add/remove the session from **Favorite Sessions** (one click, toggles; with multi-select, applies to every selected row) |
 | Multi-select (Cmd/Ctrl- or Shift-click) + right-click | Bulk actions on the whole selection: Stop, Start, Kill, Kill & Delete Data, Restart, Move to Group, Change Icon/Color, Mute/Unmute, Lock/Unlock, Add/Remove Favorites (destructive ones confirm once for the batch; YOLO switch stays per-session) |
 | Right-click on a terminal tab → `Add/Remove Favorite` | Toggle the star for that tab's session |
-| View `⋯` menu / folder right-click → `Enable/Disable Favorite Sessions Folder`, `Enable/Disable Active Sessions Folder`, `Enable/Disable Background Sessions Folder`, `Enable/Disable Recent Sessions Folder`, `Enable/Disable Killed Sessions Folder` | Toggle the pinned virtual folders |
+| View `⋯` menu / folder right-click → `Enable/Disable Notes Folder`, `Enable/Disable Favorite Sessions Folder`, `Enable/Disable Active Sessions Folder`, `Enable/Disable Background Sessions Folder`, `Enable/Disable Recent Sessions Folder`, `Enable/Disable Killed Sessions Folder` | Toggle the pinned virtual folders |
 | Right-click on sidebar session → `Copy Last Conversation ID` / `Copy Last Conversation Path` | Clipboard the agent conversation's UUID or the full path to its transcript `.jsonl` |
 | Right-click on sidebar session → `Reveal Session Folder` | Open the session's working directory in Finder/Explorer |
 | Right-click on sidebar session → `Fork Conversation (new parallel branch)` | Continue the same Claude conversation on an independent branch in a new session |
@@ -622,6 +637,8 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Right-click on group → `Rename Group` / `Delete Group` / `Change Group Color…` | Edit an existing group |
 | Sidebar title bar → `Collapse Sessions` | Collapse every expanded row in the tree |
 | Sidebar overflow `⋯` → `Clean Up Empty / Invalid Sessions...` | Soft-delete empty/invalid conversations to `~/.claude/projects/.bak` |
+| Right-click on sidebar session → `Session Note` | Open the note editor pinned to that session (also focuses whichever host you last typed in) |
+| Right-click on a Notes row → `Delete Session Note` | Delete that session's note; the confirmation shows the text first |
 | Right-click on sidebar session → `Rename` | Set a friendly label |
 | Right-click on sidebar session → `Change Icon` / `Change Color` | Pick custom icon or theme color |
 | Right-click on sidebar session → `Mute Notifications` / `Unmute Notifications` | Per-session silencing |
@@ -662,6 +679,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.showBackgroundFolder` | `true` | Show the pinned **Background Sessions** folder (running in tmux, no tab in this window); hidden while empty. Both non-empty → nested under **Open Sessions** |
 | `terminalSessions.showActivityFolder` | `true` | Show the pinned **Recent Sessions** folder (flat recency list) at the top of each workspace |
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
+| `terminalSessions.showNotesFolder` | `true` | Show the pinned **Notes** folder (sessions carrying a note, most recently edited first); hidden while no note exists |
 | `terminalSessions.tabStateText` | `"on"` | Write the agent's state into the native terminal tab description: a spinner while it works, one mark once it is your turn. Needs `${progress}` in `terminal.integrated.tabs.description` (the extension offers to add it) |
 | `terminalSessions.tabStateClear` | `"seen"` | When a finished session's tab mark leaves: `seen` — until your next visit to that terminal after the finish, or Dismiss (every finish gets the mark, even one you watched); `timer` — 30 minutes after it finished. Also in the view's `⋯` menu |
 | `terminalSessions.tabStateStyle` | `"blue"` | Glyph set for that state: `blue` 🔵🟢, `dark` ⚫🟢, `glyphs` `⟳✓⚠✗`, or `words` (`running` / `done 2m` / `needs you 12m`) |
