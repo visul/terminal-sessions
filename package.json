@@ -827,11 +827,13 @@
       },
       {
         "command": "terminalSessions.enableNotesFolder",
-        "title": "Terminal Sessions: Show Notes Folder"
+        "title": "Enable Notes Folder",
+        "category": "Terminal Sessions"
       },
       {
         "command": "terminalSessions.disableNotesFolder",
-        "title": "Terminal Sessions: Hide Notes Folder"
+        "title": "Disable Notes Folder",
+        "category": "Terminal Sessions"
       }
     ],
     "menus": {
@@ -1007,6 +1009,14 @@
         {
           "command": "terminalSessions.deleteNote",
           "when": "false"
+        },
+        {
+          "command": "terminalSessions.enableNotesFolder",
+          "when": "!terminalSessions.notesFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.disableNotesFolder",
+          "when": "terminalSessions.notesFolderEnabled"
         }
       ],
       "explorer/context": [
@@ -1269,12 +1279,12 @@
         {
           "command": "terminalSessions.disableNotesFolder",
           "when": "view == terminalSessions.sessions && terminalSessions.notesFolderEnabled",
-          "group": "2_folders@0.2"
+          "group": "2_folders@-1"
         },
         {
           "command": "terminalSessions.enableNotesFolder",
           "when": "view == terminalSessions.sessions && !terminalSessions.notesFolderEnabled",
-          "group": "2_folders@0.2"
+          "group": "2_folders@-1"
         }
       ],
       "view/item/context": [

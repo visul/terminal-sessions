@@ -101,6 +101,10 @@ interface BgAgentCache {
   description?: string;
   model?: string;
   teammate?: boolean;
+  /** Whether agent-<id>.meta.json has ever parsed. While false, the sidecar is
+   *  re-read on later ticks even though the jsonl is unchanged: meta can land
+   *  after the transcript, and `teammate` is what decides idle vs done. */
+  metaSeen?: boolean;
   lastText: string;
   lastToolName?: string;
   lastToolInput?: string;
@@ -804,6 +808,11 @@ export function scanBackgroundAgents(state: TailState): boolean {
   for (const entry of entries) {
     // `agent-a<16 hex>.jsonl` for Task subagents, `agent-a<name>-<16 hex>.jsonl`
     // for named teammates — so the id class has to allow hyphens/underscores.
+    // Deliberately loose rather than pinned to `a…<16 hex>`: an unknown file in
+    // here renders as an agent with no data (harmless), whereas a tightened
+    // pattern that stops matching a future id shape makes real agents vanish
+    // from the sidebar with no symptom. That second failure is the one this
+    // regex was just fixed for.
     const m = /^agent-([0-9A-Za-z][0-9A-Za-z_-]*)\.jsonl$/.exec(entry);
     if (!m) continue;
     const agentId = m[1];
@@ -818,10 +827,24 @@ export function scanBackgroundAgents(state: TailState): boolean {
     let description: string | undefined;
     let model: string | undefined;
     let teammate = false;
+    let metaSeen = false;
     let lastText = '';
     let lastToolName: string | undefined;
     let lastToolInput: string | undefined;
     let pendingToolId: string | undefined;
+
+    // Reads agent-<id>.meta.json into the locals above. Returns whether it
+    // parsed, so a sidecar that does not exist yet can be retried later.
+    const readMeta = (): boolean => {
+      try {
+        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        agentType = typeof meta.agentType === 'string' ? meta.agentType : agentType;
+        description = typeof meta.description === 'string' ? meta.description : description;
+        if (typeof meta.model === 'string' && meta.model) model = meta.model;
+        teammate = meta.taskKind === 'in_process_teammate';
+        return true;
+      } catch { return false; }
+    };
 
     const cached = statCache.get(agentId);
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
@@ -836,18 +859,20 @@ export function scanBackgroundAgents(state: TailState): boolean {
       lastToolName = cached.lastToolName;
       lastToolInput = cached.lastToolInput;
       pendingToolId = cached.pendingToolId;
+      metaSeen = cached.metaSeen === true;
+      // The cache key is the JSONL's mtime+size, but the meta sidecar is a
+      // separate file that can be written after it. Without this retry an
+      // agent whose meta landed late (or whose jsonl went quiet immediately)
+      // would keep the fallback `teammate = false` forever, and teammate is
+      // what decides idle vs done.
+      if (!metaSeen && readMeta()) {
+        metaSeen = true;
+        statCache.set(agentId, { ...cached, agentType, description, model, teammate, metaSeen: true });
+      }
     } else {
-      // Read meta once per change (cheap, tiny files).
-      try {
-        const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-        agentType = typeof meta.agentType === 'string' ? meta.agentType : undefined;
-        description = typeof meta.description === 'string' ? meta.description : undefined;
-        // Spawn metadata records the model as the user WROTE it ("sonnet",
-        // "claude-opus-5", "claude-fable-5-1[1m]") and only for teammates; the
-        // transcript below overrides it with the id the API actually answered on.
-        if (typeof meta.model === 'string' && meta.model) model = meta.model;
-        teammate = meta.taskKind === 'in_process_teammate';
-      } catch { /* no meta yet — fall back to undefined */ }
+      // Read meta once per change (cheap, tiny files). A miss is remembered so
+      // the cache-hit path above can retry a sidecar that has not landed yet.
+      metaSeen = readMeta();
 
       // Walk the whole agent file to find the last text and outstanding tool.
       // Background-agent jsonls are typically 50-200KB and read fast.
@@ -896,6 +921,7 @@ export function scanBackgroundAgents(state: TailState): boolean {
         description,
         model,
         teammate,
+        metaSeen,
         lastText,
         lastToolName,
         lastToolInput,
@@ -926,8 +952,12 @@ export function scanBackgroundAgents(state: TailState): boolean {
       teammate: teammate || undefined,
       viaDir: true,
       lastActivityAt: new Date(stat.mtimeMs),
-      currentTool: newState === 'done' ? undefined : lastToolName,
-      currentToolInput: newState === 'done' ? undefined : lastToolInput,
+      // Only an UNRESOLVED tool_use is a current tool. lastToolName survives its
+      // own tool_result (it is what the 'tool' state renders), so keying off it
+      // directly left a finished agent — idle teammates especially — showing a
+      // tool it stopped running long ago.
+      currentTool: pendingToolId ? lastToolName : undefined,
+      currentToolInput: pendingToolId ? lastToolInput : undefined,
       lastMessage: lastText ? compactPreview(lastText) : undefined,
       state: newState,
       startedAt: existing?.startedAt || new Date(stat.birthtimeMs || stat.mtimeMs),
@@ -945,6 +975,9 @@ export function scanBackgroundAgents(state: TailState): boolean {
         || existing.agentType !== snap.agentType
         || existing.description !== snap.description
         || existing.model !== snap.model
+        // A meta sidecar that landed late flips this without moving anything
+        // else, and it decides idle vs done — so it has to count as a change.
+        || existing.teammate !== snap.teammate
         || existing.lastActivityAt?.getTime() !== snap.lastActivityAt?.getTime()) {
       state.subagentMap.set(agentId, snap);
       changed = true;

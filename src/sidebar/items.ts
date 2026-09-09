@@ -13,6 +13,13 @@ import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
  *  ellipsised at the TAIL — so only the head is guaranteed to stay visible. */
 export const NOTE_MARK = '\u270E';
 
+/** Escapes the markdown metacharacters that can break a tooltip's own layout.
+ *  For text spliced into a MarkdownString that must keep its own formatting;
+ *  plain body text goes through MarkdownString.appendText instead. */
+function escapeMarkdown(text: string): string {
+  return text.replace(/[\\`*_{}[\]()#+\-.!|>~]/g, '\\$&');
+}
+
 /**
  * User-defined folder within a workspace.
  *   - kind 'group': holds sessions that share a groupId.
@@ -724,12 +731,19 @@ export function buildClaudeDetails(snap: ClaudeSnapshot, contextPctAlert: number
 
 /** `claude-opus-4-7` → `opus-4.7`, `claude-sonnet-5` → `sonnet-5`,
  *  `claude-fable-5-1[1m]` → `fable-5.1`, `claude-haiku-4-5-20251001` →
- *  `haiku-4.5`. Aliases a spawn recorded verbatim ("sonnet") pass through. */
+ *  `haiku-4.5`, `claude-3-5-sonnet-20241022` → `sonnet-3.5`,
+ *  `claude-3-opus-20240229` → `opus-3`. Aliases a spawn recorded verbatim
+ *  ("sonnet") pass through. */
 function shortenModel(m: string): string {
   const out = m
     .replace(/^claude-/i, '')
     .replace(/\[.*$/, '')
     .replace(/-\d{8}$/, '')                      // trailing release date
+    // The 3.x ids put the version FIRST (`3-5-sonnet`), everything since puts
+    // it last (`opus-4-7`). Normalise the old shape to the current one before
+    // the trailing-pair rule, which only ever matches at the end.
+    .replace(/^(\d{1,2})-(\d{1,2})-(.+)$/, '$3-$1.$2')
+    .replace(/^(\d{1,2})-([A-Za-z].*)$/, '$2-$1')
     .replace(/-(\d{1,2})-(\d{1,2})$/, '-$1.$2'); // version pair, not a date
   return out || m;
 }
@@ -969,11 +983,14 @@ export class NoteTreeItem extends vscode.TreeItem {
     const first = row.text.split('\n').map(l => l.trim()).find(l => l.length > 0) || '';
     this.description = first.length > 60 ? `${first.slice(0, 59)}…` : first;
     this.contextValue = 'sessionNote';
-    this.tooltip = new vscode.MarkdownString(
-      `**${s.label || `Session #${s.tabId}`}**${s.stopped ? ' _(stopped)_' : ''}\n\n`
-      + `${row.text.length > 2000 ? `${row.text.slice(0, 2000)}…` : row.text}\n\n`
-      + `_Edited ${humanAge(new Date(row.updatedAt))}_`,
-    );
+    // The note is free text and very likely to contain markdown (a fence, a
+    // `---`, a lone backtick). appendText escapes it, so a stray character
+    // can't swallow the rest of the tooltip.
+    const md = new vscode.MarkdownString();
+    md.appendMarkdown(`**${escapeMarkdown(s.label || `Session #${s.tabId}`)}**${s.stopped ? ' _(stopped)_' : ''}\n\n`);
+    md.appendText(row.text.length > 2000 ? `${row.text.slice(0, 2000)}…` : row.text);
+    md.appendMarkdown(`\n\n_Edited ${humanAge(new Date(row.updatedAt))}_`);
+    this.tooltip = md;
     this.command = {
       command: 'terminalSessions.openNote',
       title: 'Open Note',

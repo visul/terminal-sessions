@@ -146,6 +146,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       // Settings-UI edits must move the ⋯-menu Enable/Disable labels too, not
       // just our own toggle commands.
       if (
+        e.affectsConfiguration('terminalSessions.showNotesFolder') ||
         e.affectsConfiguration('terminalSessions.showFavoritesFolder') ||
         e.affectsConfiguration('terminalSessions.showOpenFolder') ||
         e.affectsConfiguration('terminalSessions.showBackgroundFolder') ||

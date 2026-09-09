@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from '../session-manager';
-import { NoteStore } from '../notes';
+import { NoteStore, noteKey } from '../notes';
 import { getConfig } from '../config';
 import { parseSessionName } from '../workspace-id';
 import { humanAge } from '../util';
@@ -97,6 +97,9 @@ export class NoteViewController {
 }
 
 interface NoteViewState {
+  /** `<wsHash>/<sessionName>` of the session being shown, '' when there is none.
+   *  Echoed back with every edit so a late flush lands on the right note. */
+  key: string;
   hasTarget: boolean;
   title: string;
   subtitle: string;
@@ -114,6 +117,25 @@ interface NoteViewState {
 export class NoteWebviewProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
 
+  /** Keys this view has rendered. An incoming edit is accepted only for one of
+   *  these, so a late flush can be honoured while nothing else can be written. */
+  private readonly postedKeys = new Set<string>();
+
+  /** When this host's textarea last took focus. Two visible hosts show the same
+   *  note, so "which one do I focus" is decided by where the user was typing,
+   *  not by which view id sorts first. */
+  private focusedAt = 0;
+
+  /** Tells the webview to throw away an edit it is still holding for a note
+   *  that has since been deleted (by the delete command, or by a Kill that
+   *  removed the session). Without it the pending flush recreates the note. */
+  discard(key: string): void {
+    if (!this.postedKeys.has(key)) return;
+    void this.view?.webview.postMessage({ type: 'discard', key });
+  }
+
+  get lastFocusedAt(): number { return this.focusedAt; }
+
   /** Whether this host is currently on screen — decides which of the two the
    *  "open note" command focuses. */
   get isVisible(): boolean { return this.view?.visible === true; }
@@ -127,16 +149,30 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
     this.view = view;
     view.webview.options = { enableScripts: true };
     view.webview.html = this.html(view.webview);
-    view.webview.onDidReceiveMessage((msg: { type: string; text?: string }) => {
+    view.webview.onDidReceiveMessage((msg: { type: string; text?: string; key?: string }) => {
       const t = this.controller.target;
       switch (msg.type) {
         case 'ready':
           this.post();
           break;
-        case 'edit':
-          if (t && typeof msg.text === 'string') {
-            this.store.set(t.workspaceHash, t.sessionName, msg.text);
-          }
+        case 'edit': {
+          // The edit carries the key it was TYPED under, not the key that is
+          // current now. A debounced (or blur) flush can land after the active
+          // terminal changed or a different note was pinned; writing it to
+          // whatever the target happens to be by then would file the text under
+          // the wrong session. Only keys this view has actually shown are
+          // accepted, so a stray message can't invent a note.
+          if (typeof msg.text !== 'string' || !msg.key || !this.postedKeys.has(msg.key)) break;
+          const slash = msg.key.indexOf('/');
+          if (slash <= 0) break;
+          this.store.set(msg.key.slice(0, slash), msg.key.slice(slash + 1), msg.text);
+          // Repaint: if the target moved on while that edit was in flight, the
+          // textarea is still showing the old session's text.
+          this.post();
+          break;
+        }
+        case 'focus':
+          this.focusedAt = Date.now();
           break;
         case 'unpin':
           this.controller.unpin();
@@ -148,7 +184,13 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
           break;
       }
     });
-    view.onDidChangeVisibility(() => { if (view.visible) this.post(); });
+    view.onDidChangeVisibility(() => {
+      if (view.visible) { this.post(); return; }
+      // Going hidden. A collapsed webview does not reliably fire blur or
+      // visibilitychange inside the iframe, so ask it directly rather than
+      // hoping; retainContextWhenHidden keeps it alive to answer.
+      void view.webview.postMessage({ type: 'flush' });
+    });
     view.onDidDispose(() => { this.view = undefined; });
     this.post();
   }
@@ -158,9 +200,15 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
    *  while the user is mid-keystroke. */
   post(): void {
     if (!this.view) return;
+    // Another window may have rewritten this note since the last event; a
+    // reload here also fires onDidChange, which is what repaints the peer view.
+    this.store.reloadIfChanged();
     const t = this.controller.target;
     const note = t ? this.store.get(t.workspaceHash, t.sessionName) : undefined;
+    const key = t ? noteKey(t.workspaceHash, t.sessionName) : '';
+    if (key) this.postedKeys.add(key);
     const state: NoteViewState = {
+      key,
       hasTarget: !!t,
       title: t ? t.label : '',
       subtitle: t?.workspaceLabel || '',
@@ -254,30 +302,53 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
   // True between a keystroke and the save that follows it. While set, an
   // incoming state must not overwrite what is being typed.
   let dirty = false;
+  // Which note the textarea is showing, and which one the pending edit was
+  // typed into. They differ exactly when the target moved while typing, which
+  // is the case the key has to survive.
+  let currentKey = '';
+  let pendingKey = '';
 
   function flush() {
     clearTimeout(timer);
     if (!dirty) return;
     dirty = false;
-    vscodeApi.postMessage({ type: 'edit', text: ta.value });
+    vscodeApi.postMessage({ type: 'edit', key: pendingKey, text: ta.value });
   }
 
   ta.addEventListener('input', () => {
     dirty = true;
+    pendingKey = currentKey;
     clearTimeout(timer);
     timer = setTimeout(flush, 400);
   });
+  ta.addEventListener('focus', () => vscodeApi.postMessage({ type: 'focus' }));
   ta.addEventListener('blur', flush);
   window.addEventListener('blur', flush);
+  window.addEventListener('pagehide', flush);
   document.addEventListener('visibilitychange', () => { if (document.hidden) flush(); });
 
   pinBtn.addEventListener('click', () => { flush(); vscodeApi.postMessage({ type: 'unpin' }); });
-  delBtn.addEventListener('click', () => vscodeApi.postMessage({ type: 'delete' }));
+  // Clicking the button blurs the textarea first, so the blur listener already
+  // flushes — but be explicit rather than relying on focus ordering.
+  delBtn.addEventListener('click', () => { flush(); vscodeApi.postMessage({ type: 'delete' }); });
 
   window.addEventListener('message', (e) => {
     const m = e.data;
-    if (!m || m.type !== 'state') return;
+    if (!m) return;
+    if (m.type === 'flush') { flush(); return; }
+    if (m.type === 'discard') {
+      // The note this buffer belongs to was deleted. Saving it now would bring
+      // it back, so drop it instead of racing the deletion.
+      if (m.key === pendingKey || m.key === currentKey) { clearTimeout(timer); dirty = false; }
+      return;
+    }
+    if (m.type !== 'state') return;
     const s = m.state;
+    // Target changed: whatever is half-typed belongs to the PREVIOUS note, so
+    // send it there before the textarea is repointed.
+    const switching = s.key !== currentKey;
+    if (switching) flush();
+    currentKey = s.key;
     document.body.classList.toggle('no-target', !s.hasTarget);
     titleEl.textContent = s.title;
     subEl.textContent = s.subtitle;
@@ -285,7 +356,16 @@ export class NoteWebviewProvider implements vscode.WebviewViewProvider {
     pinBtn.style.display = s.pinned ? '' : 'none';
     pinBtn.classList.toggle('on', s.pinned);
     delBtn.style.display = s.hasNote ? '' : 'none';
-    if (!dirty && ta.value !== s.text) ta.value = s.text;
+    // Never clobber typing in the host the user is actually in. The OTHER host
+    // (both can be open at once, showing the same note) takes the update and
+    // abandons its own stale buffer — its textarea lost focus when the user
+    // moved away, which already flushed whatever was worth keeping.
+    const typingHere = dirty && document.hasFocus() && document.activeElement === ta;
+    if ((switching || !typingHere) && ta.value !== s.text) {
+      clearTimeout(timer);
+      dirty = false;
+      ta.value = s.text;
+    }
   });
 
   vscodeApi.postMessage({ type: 'ready' });
@@ -340,14 +420,31 @@ export function registerNoteViews(
       { webviewOptions: { retainContextWhenHidden: true } }),
     controller.onDidChange(push),
     store.onDidChange(push),
+    // Killing or deleting a session removes its note from inside SessionIndex,
+    // which has no way to reach the editor. Follow the store instead, so a pin
+    // on a session that just went away reverts to "no session selected".
+    store.onDidRemove(({ workspaceHash, sessionName }) => {
+      const key = noteKey(workspaceHash, sessionName);
+      sidebarView.discard(key);
+      panelView.discard(key);
+      controller.forget(workspaceHash, sessionName);
+    }),
     controller,
   );
 
-  // Focus whichever host is already on screen; fall back to the Explorer one so
-  // a click from the tree always lands somewhere visible.
+  // Both hosts can be open at once showing the same note, so "which one do I
+  // focus" is decided by where the user was last typing, then by what is on
+  // screen, and only then by the Explorer default (the panel container may
+  // never have been opened at all).
   const focusView = (): void => {
-    const id = panelView.isVisible && !sidebarView.isVisible ? NOTE_PANEL_VIEW_ID : NOTE_VIEW_ID;
-    void vscode.commands.executeCommand(`${id}.focus`);
+    const candidates: Array<[string, NoteWebviewProvider]> = [
+      [NOTE_VIEW_ID, sidebarView],
+      [NOTE_PANEL_VIEW_ID, panelView],
+    ];
+    const visible = candidates.filter(([, v]) => v.isVisible);
+    const pool = visible.length > 0 ? visible : candidates;
+    const best = pool.reduce((a, b) => (b[1].lastFocusedAt > a[1].lastFocusedAt ? b : a));
+    void vscode.commands.executeCommand(`${best[0]}.focus`);
   };
 
   const open = (arg: unknown): void => {
@@ -376,8 +473,9 @@ export function registerNoteViews(
         'Delete Note',
       );
       if (yes !== 'Delete Note') return;
+      // Unpinning is handled by the onDidRemove subscription above, which also
+      // covers the Kill/Delete path that never reaches this command.
       store.remove(c.workspaceHash, c.sessionName);
-      controller.forget(c.workspaceHash, c.sessionName);
     }),
   );
 

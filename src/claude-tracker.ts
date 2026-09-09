@@ -6,6 +6,10 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { parseSessionName } from './workspace-id';
 import { detectTmuxPath, panePids, listSessions } from './tmux';
+
+/** A subagent whose transcript moved this recently is still running, whatever
+ *  the lead session is doing. Mirrors DONE_AFTER_MS in claude-transcript. */
+const SUBAGENT_ALIVE_MS = 30_000;
 import { readAgentArgv, processTree, collectDescendantPids } from './agents/launch-flags';
 import { readGrokActiveSessions } from './agents/grok/provider';
 import { setOpencodePluginSource } from './agents/opencode/provider';
@@ -16,12 +20,7 @@ import type { AgentRegistry } from './agents/registry';
 import { notify, macosAlert, armToastAction } from './notifications';
 import { classifyOutcome, outcomeIsBad, outcomeLabel, type TurnOutcome } from './outcome';
 import { getConfig } from './config';
-import {
-  TranscriptTailer,
-  TranscriptSnapshot,
-  SubagentSnapshot,
-  SubagentState,
-} from './claude-transcript';
+import { TranscriptTailer, TranscriptSnapshot, SubagentSnapshot, SubagentState } from './claude-transcript';
 
 export type ClaudeState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';
 
@@ -699,12 +698,18 @@ export class ClaudeTracker {
     // crashed mid-Task, user interrupted, etc.). Don't keep the sidebar
     // spinning on those forever — but wait 2 minutes before overriding so
     // short idle windows don't clobber a legitimately running subagent.
-    // Teammates are exempt: they legitimately sit idle between turns.
+    // Teammates are exempt from being marked done: they legitimately sit idle
+    // between turns. Everyone is exempt while their OWN transcript is still
+    // moving — the lead going quiet says nothing about a subagent that wrote a
+    // moment ago, and pinning a genuinely working one to idle for as long as
+    // the lead stays idle is worse than a stale spinner.
+    const stillAlive = (s: SubagentSnapshot): boolean =>
+      !!s.lastActivityAt && Date.now() - s.lastActivityAt.getTime() < SUBAGENT_ALIVE_MS;
     if (snap.state === 'idle' && snap.lastStopAt
         && Date.now() - snap.lastStopAt.getTime() > 120_000
-        && snap.subagents?.some((s) => s.state === 'working' || s.state === 'tool')) {
+        && snap.subagents?.some((s) => (s.state === 'working' || s.state === 'tool') && !stillAlive(s))) {
       snap.subagents = snap.subagents.map((s) =>
-        (s.state === 'working' || s.state === 'tool')
+        ((s.state === 'working' || s.state === 'tool') && !stillAlive(s))
           ? {
               ...s,
               state: (s.teammate ? 'idle' : 'done') as SubagentState,

@@ -211,6 +211,10 @@ class SessionsTreeProvider
       }
       return this.lastWorkspaceItems.get(el.workspaceHash);
     }
+    if (el instanceof NoteTreeItem) {
+      return this.lastNotesFolders.get(el.workspaceHash)
+        ?? this.lastWorkspaceItems.get(el.workspaceHash);
+    }
     if (el instanceof ActiveFolderItem || el instanceof BackgroundFolderItem) {
       return this.lastOpenParents.get(el.workspaceHash) ?? this.lastWorkspaceItems.get(el.workspaceHash);
     }
@@ -307,6 +311,9 @@ class SessionsTreeProvider
   // reveal() the wrapper the Active/Background folders nest under (when both
   // rendered); absent → those folders sit at the workspace root.
   private lastOpenParents = new Map<string, OpenFolderItem>();
+  // Same purpose for the Notes folder: getParent() must hand reveal() the exact
+  // container instance a note row lives in.
+  private lastNotesFolders = new Map<string, NotesFolderItem>();
 
   private async resolveOpenName(t: vscode.Terminal): Promise<string | undefined> {
     const hit = this.openNameCache.get(t);
@@ -339,7 +346,12 @@ class SessionsTreeProvider
         if (!session || !note) continue;
         rows.push({ session, text: note.text, updatedAt: note.updatedAt });
       }
-      if (rows.length > 0) out.push(new NotesFolderItem(hash, rows));
+      this.lastNotesFolders.delete(hash);
+      if (rows.length > 0) {
+        const folder = new NotesFolderItem(hash, rows);
+        this.lastNotesFolders.set(hash, folder);
+        out.push(folder);
+      }
     }
     if (cfg.showFavoritesFolder) {
       const favs = activityOrder(allWsSessions.filter(s => s.favorite));

@@ -491,8 +491,10 @@ export class SessionIndex {
     const meta = ws.sessions[sessionName];
     const setId = meta?.branchSetId;
     delete ws.sessions[sessionName];
-    // The session's note dies with it — Kill and Delete both land here, and a
-    // note with no row to hang off is unreachable anyway.
+    // The session's note dies with it. Both Kill and Delete land here, and the
+    // note cannot follow either way: restoreKilled brings a session back under
+    // a NEW name (see cmdRestoreKilled), and notes are keyed by name, so a note
+    // kept for the graveyard would be orphaned permanently rather than restored.
     noteStore()?.remove(hash, sessionName);
     if (setId) this.dissolveBranchSetIfOrphaned(ws, setId);
     // Graveyard: keep a snapshot so Sessions Killed can list it and Restore can
