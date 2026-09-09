@@ -19,6 +19,8 @@ import { registerTerminalLinks } from './terminal-links';
 import { registerClipboardBridge } from './clipboard-bridge';
 import { maybeWarnMouseEnv } from './mouse-clicks-guard';
 import { registerTabState } from './tab-state';
+import { initNoteStore } from './notes';
+import { registerNoteViews } from './sidebar/note-view';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -33,6 +35,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   tmuxMod.setRemoteHost(!!vscode.env.remoteName);
 
   const index = new SessionIndex();
+  // Before anything that can remove a session: removeSession() drops the note too.
+  const notes = initNoteStore();
+  ctx.subscriptions.push(notes);
   // Self-heal branch sets orphaned by a Kill (or any past path) that left a lone
   // survivor still linked — otherwise it stays chip-colored with no peer.
   index.pruneOrphanedBranchSets();
@@ -54,7 +59,17 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Remote-SSH only: mirror tmux copies to the local clipboard with correct UTF-8
   // (bypasses the OSC 52 path Cursor mangles). No-op on local hosts.
   registerClipboardBridge(ctx);
-  registerSidebar(ctx, index, claudeTracker);
+  registerSidebar(ctx, index, claudeTracker, notes);
+  const noteController = registerNoteViews(ctx, index, notes);
+  // Seed the note editor from the terminal that is already active at startup;
+  // without this it stays empty until the first tab switch.
+  void (async () => {
+    const t = vscode.window.activeTerminal;
+    if (!t) return;
+    noteController.setFollowed(
+      await resolveTmuxNameForTerminalLive(t, index, getConfig().sessionPrefix),
+    );
+  })();
   // Agent state (running / finished / blocked / failed) in the NATIVE terminal tab
   // description. On by default, but silent until `${sequence}` is in the user's
   // tab-description template (offered once).
@@ -94,15 +109,16 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
       // which sets the key false); does its own resolve, independent of the MRU
       // logic below.
       void syncActiveTerminalContext(index);
-      if (!t) { claudeTracker.setActiveTmuxSession(undefined); return; }
+      if (!t) { claudeTracker.setActiveTmuxSession(undefined); noteController.setFollowed(undefined); return; }
       void (async () => {
         // Robust to reload-restored (⚠) tabs (trimmed shellArgs) AND renamed
         // tabs (no #tabId in the label) — falls back to the live process via PID.
         const name = await resolveTmuxNameForTerminalLive(t, index, getConfig().sessionPrefix);
         if (gen !== activeResolveGen) return; // superseded by a newer tab switch
-        if (!name) { claudeTracker.setActiveTmuxSession(undefined); return; }
+        if (!name) { claudeTracker.setActiveTmuxSession(undefined); noteController.setFollowed(undefined); return; }
         // Focusing the tab "reads" its unread result.
         claudeTracker.setActiveTmuxSession(name);
+        noteController.setFollowed(name);
         const parsed = parseSessionName(name, getConfig().sessionPrefix);
         if (!parsed) return;
         index.setSessionLastActive(parsed.hash, name);

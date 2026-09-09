@@ -275,6 +275,11 @@
           "default": "all",
           "description": "Filter the sidebar by session state. Click the filter icon in the sidebar title bar to switch interactively."
         },
+        "terminalSessions.showNotesFolder": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the pinned “Notes” folder at the top of each workspace: every session that has a note, most recently edited first. Hidden while no note exists. Clicking a row opens the note without starting the session."
+        },
         "terminalSessions.showFavoritesFolder": {
           "type": "boolean",
           "default": true,
@@ -804,6 +809,29 @@
         "title": "Restore Session",
         "category": "Terminal Sessions",
         "icon": "$(debug-restart)"
+      },
+      {
+        "command": "terminalSessions.editNote",
+        "title": "Terminal Sessions: Session Note",
+        "icon": "$(note)"
+      },
+      {
+        "command": "terminalSessions.openNote",
+        "title": "Open Session Note",
+        "icon": "$(note)"
+      },
+      {
+        "command": "terminalSessions.deleteNote",
+        "title": "Delete Session Note",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "terminalSessions.enableNotesFolder",
+        "title": "Terminal Sessions: Show Notes Folder"
+      },
+      {
+        "command": "terminalSessions.disableNotesFolder",
+        "title": "Terminal Sessions: Hide Notes Folder"
       }
     ],
     "menus": {
@@ -971,6 +999,14 @@
         {
           "command": "terminalSessions.disableKilledFolder",
           "when": "terminalSessions.killedFolderEnabled"
+        },
+        {
+          "command": "terminalSessions.openNote",
+          "when": "false"
+        },
+        {
+          "command": "terminalSessions.deleteNote",
+          "when": "false"
         }
       ],
       "explorer/context": [
@@ -1229,6 +1265,16 @@
           "command": "terminalSessions.tabStateClearSeen",
           "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled && !terminalSessions.tabStateClearSeen",
           "group": "3_tabs@1"
+        },
+        {
+          "command": "terminalSessions.disableNotesFolder",
+          "when": "view == terminalSessions.sessions && terminalSessions.notesFolderEnabled",
+          "group": "2_folders@0.2"
+        },
+        {
+          "command": "terminalSessions.enableNotesFolder",
+          "when": "view == terminalSessions.sessions && !terminalSessions.notesFolderEnabled",
+          "group": "2_folders@0.2"
         }
       ],
       "view/item/context": [
@@ -1511,6 +1557,35 @@
           "command": "terminalSessions.disableKilledFolder",
           "when": "view == terminalSessions.sessions && viewItem == killedFolder",
           "group": "9_manage@1"
+        },
+        {
+          "command": "terminalSessions.editNote",
+          "when": "view == terminalSessions.sessions && viewItem =~ /^session(\\.stopped)?(\\.fav)?(\\.muted)?(\\.forkable)?(\\.branched)?(\\.locked)?(\\.yoloO(n|ff))?(\\.attn)?$/",
+          "group": "8_note@0"
+        },
+        {
+          "command": "terminalSessions.deleteNote",
+          "when": "view == terminalSessions.sessions && viewItem == sessionNote",
+          "group": "inline@0"
+        },
+        {
+          "command": "terminalSessions.deleteNote",
+          "when": "view == terminalSessions.sessions && viewItem == sessionNote",
+          "group": "8_note@1"
+        },
+        {
+          "command": "terminalSessions.disableNotesFolder",
+          "when": "view == terminalSessions.sessions && viewItem == notesFolder",
+          "group": "9_manage@1"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "panel": [
+        {
+          "id": "terminalSessionsNote",
+          "title": "Terminal Session Note",
+          "icon": "media/icon.svg"
         }
       ]
     },
@@ -1520,6 +1595,20 @@
           "id": "terminalSessions.sessions",
           "name": "Terminal Sessions",
           "icon": "media/icon.svg"
+        },
+        {
+          "id": "terminalSessions.note",
+          "name": "Session Note",
+          "type": "webview",
+          "icon": "media/icon.svg",
+          "visibility": "collapsed"
+        }
+      ],
+      "terminalSessionsNote": [
+        {
+          "id": "terminalSessions.notePanel",
+          "name": "Terminal Session Note",
+          "type": "webview"
         }
       ]
     },

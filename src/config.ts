@@ -46,6 +46,7 @@ export interface Config {
   claudeNoFlicker: boolean;
   revealActiveSession: boolean;
   confirmYoloSwitch: boolean;
+  showNotesFolder: boolean;
   showFavoritesFolder: boolean;
   showOpenFolder: boolean;
   showBackgroundFolder: boolean;
@@ -109,6 +110,7 @@ export function getConfig(): Config {
     })(),
     revealActiveSession: c.get('revealActiveSession', true),
     confirmYoloSwitch: c.get('confirmYoloSwitch', true),
+    showNotesFolder: c.get('showNotesFolder', true),
     showFavoritesFolder: c.get('showFavoritesFolder', true),
     showOpenFolder: c.get('showOpenFolder', true),
     showBackgroundFolder: c.get('showBackgroundFolder', true),
@@ -216,6 +218,8 @@ export const COMMAND = {
   revealSessionInSidebar: 'terminalSessions.revealSessionInSidebar',
   copySessionId: 'terminalSessions.copySessionId',
   copySessionPath: 'terminalSessions.copySessionPath',
+  enableNotesFolder: 'terminalSessions.enableNotesFolder',
+  disableNotesFolder: 'terminalSessions.disableNotesFolder',
   enableFavoritesFolder: 'terminalSessions.enableFavoritesFolder',
   disableFavoritesFolder: 'terminalSessions.disableFavoritesFolder',
   enableOpenFolder: 'terminalSessions.enableOpenFolder',

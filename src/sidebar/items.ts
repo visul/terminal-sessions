@@ -6,6 +6,13 @@ import { SubagentSnapshot } from '../claude-transcript';
 import { outcomeLabel } from '../outcome';
 import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
 
+/** Marker prefixed to a session row's label when that session has a note.
+ *  Deliberately a label PREFIX and not a FileDecoration badge: a row owns a
+ *  single resourceUri (already spent on stopped/branch, see config.ts), a
+ *  decoration badge holds two characters at most, and long session labels get
+ *  ellipsised at the TAIL — so only the head is guaranteed to stay visible. */
+export const NOTE_MARK = '\u270E';
+
 /**
  * User-defined folder within a workspace.
  *   - kind 'group': holds sessions that share a groupId.
@@ -241,8 +248,12 @@ export class SessionTreeItem extends vscode.TreeItem {
     // True when this row renders inside a fork cluster: the cluster header already
     // carries the ⑂ meaning, so the per-row chip is suppressed to cut redundancy.
     public readonly inCluster = false,
+    // True when this session carries a note; prefixes the label with ✎ so you
+    // can spot it without expanding anything.
+    public readonly hasNote = false,
   ) {
-    const label = session.label || `#${session.tabId}`;
+    const baseLabel = session.label || `#${session.tabId}`;
+    const label = hasNote ? `${NOTE_MARK} ${baseLabel}` : baseLabel;
     const hasActiveClaude =
       claude !== undefined && claude.state !== 'none';
     const hasAnyClaudeData =
@@ -915,5 +926,58 @@ export class KilledSessionItem extends vscode.TreeItem {
       + (convs ? ` · ${convs} recorded conversation${convs === 1 ? '' : 's'}` : '')
       + '\n\nRight-click → Restore Session to bring it back; Start then resumes its conversation.',
     );
+  }
+}
+
+/** Pinned virtual folder "Notes": every session in this workspace that carries
+ *  a note, most recently edited first. Sits above Favorite Sessions and is
+ *  hidden entirely while no note exists, so it costs nothing until used.
+ *  Reading a note from here needs neither a running session nor a terminal tab. */
+export class NotesFolderItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly entries: NoteRow[],
+  ) {
+    super('Notes', vscode.TreeItemCollapsibleState.Collapsed);
+    this.id = `notef:${workspaceHash}`;
+    this.iconPath = new vscode.ThemeIcon('note', new vscode.ThemeColor('charts.blue'));
+    this.description = String(entries.length);
+    this.contextValue = 'notesFolder';
+    this.tooltip = 'Sessions with a note. Click a row to read or edit it — the session does not need to be running.';
+  }
+}
+
+/** A session + its note, as handed to the Notes folder by the tree provider. */
+export interface NoteRow {
+  session: SessionInfo;
+  text: string;
+  updatedAt: number;
+}
+
+/** One note row inside the Notes folder. Clicking it pins the note editor to
+ *  that session (see terminalSessions.openNote) rather than touching tmux. */
+export class NoteTreeItem extends vscode.TreeItem {
+  constructor(
+    public readonly workspaceHash: string,
+    public readonly row: NoteRow,
+  ) {
+    const s = row.session;
+    super(`${NOTE_MARK} ${s.label || `#${s.tabId}`}`, vscode.TreeItemCollapsibleState.None);
+    this.id = `note:${workspaceHash}:${s.name}`;
+    this.iconPath = new vscode.ThemeIcon('note',
+      new vscode.ThemeColor(s.stopped ? 'disabledForeground' : 'charts.blue'));
+    const first = row.text.split('\n').map(l => l.trim()).find(l => l.length > 0) || '';
+    this.description = first.length > 60 ? `${first.slice(0, 59)}…` : first;
+    this.contextValue = 'sessionNote';
+    this.tooltip = new vscode.MarkdownString(
+      `**${s.label || `Session #${s.tabId}`}**${s.stopped ? ' _(stopped)_' : ''}\n\n`
+      + `${row.text.length > 2000 ? `${row.text.slice(0, 2000)}…` : row.text}\n\n`
+      + `_Edited ${humanAge(new Date(row.updatedAt))}_`,
+    );
+    this.command = {
+      command: 'terminalSessions.openNote',
+      title: 'Open Note',
+      arguments: [{ workspaceHash, sessionName: s.name }],
+    };
   }
 }

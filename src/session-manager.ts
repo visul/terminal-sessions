@@ -6,6 +6,7 @@ import type { AgentId } from './agents/types';
 import { isForkableAgent, yoloFlagsFor, yoloSpecFor } from './agents/registry';
 import * as tmux from './tmux';
 import { parseSessionName } from './workspace-id';
+import { noteStore } from './notes';
 
 /** Number of contributed branch-chip theme colors (terminalSessions.branchColor1..N).
  *  New sets cycle through them round-robin. Keep in sync with contributes.colors. */
@@ -490,6 +491,9 @@ export class SessionIndex {
     const meta = ws.sessions[sessionName];
     const setId = meta?.branchSetId;
     delete ws.sessions[sessionName];
+    // The session's note dies with it — Kill and Delete both land here, and a
+    // note with no row to hang off is unreachable anyway.
+    noteStore()?.remove(hash, sessionName);
     if (setId) this.dissolveBranchSetIfOrphaned(ws, setId);
     // Graveyard: keep a snapshot so Sessions Killed can list it and Restore can
     // bring it back. Entries with nothing restorable (no label, no conversation

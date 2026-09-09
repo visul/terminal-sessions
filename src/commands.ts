@@ -366,6 +366,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.copySessionId, (item?: SessionTreeItem | vscode.Terminal) => cmdCopySessionId(index, item)),
     vscode.commands.registerCommand(COMMAND.copySessionPath, (item?: SessionTreeItem | vscode.Terminal) => cmdCopySessionPath(index, registry, item)),
     vscode.commands.registerCommand(COMMAND.revealSessionInSidebar, (arg?: unknown) => cmdRevealSessionInSidebar(index, arg)),
+    vscode.commands.registerCommand(COMMAND.enableNotesFolder, () => cmdSetSpecialFolder('showNotesFolder', true)),
+    vscode.commands.registerCommand(COMMAND.disableNotesFolder, () => cmdSetSpecialFolder('showNotesFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', true)),
     vscode.commands.registerCommand(COMMAND.disableFavoritesFolder, () => cmdSetSpecialFolder('showFavoritesFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableOpenFolder, () => cmdSetSpecialFolder('showOpenFolder', true)),
@@ -3134,6 +3136,7 @@ async function cmdRestartMany(
  *  and whenever the settings change (incl. edits in the Settings UI). */
 export async function syncSpecialFolderContexts(): Promise<void> {
   const cfg = getConfig();
+  await vscode.commands.executeCommand('setContext', 'terminalSessions.notesFolderEnabled', cfg.showNotesFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.favoritesFolderEnabled', cfg.showFavoritesFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.openFolderEnabled', cfg.showOpenFolder);
   await vscode.commands.executeCommand('setContext', 'terminalSessions.backgroundFolderEnabled', cfg.showBackgroundFolder);
@@ -3155,7 +3158,7 @@ async function cmdSetTabStateOption(key: 'tabStateText' | 'tabStateClear', value
   await syncSpecialFolderContexts();
 }
 
-async function cmdSetSpecialFolder(key: 'showFavoritesFolder' | 'showOpenFolder' | 'showBackgroundFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
+async function cmdSetSpecialFolder(key: 'showNotesFolder' | 'showFavoritesFolder' | 'showOpenFolder' | 'showBackgroundFolder' | 'showActivityFolder' | 'showKilledFolder', value: boolean): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
   // Write to the scope that currently defines the value: a workspace override
   // would shadow a Global write and make the toggle appear dead.

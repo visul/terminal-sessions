@@ -2,7 +2,8 @@ import * as vscode from 'vscode';
 import { SessionIndex, enrichSessions, groupByWorkspace } from '../session-manager';
 import * as tmux from '../tmux';
 import { getConfig, setSortMode, VIEW_ID, SidebarSortMode, STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
-import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, buildClaudeDetails } from './items';
+import { WorkspaceTreeItem, GroupTreeItem, BranchClusterItem, SessionTreeItem, SubagentTreeItem, SubagentsFolderItem, FavoritesFolderItem, OpenFolderItem, ActiveFolderItem, BackgroundFolderItem, ActivityFolderItem, KilledFolderItem, KilledSessionItem, CleanupNoticeItem, FilterHeaderItem, NotesFolderItem, NoteTreeItem, NoteRow, buildClaudeDetails } from './items';
+import { NoteStore } from '../notes';
 import { shouldShowCleanupNotice, readClaudeCleanupDays, countExpiringTranscripts, ExpiryInfo } from '../notices';
 import { sessionNameForTerminal, resolveTmuxNameForTerminalLive } from '../profile-provider';
 import { SessionInfo } from '../types';
@@ -133,6 +134,7 @@ class SessionsTreeProvider
   constructor(
     private index: SessionIndex,
     private claude: ClaudeTracker,
+    private notes: NoteStore,
   ) {}
 
   // Live text filter (the sidebar funnel button). While set, the root renders a
@@ -213,7 +215,8 @@ class SessionsTreeProvider
       return this.lastOpenParents.get(el.workspaceHash) ?? this.lastWorkspaceItems.get(el.workspaceHash);
     }
     if (el instanceof OpenFolderItem || el instanceof FavoritesFolderItem
-      || el instanceof ActivityFolderItem || el instanceof KilledFolderItem) {
+      || el instanceof ActivityFolderItem || el instanceof KilledFolderItem
+      || el instanceof NotesFolderItem) {
       return this.lastWorkspaceItems.get(el.workspaceHash);
     }
     return undefined;
@@ -281,6 +284,7 @@ class SessionsTreeProvider
   ): SessionTreeItem {
     const item = new SessionTreeItem(
       s, this.claude.getSnapshot(s.name), cfg.claudeSidebarDetails, cfg.contextWarnPct, inCluster,
+      this.notes.has(s.workspaceHash, s.name),
     );
     // Mirror rows (Sessions Activity) skip the cache: reveal/getParent must
     // keep resolving to the canonical row inside its group.
@@ -321,6 +325,22 @@ class SessionsTreeProvider
     cfg: ReturnType<typeof getConfig>,
   ): Promise<vscode.TreeItem[]> {
     const out: vscode.TreeItem[] = [];
+    // Notes sits above everything else: it's the only folder that is empty
+    // (and therefore absent) unless the user deliberately wrote something, so
+    // when it IS there it's the row you were looking for.
+    if (cfg.showNotesFolder) {
+      const byName = new Map(allWsSessions.map(s => [s.name, s]));
+      const rows: NoteRow[] = [];
+      for (const name of this.notes.namesWithNotes(hash)) {
+        const session = byName.get(name);
+        const note = this.notes.get(hash, name);
+        // A note whose session is gone (killed, or from another machine's index)
+        // has no row to render; deleteNote/removeSession clear those normally.
+        if (!session || !note) continue;
+        rows.push({ session, text: note.text, updatedAt: note.updatedAt });
+      }
+      if (rows.length > 0) out.push(new NotesFolderItem(hash, rows));
+    }
     if (cfg.showFavoritesFolder) {
       const favs = activityOrder(allWsSessions.filter(s => s.favorite));
       if (favs.length > 0) out.push(new FavoritesFolderItem(hash, favs));
@@ -517,6 +537,9 @@ class SessionsTreeProvider
 
   async getChildren(el?: vscode.TreeItem): Promise<vscode.TreeItem[]> {
     const cfg = getConfig();
+    // Pick up notes another VS Code window wrote (one statSync). Cheap enough
+    // to do on every pass, and it keeps the ✎ markers honest across windows.
+    if (!el) this.notes.reloadIfChanged();
     // Only the container levels (root, workspace, group) need the live session
     // list; session-detail and subagent rows below don't. Skipping the tmux
     // subprocess + enrichment for those leaf branches is what stops an expanded
@@ -631,6 +654,9 @@ class SessionsTreeProvider
         ...(await this.specialFolders(el.workspaceHash, allWsSessions, cfg)),
         ...this.renderContainer(el.workspaceHash, undefined, allWsSessions, cfg),
       ];
+    }
+    if (el instanceof NotesFolderItem) {
+      return el.entries.map(r => new NoteTreeItem(el.workspaceHash, r));
     }
     if (el instanceof FavoritesFolderItem) {
       // Mirror rows, same rules as the Activity folder below: full actions,
@@ -990,8 +1016,9 @@ export function registerSidebar(
   ctx: vscode.ExtensionContext,
   index: SessionIndex,
   claude: ClaudeTracker,
+  notes: NoteStore,
 ): void {
-  provider = new SessionsTreeProvider(index, claude);
+  provider = new SessionsTreeProvider(index, claude, notes);
   // Disable the built-in Collapse All — it folds the workspace folders too,
   // which hides every session. We expose a custom "Collapse Sessions" that
   // folds session detail rows (Claude inline detail + Agents folder) and
@@ -1011,6 +1038,9 @@ export function registerSidebar(
     vscode.window.registerFileDecorationProvider(new BranchSetDecorationProvider()),
   );
   treeViewRef = treeView;
+  // A note written (or deleted) anywhere — this window's editor, the delete
+  // command, another window — moves both the ✎ markers and the Notes folder.
+  ctx.subscriptions.push(notes.onDidChange(() => provider?.refresh()));
   // Track which containers the user has open so the tab-focus highlight can
   // skip sessions that aren't currently on-screen (it must never expand them).
   ctx.subscriptions.push(
