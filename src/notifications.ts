@@ -407,12 +407,19 @@ async function macosNotify(opts: NotifyOptions, defaultSound: string): Promise<v
   const tn = notifier?.bin;
   const bundleId = tn ? await detectBundleId() : undefined;
   if (tn && bundleId) {
+    const state = notifier?.branded ? opts.subtitle : badged(opts);
+    // terminal-notifier 3 rejects an empty `-message`: it prints its usage
+    // banner, exits 1 and posts nothing — which is every notification for a
+    // turn that simply finished. When there is no detail line, the state moves
+    // into the message and the subtitle is dropped; the banner renders exactly
+    // the same two lines on both 2.x and 3.x.
+    const message = opts.body || state || opts.title;
+    const subtitle = opts.body ? state : '';
     const args = [
       '-title', opts.title,
-      '-message', opts.body,
+      '-message', message,
       '-sound', sound,
     ];
-    const subtitle = notifier?.branded ? opts.subtitle : badged(opts);
     if (subtitle) args.push('-subtitle', subtitle);
     // One live banner per session: same group id replaces the standing one.
     // A timeout needs a handle to remove by, so give an ungrouped banner a
