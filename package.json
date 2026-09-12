@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.32.0",
+  "version": "0.33.0",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -37,6 +37,7 @@
     "resume"
   ],
   "activationEvents": [
+    "onUri",
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
@@ -109,10 +110,17 @@
           "enum": [
             "auto",
             "always",
+            "both",
             "never"
           ],
+          "enumDescriptions": [
+            "Native banner when the window is unfocused, in-editor toast when it is focused.",
+            "Always a native banner. Nothing inside the editor — on a wide display the banner is far from where you are working.",
+            "Always a native banner, plus a transient in-editor toast while the window has focus.",
+            "Never native: only the in-editor toast."
+          ],
           "default": "auto",
-          "description": "macOS Notification Center behavior. auto = native when Cursor unfocused, toast when focused; always = always native; never = only VS Code toast."
+          "markdownDescription": "Where notifications are delivered. `auto` = native banner when the editor is unfocused, in-editor toast when focused; `always` = native banner only; `both` = native banner *and* a transient toast while the window has focus, for wide displays where the corner of the screen is easy to miss; `never` = toast only."
         },
         "terminalSessions.notificationSound": {
           "type": "string",
@@ -179,10 +187,40 @@
           "default": "Sosumi",
           "description": "Sound for `Claude needs approval` waiting notifications. Defaults to Sosumi so it is distinct from the `done` sound."
         },
+        "terminalSessions.notificationGrouping": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Keep at most one live banner per session: a new notification replaces the standing one, and it is withdrawn once you open (or dismiss) that session. Requires `terminal-notifier` (`brew install terminal-notifier`); without it macOS cannot recall a delivered notification."
+        },
+        "terminalSessions.bannerTimeoutSeconds": {
+          "type": "number",
+          "default": 0,
+          "markdownDescription": "Withdraw a native banner this many seconds after it is posted, so it disappears from Notification Center instead of piling up there. `0` (default) leaves macOS in charge: the banner slides away on its own but the entry stays in the list until you clear it. This replaces `terminal-notifier -timeout`, which version 2.0.0 removed. Requires `terminal-notifier`; macOS cannot recall a notification posted through `osascript`."
+        },
+        "terminalSessions.brandedNotifier": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Post macOS notifications from Terminal Sessions' own bundle, so they carry its icon and get their own entry in **System Settings > Notifications** (where you can switch them to persistent `Alerts`). Without it they wear the Terminal icon and file themselves under `terminal-notifier`, which macOS never registers there, so their style cannot be changed at all. Built on first use from your installed `terminal-notifier` and re-signed ad-hoc; needs `terminal-notifier` plus the Xcode command line tools, and falls back to the normal path in silence if either is missing. **macOS asks once whether to allow notifications from it \u2014 dismiss that prompt and notifications stop until you allow them in System Settings.** Hence off by default."
+        },
+        "terminalSessions.notificationSenderIcon": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Post banners under the editor's own identity, so they carry its icon and get their own entry in System Settings > Notifications instead of appearing as `terminal-notifier`. Trade-off: clicking the banner then only raises the window — it can no longer jump to the session's terminal tab."
+        },
+        "terminalSessions.toastSound": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "Play the notification sound for in-editor toasts too (macOS). Without this, every event that lands as a toast — `nativeNotifications: auto` while the window is focused — is silent."
+        },
+        "terminalSessions.toastAutoDismissSeconds": {
+          "type": "number",
+          "default": 8,
+          "markdownDescription": "Seconds before a `waiting` toast fades on its own when the native banner already covers the event. `0` keeps VS Code's default behavior: the toast stays in the corner until you click it. Toasts that are your only channel (`nativeNotifications: never`, or a remote workspace) always stay and keep their `Show terminal` button."
+        },
         "terminalSessions.claudeStopMinDurationSeconds": {
           "type": "number",
           "default": 15,
-          "description": "Only notify on Claude Stop if session has been running at least N seconds (avoids notif-storm on short turns)."
+          "markdownDescription": "Only notify on Claude Stop if the turn ran at least N seconds (avoids a notification storm on short turns). Set `0` to be told about every single turn, however quick."
         },
         "terminalSessions.autoResumeClaude": {
           "type": "boolean",
@@ -619,16 +657,16 @@
       },
       {
         "command": "terminalSessions.toggleAllAlerts",
-        "title": "Terminal Sessions: Toggle Claude Waiting Alerts (Global)"
+        "title": "Terminal Sessions: Toggle All Notifications (Global)"
       },
       {
         "command": "terminalSessions.alertsDisable",
-        "title": "Disable Claude Waiting Alerts",
+        "title": "Mute All Notifications (Waiting, Done, Long-Running Commands)",
         "icon": "$(bell)"
       },
       {
         "command": "terminalSessions.alertsEnable",
-        "title": "Enable Claude Waiting Alerts",
+        "title": "Unmute Notifications",
         "icon": "$(bell-slash)"
       },
       {

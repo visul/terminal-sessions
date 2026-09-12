@@ -7,11 +7,12 @@ import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
 import { registerLongRunNotifier } from './long-run-notifier';
+import { initNotifications, onNotifierSettingChanged } from './notifications';
 import { maybeOfferRestore } from './restore';
 import { ClaudeTracker } from './claude-tracker';
 import { AgentRegistry } from './agents/registry';
 import { ClaudeSearchIndex } from './claude-search';
-import { resolveTmuxNameForTerminalLive } from './profile-provider';
+import { resolveTmuxNameForTerminalLive, openTerminalForSession } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import { getConfig } from './config';
 import { registerRevealPath } from './reveal-path';
@@ -33,6 +34,9 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   // Remote-SSH/WSL/Container: force tmux copy over OSC 52 (a local clipboard tool on
   // the remote can't reach the user's local clipboard). Set before ensureConf runs.
   tmuxMod.setRemoteHost(!!vscode.env.remoteName);
+
+  // Notifications need the extension's own assets (the branded notifier icon).
+  initNotifications(ctx);
 
   const index = new SessionIndex();
   // Before anything that can remove a session: removeSession() drops the note too.
@@ -56,6 +60,8 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   void syncActiveTerminalContext(index);
   registerRevealPath(ctx);
   registerTerminalLinks(ctx);
+  // Clicking a notification banner opens our deep link, which lands here.
+  registerNotificationDeepLink(ctx, index);
   // Remote-SSH only: mirror tmux copies to the local clipboard with correct UTF-8
   // (bypasses the OSC 52 path Cursor mangles). No-op on local hosts.
   registerClipboardBridge(ctx);
@@ -93,7 +99,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   tracker.start();
   ctx.subscriptions.push(tracker);
 
-  registerLongRunNotifier(ctx);
+  registerLongRunNotifier(ctx, index);
 
   // Monotonic token for the async active-terminal resolution below: a slow
   // PID walk for a tab you already left must not clobber the newer result
@@ -155,6 +161,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
         e.affectsConfiguration('terminalSessions.tabStateText') ||
         e.affectsConfiguration('terminalSessions.tabStateClear')
       ) { void syncSpecialFolderContexts(); refreshSidebar(); }
+      if (e.affectsConfiguration('terminalSessions.brandedNotifier')) onNotifierSettingChanged();
       if (e.affectsConfiguration('terminalSessions.claudeNoFlicker')) {
         void applyNoFlickerChange();
       }
@@ -190,6 +197,34 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     }
   }, 1500);
   ctx.subscriptions.push({ dispose: () => clearTimeout(resumeTimer) });
+}
+
+/**
+ * Handle `<scheme>://visul.terminal-sessions/focus?session=<tmux name>`, the URL
+ * a notification banner carries. Without it a click could only raise the window
+ * and leave the user hunting for the right tab among twenty.
+ *
+ * Reattaches the session when its terminal was closed, so the link works for a
+ * "Claude done" banner you get to an hour later.
+ */
+function registerNotificationDeepLink(ctx: vscode.ExtensionContext, index: SessionIndex): void {
+  ctx.subscriptions.push(vscode.window.registerUriHandler({
+    handleUri(uri: vscode.Uri): void {
+      if (uri.path !== '/focus') return;
+      const session = new URLSearchParams(uri.query).get('session');
+      if (!session) return;
+      void (async () => {
+        try {
+          // cwd is resolved from the index inside; passing undefined keeps the
+          // session's own folder rather than forcing the workspace root.
+          await openTerminalForSession(session, undefined, index);
+          void revealSessionInSidebar(session, false, false);
+        } catch (e) {
+          console.error('[terminal-sessions] deep link failed:', e);
+        }
+      })();
+    },
+  }));
 }
 
 // Regenerate + reload tmux.conf so a flipped terminalSessions.claudeNoFlicker

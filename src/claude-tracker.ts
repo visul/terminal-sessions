@@ -17,10 +17,29 @@ import type { SessionIndex } from './session-manager';
 import type { AgentId, AgentProvider } from './agents/types';
 import type { AgentRegistry } from './agents/registry';
 
-import { notify, macosAlert, armToastAction } from './notifications';
+import {
+  notify, macosAlert, removeNotification, sessionFocusUrl, sessionGroupId,
+} from './notifications';
 import { classifyOutcome, outcomeIsBad, outcomeLabel, type TurnOutcome } from './outcome';
 import { getConfig } from './config';
 import { TranscriptTailer, TranscriptSnapshot, SubagentSnapshot, SubagentState } from './claude-transcript';
+
+/** The outcome labels carry their own glyph for the sidebar, where there is no
+ *  title to carry it. In a notification the title already says ✓ or ✗. */
+function stripGlyph(label: string): string {
+  return label.replace(/^[✓✗⚠?⏳]\s*/, '');
+}
+
+/** What the agent is actually asking for, from the hook's own message
+ *  ("Claude needs your permission to use Bash"), rather than a fixed sentence
+ *  that says only what the title already said. */
+function approvalDetail(message: string | undefined): string {
+  const m = (message || '').replace(/\s+/g, ' ').trim();
+  if (!m) return 'waiting for your input';
+  const tool = m.match(/permission to use (.+?)\.?$/i);
+  if (tool) return `permission: ${tool[1]}`;
+  return m.length > 90 ? `${m.slice(0, 89)}…` : m;
+}
 
 export type ClaudeState = 'none' | 'working' | 'tool' | 'waiting' | 'idle';
 
@@ -406,6 +425,9 @@ export class ClaudeTracker {
    *  moment counts as seen for the tab mark. Repaint so the mark leaves at once. */
   private noteTabSeen(tmuxSession: string): void {
     this.tabSeenAt.set(tmuxSession, Date.now());
+    // Looking at the tab answers the notification: take the banner back so it
+    // does not linger in Notification Center as a stale to-do.
+    void removeNotification(sessionGroupId(tmuxSession));
     this._onChange.fire();
   }
 
@@ -433,7 +455,13 @@ export class ClaudeTracker {
       }
     }
     if (n) this._onChange.fire();
+    this.clearAllBanners();
     return n;
+  }
+
+  /** Mark-all-seen also clears whatever banners are still standing. */
+  private clearAllBanners(): void {
+    for (const name of this.snapshots.keys()) void removeNotification(sessionGroupId(name));
   }
 
   /** Silence a waiting/unread row: the unread marker is cleared and a current
@@ -443,6 +471,7 @@ export class ClaudeTracker {
       this.dismissedAt.set(tmuxSession, Date.now());
     }
     this.markSeen(tmuxSession);
+    void removeNotification(sessionGroupId(tmuxSession));
     this._onChange.fire();
   }
 
@@ -1399,6 +1428,53 @@ export class ClaudeTracker {
     if (changed) this._onChange.fire();
   }
 
+  /**
+   * What to call this session in a notification: the name you gave it plus its
+   * tab number — `Bots & PPC Infringement #235` — exactly as the sidebar and
+   * the terminal tab render it. Falls back to the workspace label, then to the
+   * folder. The folder alone is what it used to say, and it is ambiguous the
+   * moment two sessions run in the same project, which is the normal case.
+   */
+  private sessionLabel(tmuxSession: string, cwd: string | undefined, fallback: string): string {
+    const parsed = parseSessionName(tmuxSession, getConfig().sessionPrefix);
+    const folder = path.basename(cwd || '');
+    if (parsed && this.index) {
+      const meta = this.index.getSessionMeta(parsed.hash, tmuxSession);
+      const ws = this.index.getWorkspace(parsed.hash);
+      const named = (meta?.label || '').trim() || ws?.label || folder;
+      if (named) return `${named} #${parsed.tabId}`;
+    }
+    return folder || fallback;
+  }
+
+  /** The toast's `Show terminal` button: the same jump the native banner's deep
+   *  link performs, for events that land as a toast instead (remote host, or
+   *  native notifications off). */
+  private focusToastAction(tmuxSession: string): { label: string; callback: () => void } {
+    return { label: 'Show terminal', callback: () => this.focusSession(tmuxSession) };
+  }
+
+  /**
+   * Bring a session's terminal to the front.
+   *
+   * Matching on `shellArgs` alone is not enough: VS Code restores terminals
+   * across a window reload with their creationOptions trimmed, so the tab that
+   * is right there in front of you carries no trace of its tmux name and the
+   * button silently did nothing. openTerminalForSession() is the same resolver
+   * the sidebar and the deep link use — shellArgs, then tab id, then a walk of
+   * the live processes — and it reattaches the session when its tab is gone.
+   */
+  private focusSession(tmuxSession: string): void {
+    void (async () => {
+      try {
+        const { openTerminalForSession } = await import('./profile-provider');
+        await openTerminalForSession(tmuxSession, undefined, this.index);
+      } catch (err) {
+        console.error('[terminal-sessions] could not focus session', tmuxSession, err);
+      }
+    })();
+  }
+
   private triggerStopNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider, outcome?: TurnOutcome): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
@@ -1418,18 +1494,37 @@ export class ClaudeTracker {
     if (Date.now() - lastNotify < NOTIFY_COOLDOWN_MS) return;
     this.lastNotifyPerWs.set(wsKey, Date.now());
 
-    const label = path.basename(e.cwd || '') || provider.displayName;
+    const label = this.sessionLabel(e.tmuxSession, e.cwd, provider.displayName);
     // Say HOW it ended when we know: "✗ tests failed · 3 failed" beats a
-    // generic "done" when the run actually went red.
+    // generic "done" when the run actually went red. For a clean turn, how long
+    // it took and what it concluded with — "Ready for your next prompt" was
+    // three words restating the title.
     const bad = outcomeIsBad(outcome);
-    const body = outcome && outcome.kind !== 'ok'
-      ? `${outcomeLabel(outcome)}${outcome.hint ? ' · ' + outcome.hint : ''}`
-      : 'Ready for your next prompt';
+
+    // A clean turn has nothing to add beyond how long it took: quoting the
+    // agent's closing line only pasted its throat-clearing into the banner.
+    const detail = outcome && outcome.kind !== 'ok'
+      ? `${stripGlyph(outcomeLabel(outcome))}${outcome.hint ? ' · ' + outcome.hint : ''}`
+      : '';
+    // How long the turn ran belongs to the sidebar, which has room for it. The
+    // banner answers one question — does this session need me? — so a clean
+    // turn carries no third line at all.
+    const body = detail;
     void notify({
-      title: `${bad ? '✗' : '🤖'} ${provider.displayName} ${bad ? 'stopped with errors' : 'done'}`,
-      subtitle: label,
+      // Which session first: that is what you scan for when three banners land
+      // at once. State second, detail last — and nothing at all in the detail
+      // line for a turn that simply finished.
+      kind: 'agent',
+      title: label,
+      subtitle: `${bad ? '✗' : '✓'} ${provider.displayName} ${bad ? 'failed' : 'done'}`,
       body,
+      // The toast drops the agent's name (the badge already says an agent) and
+      // the hint, keeping only the verdict that decides whether you go look.
+      short: `${bad ? '✗' : '✓'} ${label}${bad && outcome ? ` · ${stripGlyph(outcomeLabel(outcome))}` : ''}`,
       level: bad ? 'warning' : 'info',
+      groupId: sessionGroupId(e.tmuxSession),
+      openUrl: sessionFocusUrl(e.tmuxSession),
+      toastAction: this.focusToastAction(e.tmuxSession),
     });
   }
 
@@ -1446,15 +1541,15 @@ export class ClaudeTracker {
     if (Date.now() - last < NOTIFY_COOLDOWN_MS) return;
     this.lastWaitingNotifyPerSession.set(e.tmuxSession, Date.now());
 
-    const label = path.basename(e.cwd || '') || provider.displayName;
+    const label = this.sessionLabel(e.tmuxSession, e.cwd, provider.displayName);
     const tmuxSession = e.tmuxSession;
 
     if (cfg.waitingAlertStyle === 'alert' && process.platform === 'darwin') {
       // Modal dialog (persistent until user clicks a button).
       void (async () => {
         const clicked = await macosAlert({
-          title: `${provider.displayName} needs approval`,
-          message: `Session: ${label}\n\nClick "Show terminal" to jump to it.`,
+          title: `🤖 ⚠ ${provider.displayName} needs approval`,
+          message: `${label}\n\n${approvalDetail(e.message)}`,
           primaryButton: 'Show terminal',
           secondaryButton: 'Dismiss',
         });
@@ -1467,15 +1562,7 @@ export class ClaudeTracker {
             await promisify(execFile)('/usr/bin/open', ['-a', vscode.env.appName]);
           } catch { /* best effort */ }
           // Then focus the matching terminal tab inside the IDE.
-          try {
-            for (const t of vscode.window.terminals) {
-              const opts = t.creationOptions;
-              const args = (opts as vscode.TerminalOptions)?.shellArgs;
-              const argList = Array.isArray(args) ? args : args ? [args] : [];
-              // Attach args carry the exact-match form `-t =name` — accept both.
-              if (argList.includes(tmuxSession) || argList.includes('=' + tmuxSession)) { t.show(); break; }
-            }
-          } catch { /* best effort */ }
+          this.focusSession(tmuxSession);
         }
       })();
     } else {
@@ -1484,21 +1571,17 @@ export class ClaudeTracker {
       // warning toast (since osascript/notify-send on remote can't reach
       // the user). Arm a one-shot "Show terminal" action so the click
       // focuses the session — parity with the local modal-alert path.
-      armToastAction('Show terminal', () => {
-        for (const t of vscode.window.terminals) {
-          const opts2 = t.creationOptions;
-          const args = (opts2 as vscode.TerminalOptions)?.shellArgs;
-          const argList = Array.isArray(args) ? args : args ? [args] : [];
-          // Attach args carry the exact-match form `-t =name` — accept both.
-          if (argList.includes(tmuxSession) || argList.includes('=' + tmuxSession)) { t.show(); break; }
-        }
-      });
       void notify({
-        title: `⚠ ${provider.displayName} needs approval`,
-        subtitle: label,
-        body: 'Waiting for your input',
+        kind: 'agent',
+        title: label,
+        subtitle: `⚠ ${provider.displayName} needs approval`,
+        body: approvalDetail(e.message),
+        short: `⚠ ${label} · ${approvalDetail(e.message).replace(/^permission: /, '')}`,
         sound: cfg.notificationSoundWaiting,
         level: 'warning',
+        groupId: sessionGroupId(tmuxSession),
+        openUrl: sessionFocusUrl(tmuxSession),
+        toastAction: this.focusToastAction(tmuxSession),
       });
     }
   }

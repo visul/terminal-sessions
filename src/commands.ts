@@ -12,7 +12,7 @@ import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebar
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
-import { notify } from './notifications';
+import { notify, removeNotification, sessionGroupId } from './notifications';
 import { conversationTitle } from './conversation-title';
 import { maybeWarnMouseEnv, findMouseEnvLines, commentOutMouseEnv } from './mouse-clicks-guard';
 import { ClaudeTracker } from './claude-tracker';
@@ -311,9 +311,9 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.dismissCleanupNotice, () => { snoozeCleanupNotice(); refreshSidebar(); }),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
     vscode.commands.registerCommand(COMMAND.fixClaudeMouseEnv, () => cmdFixClaudeMouseEnv(ctx)),
-    vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts()),
-    vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(true)),
-    vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(false)),
+    vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts(ctx)),
+    vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(ctx, true)),
+    vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(ctx, false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
     vscode.commands.registerCommand(COMMAND.dismissAttention, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
@@ -387,27 +387,71 @@ export function registerCommands(
   // Seed the ⋯-menu Enable/Disable labels for the two special folders.
   void syncSpecialFolderContexts();
 
-  // Keep a VS Code context var in sync with the global alert setting so the
-  // view-title icon can toggle its appearance via "when" clauses.
+  // Keep a VS Code context var in sync with the notification settings so the
+  // view-title icon can toggle its appearance via "when" clauses. The bell is a
+  // master switch: it reads as "on" while ANY channel still notifies.
   const syncAlertsContext = () => {
-    const on = vscode.workspace.getConfiguration('terminalSessions').get<boolean>('notifyOnClaudeWaiting', true);
-    void vscode.commands.executeCommand('setContext', 'terminalSessions.alertsEnabled', on);
+    void vscode.commands.executeCommand(
+      'setContext', 'terminalSessions.alertsEnabled', anyNotificationEnabled(),
+    );
   };
   syncAlertsContext();
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
-    if (e.affectsConfiguration('terminalSessions.notifyOnClaudeWaiting')) syncAlertsContext();
+    if (NOTIFY_KEYS.some(k => e.affectsConfiguration(`terminalSessions.${k}`))) syncAlertsContext();
   }));
 }
 
-async function cmdSetAllAlerts(value?: boolean): Promise<void> {
+/** Every channel the bell in the view title governs. `waitingAlertStyle` is a
+ *  style, not a channel, so it stays out of this. */
+const NOTIFY_KEYS = [
+  'notifyOnClaudeWaiting',
+  'notifyOnClaudeStop',
+  'enableLongRunNotifications',
+] as const;
+
+/** What the bell was silencing, so unmuting restores the mix the user had
+ *  rather than switching everything on. */
+const NOTIFY_RESTORE_KEY = 'notificationsMutedState';
+
+function anyNotificationEnabled(): boolean {
   const c = vscode.workspace.getConfiguration('terminalSessions');
-  const current = c.get<boolean>('notifyOnClaudeWaiting', true);
+  return NOTIFY_KEYS.some(k => c.get<boolean>(k, true));
+}
+
+/**
+ * The bell in the view title: a master mute for every notification the
+ * extension sends, not just the waiting alerts it started life as.
+ *
+ * Muting records which channels were on and turns them all off; unmuting puts
+ * exactly those back, so someone who had long-run alerts off on purpose does
+ * not get them back for free.
+ */
+async function cmdSetAllAlerts(ctx: vscode.ExtensionContext, value?: boolean): Promise<void> {
+  const c = vscode.workspace.getConfiguration('terminalSessions');
+  const current = anyNotificationEnabled();
   const next = value === undefined ? !current : value;
   if (next === current) return;
-  await c.update('notifyOnClaudeWaiting', next, vscode.ConfigurationTarget.Global);
-  vscode.window.showInformationMessage(
-    `Claude waiting alerts ${next ? 'enabled' : 'disabled'} globally.`,
-  );
+
+  if (!next) {
+    const was: Record<string, boolean> = {};
+    for (const k of NOTIFY_KEYS) was[k] = c.get<boolean>(k, true);
+    await ctx.globalState.update(NOTIFY_RESTORE_KEY, was);
+    for (const k of NOTIFY_KEYS) {
+      // eslint-disable-next-line no-await-in-loop
+      await c.update(k, false, vscode.ConfigurationTarget.Global);
+    }
+    vscode.window.showInformationMessage('Terminal Sessions notifications muted globally.');
+    return;
+  }
+
+  const was = ctx.globalState.get<Record<string, boolean>>(NOTIFY_RESTORE_KEY);
+  for (const k of NOTIFY_KEYS) {
+    // No record (first ever unmute, or state cleared): turn everything back on.
+    const on = was ? was[k] !== false : true;
+    // eslint-disable-next-line no-await-in-loop
+    await c.update(k, on, vscode.ConfigurationTarget.Global);
+  }
+  vscode.window.showInformationMessage('Terminal Sessions notifications unmuted globally.');
 }
 
 /**
@@ -635,7 +679,12 @@ async function cmdSetSessionMuted(
   if (many) {
     bulkApply(
       many,
-      (hash, name) => index.setSessionMuted(hash, name, muted),
+      (hash, name) => {
+        index.setSessionMuted(hash, name, muted);
+        // Muting must also take back what is already on screen, or the session
+        // keeps nagging from Notification Center after you silenced it.
+        if (muted) void removeNotification(sessionGroupId(name));
+      },
       n => `${n} sessions: notifications ${muted ? 'muted' : 'unmuted'}.`,
     );
     return;
@@ -650,6 +699,7 @@ async function cmdSetSessionMuted(
   const parsed = parseSessionName(name, getConfig().sessionPrefix);
   if (!parsed) return;
   index.setSessionMuted(parsed.hash, name, muted);
+  if (muted) void removeNotification(sessionGroupId(name));
   refreshSidebar();
   // Flip the tab menu's Mute ↔ Unmute right away for the active terminal.
   void syncActiveTerminalContext(index);
@@ -1866,9 +1916,11 @@ async function cmdUninstallClaudeHook(registry: AgentRegistry): Promise<void> {
 
 async function cmdTestNotification(): Promise<void> {
   await notify({
-    title: '✓ Test notification',
-    subtitle: 'Terminal Sessions',
-    body: 'macOS Notification Center works. Adjust sound & mode in settings.',
+    kind: 'shell',
+    title: 'Terminal Sessions',
+    subtitle: '✓ Test notification',
+    body: 'Delivery mode, sound and icon are in settings',
+    short: '✓ Test notification',
   });
 }
 

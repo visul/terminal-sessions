@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 
 export type AutoRestoreMode = 'auto' | 'ask' | 'off';
-export type NativeNotifMode = 'auto' | 'always' | 'never';
+export type NativeNotifMode = 'auto' | 'always' | 'both' | 'never';
 export type SidebarSortMode = 'custom' | 'mru' | 'created' | 'alphabetical';
 export type SidebarFilterMode = 'all' | 'running' | 'stopped';
 export const FILTER_MODES: SidebarFilterMode[] = ['all', 'running', 'stopped'];
@@ -31,6 +31,12 @@ export interface Config {
   nativeNotifications: NativeNotifMode;
   notificationSound: string;
   notificationSoundWaiting: string;
+  notificationGrouping: boolean;
+  brandedNotifier: boolean;
+  bannerTimeoutSeconds: number;
+  notificationSenderIcon: boolean;
+  toastSound: boolean;
+  toastAutoDismissSeconds: number;
   notifyOnClaudeStop: boolean;
   unreadBadges: boolean;
   transcriptExpiryWarnDays: number;
@@ -80,6 +86,12 @@ export function getConfig(): Config {
     nativeNotifications: c.get('nativeNotifications', 'auto') as NativeNotifMode,
     notificationSound: c.get('notificationSound', 'Glass'),
     notificationSoundWaiting: c.get('notificationSoundWaiting', 'Sosumi'),
+    notificationGrouping: c.get('notificationGrouping', true),
+    brandedNotifier: c.get('brandedNotifier', false),
+    bannerTimeoutSeconds: Math.max(0, c.get<number>('bannerTimeoutSeconds', 0)),
+    notificationSenderIcon: c.get('notificationSenderIcon', false),
+    toastSound: c.get('toastSound', true),
+    toastAutoDismissSeconds: Math.max(0, c.get<number>('toastAutoDismissSeconds', 8)),
     notifyOnClaudeStop: c.get('notifyOnClaudeStop', true),
     unreadBadges: c.get('unreadBadges', true),
     transcriptExpiryWarnDays: c.get('transcriptExpiryWarnDays', 20),
