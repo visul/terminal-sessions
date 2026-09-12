@@ -205,7 +205,7 @@
         "terminalSessions.notificationSenderIcon": {
           "type": "boolean",
           "default": false,
-          "markdownDescription": "Post banners under the editor's own identity, so they carry its icon and get their own entry in System Settings > Notifications instead of appearing as `terminal-notifier`. Trade-off: clicking the banner then only raises the window — it can no longer jump to the session's terminal tab."
+          "markdownDescription": "Post banners under the editor's own identity, so they carry its icon. **Only works on `terminal-notifier` 2.x**: version 3.0 removed the `-sender` flag, so on a current Homebrew install this setting does nothing. `terminalSessions.brandedNotifier` is the supported way to change the icon on any version."
         },
         "terminalSessions.toastSound": {
           "type": "boolean",

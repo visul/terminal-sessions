@@ -335,6 +335,22 @@ async function detectTerminalNotifier(): Promise<string | undefined> {
   return undefined;
 }
 
+/** terminal-notifier's major version. 3.0 moved to UNUserNotificationCenter and
+ *  dropped `-sender` and `-appIcon` to no-ops that only warn on stderr — which
+ *  we discard — so a flag that "works" on 2.x silently does nothing on the
+ *  version Homebrew installs today. */
+let _tnMajor: number | undefined;
+async function notifierMajorVersion(bin: string): Promise<number> {
+  if (_tnMajor !== undefined) return _tnMajor;
+  try {
+    const { stdout } = await execFileP(bin, ['-version'], { timeout: 5000 });
+    _tnMajor = parseInt(/(\d+)\./.exec(stdout)?.[1] || '0', 10) || 0;
+  } catch {
+    _tnMajor = 0;
+  }
+  return _tnMajor;
+}
+
 async function detectBundleId(): Promise<string | undefined> {
   if (_bundleId !== null) return _bundleId;
   const appName = vscode.env.appName || 'Cursor';
@@ -406,16 +422,18 @@ async function macosNotify(opts: NotifyOptions, defaultSound: string): Promise<v
       ? opts.groupId
       : (timeoutSec > 0 ? `terminal-sessions-tmp-${++bannerSeq}` : undefined);
     if (group) args.push('-group', group);
-    if (cfg.notificationSenderIcon) {
-      // Impersonate the IDE so the banner carries its icon and gets its own
-      // entry under System Settings > Notifications. terminal-notifier then
-      // hands the click to that app, which discards our deep link — hence
-      // opt-in, and mutually exclusive with click-to-session.
-      args.push('-sender', bundleId);
-    } else {
-      if (opts.openUrl) args.push('-open', opts.openUrl);
-      args.push('-activate', bundleId);
-    }
+    // `-sender` impersonates the IDE so the banner carries its icon. It is a
+    // no-op from terminal-notifier 3.0 on (the flag was removed; it warns to
+    // stderr, which we discard), so asking for it there would cost the deep
+    // link and return nothing. The branded bundle is the forward-compatible
+    // way to change the icon — upstream recommends exactly that.
+    const canImpersonate = cfg.notificationSenderIcon && await notifierMajorVersion(tn) < 3;
+    if (canImpersonate) args.push('-sender', bundleId);
+    // Always ask for the click target: on the versions where `-sender` wins the
+    // click these are simply ignored, and on every other path they are what
+    // takes you to the session.
+    if (opts.openUrl) args.push('-open', opts.openUrl);
+    args.push('-activate', bundleId);
     const child = runNotifier(tn, args, CLICK_LEASH_MS, () => {
       console.error('[terminal-sessions] notifier failed to post; falling back to a toast');
       showToast(opts, false);

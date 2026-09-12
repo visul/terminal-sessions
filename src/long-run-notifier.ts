@@ -71,7 +71,8 @@ export function registerLongRunNotifier(ctx: vscode.ExtensionContext, index: Ses
         subtitle: ok ? '✓ Command finished' : '✗ Command failed',
         body: [dur, ok ? '' : `exit ${e.exitCode}`, cmdShort].filter(Boolean).join(' · '),
         // The command line is the long part; in the toast it stays out.
-        short: `${ok ? '✓' : '✗'} ${s.terminalName} · ${ok ? dur : `exit ${e.exitCode}`}`,
+        short: [`${ok ? '✓' : '✗'} ${s.terminalName}`, ok ? dur : `exit ${e.exitCode}`]
+          .filter(Boolean).join(' · '),
         level: ok ? 'info' : 'warning',
         // Same one-banner-per-session rule as the agent notifications, and the
         // same click target. A plain terminal gets neither.

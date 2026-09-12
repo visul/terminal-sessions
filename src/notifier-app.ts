@@ -155,7 +155,11 @@ async function build(sourceApp: string, iconSrc: string, stamp: string): Promise
     // eslint-disable-next-line no-await-in-loop
     await execFileP('/usr/bin/plutil', ['-replace', key, '-string', value, plist], { timeout: STEP_TIMEOUT_MS });
   }
-  fs.copyFileSync(iconSrc, path.join(appPath(), 'Contents', 'Resources', `${ICON_NAME}.icns`));
+  const resources = path.join(appPath(), 'Contents', 'Resources');
+  fs.copyFileSync(iconSrc, path.join(resources, `${ICON_NAME}.icns`));
+  // The icon we replaced is dead weight inside the bundle, and upstream's own
+  // rebranding target removes it too.
+  try { fs.rmSync(path.join(resources, 'Terminal.icns'), { force: true }); } catch { /* fine */ }
 
   // Editing the bundle invalidates its signature, and macOS refuses to run an
   // arm64 binary whose signature does not match. Ad-hoc is enough: we are not
