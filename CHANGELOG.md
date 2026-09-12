@@ -4,6 +4,15 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.33.1] — 2026-09-12
+
+### Fixed
+- **Codex approval prompts alerted nobody.** Codex does not reuse the `Notification` event for a permission block — it has its own, which the extension installed and the forwarder logged, and which the tracker then dropped on the floor for want of a case in its event switch. A Codex session waiting on approval showed no banner, no `⚠` in the sidebar, and no waiting state at all; it simply looked busy until you went and looked. When the event carries no prose of its own, the alert now names the tool it wants to run rather than falling back to a generic line.
+- **Sessions tracked without hooks never announced a finished turn.** Grok installs no lifecycle hooks at all (its own are project-scoped and trust-gated), so it is tracked from its transcript and a process poll. That path already decided a turn had ended — it painted the row green and marked it unread — but the notification was wired only to the hook event, so a Grok turn finished in complete silence however the settings were set. The same edge also covers any agent whose `Stop` hook was dropped. It now notifies from there too, under the same mute, cooldown and staleness guards, and carries the timestamp of the turn's end rather than of the render that noticed it.
+- **`waitingAlertStyle: alert` did nothing except on macOS.** The modal-alert path already knew how to route itself — `zenity` on Linux, a VS Code modal on a remote host — but its only caller also required macOS, which made every one of those branches unreachable. Choosing the alert style off macOS silently fell back to a banner.
+- **Linux banners never grouped, never went away, and made no sound.** `notificationGrouping` and `bannerTimeoutSeconds` were macOS-only promises in practice: libnotify identifies a banner by the numeric id its daemon hands back, which the extension never asked for, so a busy session stacked a new banner per event and none of them were ever withdrawn. Banners now replace their predecessor in place and are closed over D-Bus, and they carry a sound from the desktop's own theme — `notificationSound` had no effect here at all before. VS Code toasts get the same sound via canberra.
+- **An agent's own question could be mistaken for an idle nudge.** Claude fires the same event for a real permission block and for the harmless "waiting for your input" reminder, so the two are told apart by the wording — but that test was applied to every agent, and a question relayed from another agent can contain the same phrase and be silently swallowed. Hooks that know why they fired (our OpenCode plugin tags each one) are now believed over the prose.
+
 ## [0.33.0] — 2026-09-12
 
 ### Added

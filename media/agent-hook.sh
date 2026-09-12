@@ -61,6 +61,10 @@ transcript_path = pick(data, "transcript_path", "transcriptPath")
 cwd = pick(data, "cwd", "current_dir") or os.environ.get("CWD_FALLBACK", "")
 tool_name = pick(data, "tool_name", "toolName")
 message = pick(data, "message")
+# Why a Notification fired, when the hook itself knows. Our OpenCode plugin
+# tags every one (permission / question); Claude and agy send none, and the
+# tracker falls back to reading the message text for those.
+kind = pick(data, "kind")
 
 # Agent-team teammates and Task-tool subagents carry agent_id / agent_type on
 # their hook payloads; the main (lead) session never does. Forwarding agent_id
@@ -94,6 +98,10 @@ out = {
     "toolInput": tool_input_preview,
     "message": str(message)[:300],
 }
+
+# Only present when the hook states it — absent lines keep the old shape.
+if kind:
+    out["kind"] = str(kind)[:32]
 
 # Only present for teammates/subagents — keep lead-session lines unchanged.
 if agent_id:

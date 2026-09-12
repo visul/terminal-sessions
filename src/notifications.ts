@@ -162,13 +162,61 @@ async function linuxNotify(opts: NotifyOptions): Promise<void> {
   // path, so the badge goes in the text.
   const state = badged(opts);
   const body = escapeMarkup(state ? `${state}\n${opts.body}`.trimEnd() : opts.body);
-  await execFileP('/usr/bin/notify-send', [
+  const groupId = getConfig().notificationGrouping ? opts.groupId : undefined;
+  const base = [
     '-u', urgency,
     '-t', timeoutMs,
     '-a', 'Terminal Sessions',
-    escapeMarkup(title),
-    body,
-  ], { timeout: 5000 });
+    // Banners were posted silently here, which made `notificationSound` a
+    // macOS-only setting in practice. Freedesktop theme names, not macOS ones.
+    '-h', `string:sound-name:${freedesktopSound(opts.level)}`,
+  ];
+  const prev = groupId ? linuxNotifIds.get(groupId) : undefined;
+  // libnotify has no string group key: one banner replaces another only by the
+  // numeric id the daemon handed back for it.
+  if (prev !== undefined) base.push('-r', String(prev));
+  const tail = [escapeMarkup(title), body];
+  try {
+    const { stdout } = await execFileP('/usr/bin/notify-send', [...base, '-p', ...tail], { timeout: 5000 });
+    const id = parseInt(String(stdout).trim(), 10);
+    if (groupId && Number.isFinite(id) && id > 0) linuxNotifIds.set(groupId, id);
+  } catch {
+    // --print-id predates neither libnotify 0.7.9 nor some reimplementations;
+    // without it there is no handle to replace or withdraw by, but the banner
+    // itself must still go out.
+    await execFileP('/usr/bin/notify-send', [...base, ...tail], { timeout: 5000 });
+  }
+}
+
+/** Ids of the banner currently standing for each group, so the next one for the
+ *  same session replaces it in place and `removeGroup` can close it. */
+const linuxNotifIds = new Map<string, number>();
+
+/** Freedesktop sound-theme name for a level — the portable stand-in for the
+ *  macOS system sounds, which do not exist on Linux. */
+function freedesktopSound(level: NotificationLevel | undefined): string {
+  return level === 'error' ? 'dialog-error'
+    : level === 'warning' ? 'dialog-warning'
+    : 'message-new-instant';
+}
+
+/** Withdraw a standing notify-send banner. Its CLI has no remove verb, so close
+ *  it over the same D-Bus interface the daemon already exposes. Without this,
+ *  `notificationGrouping` and `bannerTimeoutSeconds` were macOS-only promises
+ *  and every Linux banner sat there until the user swiped it away. */
+async function linuxRemoveGroup(groupId: string): Promise<void> {
+  const id = linuxNotifIds.get(groupId);
+  if (id === undefined) return;
+  linuxNotifIds.delete(groupId);
+  try {
+    await execFileP('/usr/bin/gdbus', [
+      'call', '--session',
+      '--dest', 'org.freedesktop.Notifications',
+      '--object-path', '/org/freedesktop/Notifications',
+      '--method', 'org.freedesktop.Notifications.CloseNotification',
+      String(id),
+    ], { timeout: 5000 });
+  } catch { /* no gdbus or no daemon — the banner expires on its own timeout */ }
 }
 
 /** Most notification daemons parse the body as Pango markup, so a command line
@@ -481,7 +529,9 @@ export async function removeNotification(groupId: string): Promise<void> {
 /** Unconditional withdrawal — used by the timeout path, which owns its group id
  *  whether or not per-session grouping is on. */
 async function removeGroup(groupId: string): Promise<void> {
-  if (process.platform !== 'darwin' || isRemoteExtensionHost()) return;
+  if (isRemoteExtensionHost()) return;
+  if (process.platform === 'linux') { await linuxRemoveGroup(groupId); return; }
+  if (process.platform !== 'darwin') return;
   releaseBanner(groupId);
   // Notification Center scopes delivered notifications to the identity that
   // posted them: a `-remove` issued by the plain binary cannot see — let alone
@@ -602,12 +652,20 @@ function showToast(opts: NotifyOptions, transient: boolean): void {
  *  used, so "Claude is done" is audible even with the window focused — the
  *  single biggest reason `auto` felt quieter than a plain hook. */
 function playToastSound(opts: NotifyOptions): void {
-  if (process.platform !== 'darwin' || isRemoteExtensionHost()) return;
+  if (isRemoteExtensionHost()) return;
   const cfg = getConfig();
   if (!cfg.toastSound) return;
   // In `both` the native banner has already sounded; a second chime would just
   // be an echo.
   if (cfg.nativeNotifications === 'both' && vscode.window.state.focused) return;
+  if (process.platform === 'linux') {
+    // `afplay` and the macOS sound files do not exist here; canberra plays the
+    // desktop's own theme and is present on every mainstream desktop.
+    void execFileP('/usr/bin/canberra-gtk-play', ['-i', freedesktopSound(opts.level)])
+      .catch(() => { /* no canberra or no audio — the toast is still shown */ });
+    return;
+  }
+  if (process.platform !== 'darwin') return;
   const sound = resolveSound(opts, cfg.notificationSound);
   void execFileP('/usr/bin/afplay', [`/System/Library/Sounds/${sound}.aiff`])
     .catch(() => { /* sound file missing or audio unavailable */ });

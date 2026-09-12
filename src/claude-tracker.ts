@@ -33,9 +33,11 @@ function stripGlyph(label: string): string {
 /** What the agent is actually asking for, from the hook's own message
  *  ("Claude needs your permission to use Bash"), rather than a fixed sentence
  *  that says only what the title already said. */
-function approvalDetail(message: string | undefined): string {
+function approvalDetail(message: string | undefined, toolName?: string): string {
   const m = (message || '').replace(/\s+/g, ' ').trim();
-  if (!m) return 'waiting for your input';
+  // Codex's PermissionRequest carries no message of its own — the tool it wants
+  // to run is the whole point of the alert, so use that before the generic line.
+  if (!m) return toolName ? `permission: ${toolName}` : 'waiting for your input';
   const tool = m.match(/permission to use (.+?)\.?$/i);
   if (tool) return `permission: ${tool[1]}`;
   return m.length > 90 ? `${m.slice(0, 89)}…` : m;
@@ -127,6 +129,10 @@ interface ClaudeEvent {
    *  Stop while sitting at the prompt). Captured by hook-script v3+; older
    *  installs leave this empty and are treated as permission for safety. */
   message?: string;
+  /** Why a Notification fired, when the hook can say so instead of leaving it
+   *  to be guessed from `message`. Our OpenCode plugin tags every one
+   *  ('permission' | 'question'); Claude and agy send none. */
+  kind?: string;
   /** Present only when the hook fired for an agent-team teammate or a Task-tool
    *  subagent. Claude Code attaches `agent_id`/`agent_type` to those payloads
    *  but NEVER to the main (lead) session's events, so the presence of
@@ -150,7 +156,13 @@ interface ClaudeEvent {
  *  while the user is just sitting at the prompt. False for real permission
  *  blocks (Claude needs approval before continuing) and for any unknown shape
  *  (treated as permission so we don't accidentally hide a real block). */
-function isIdleNudgeNotification(message: string | undefined): boolean {
+function isIdleNudgeNotification(message: string | undefined, kind?: string): boolean {
+  // Hooks we author ourselves (media/opencode-plugin.js) say WHY they fired.
+  // Trust that over reading English prose: the regex below is Claude's exact
+  // wording, and another agent's question text can contain it by accident —
+  // which would silently swallow a real block.
+  if (kind === 'permission' || kind === 'question') return false;
+  if (kind === 'idle') return true;
   if (!message) return false; // legacy hook or empty payload — assume permission
   return /waiting for your input/i.test(message);
 }
@@ -785,6 +797,23 @@ export class ClaudeTracker {
     const vouched = !!snap.lastStopAt && Date.now() - snap.lastStopAt.getTime() < 120_000;
     if ((prev === 'working' || prev === 'tool') && snap.state === 'idle' && vouched) {
       this.noteFinished(tmuxSession, snap.outcome);
+      // Same edge, same evidence. This is the ONLY completion signal a session
+      // tracked without hooks ever gets — Grok installs none, so a Grok turn
+      // painted the row green and then said nothing at all — and it also covers
+      // an agent whose Stop hook was dropped. A Stop that DID arrive already set
+      // lastDerived to 'idle' in handleLine, so this cannot double-fire behind
+      // one; the notify path carries its own mute/cooldown/stale guards.
+      // The timestamp is when the turn ENDED, not when this render noticed it:
+      // `vouched` accepts a stop up to 120s old, while the notify path drops
+      // anything over 60s as stale. Passing Date.now() here would resurrect a
+      // completion the hook path had already suppressed for being too old.
+      this.triggerStopNotify(
+        tmuxSession,
+        this.map.get(tmuxSession)?.cwd,
+        snap.lastStopAt?.getTime() ?? Date.now(),
+        this.registry.providerForAgent(snap.agent),
+        snap.outcome,
+      );
     }
 
     // Only an idle row can carry a result; a relaunched/working session must
@@ -1261,13 +1290,22 @@ export class ClaudeTracker {
         snap.toolSince = undefined;
         snap.waitingSince = undefined;
         break;
+      // Codex does not reuse Notification: it has a dedicated event, which is
+      // by definition a real block and never an idle nudge, so it skips that
+      // check. Without this case the event was logged and then dropped on the
+      // floor — a Codex approval prompt flipped nothing and alerted nobody.
+      case 'PermissionRequest':
+        snap.state = 'waiting';
+        snap.waitingSince = new Date(tsMs);
+        this.triggerWaitingNotify(e, tsMs, provider);
+        break;
       case 'Notification':
         // Claude Code fires Notification for TWO unrelated reasons:
         //   1. Permission needed — "Claude needs your permission to use {Tool}"
         //   2. Idle nudge — "Claude is waiting for your input" (~60s after each
         //      Stop while sitting at the prompt). NOT urgent, must not flip
         //      the sidebar to ⚠ waiting or fire the permission alert.
-        if (isIdleNudgeNotification(e.message)) {
+        if (isIdleNudgeNotification(e.message, e.kind)) {
           // Idle nudge: no state change, no alert. Claude already entered
           // 'idle' via the preceding Stop event.
           break;
@@ -1294,7 +1332,7 @@ export class ClaudeTracker {
           this.lastDerived.set(e.tmuxSession, 'idle');
           this.noteFinished(e.tmuxSession, outcome);
         }
-        this.triggerStopNotify(e, tsMs, provider, outcome);
+        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider, outcome);
         break;
       }
       // SessionEnd is fully handled (and gated) before the ownership-transfer
@@ -1475,26 +1513,32 @@ export class ClaudeTracker {
     })();
   }
 
-  private triggerStopNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider, outcome?: TurnOutcome): void {
+  private triggerStopNotify(
+    tmuxSession: string,
+    cwd: string | undefined,
+    tsMs: number,
+    provider: AgentProvider,
+    outcome?: TurnOutcome,
+  ): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
-    if (this.isSessionMuted(e.tmuxSession)) return;
+    if (this.isSessionMuted(tmuxSession)) return;
     // Historical event replayed from the log at activation — apply state, skip
     // the stale "done" popup.
     if (Date.now() - tsMs > NOTIFY_STALE_MS) return;
 
     // Skip sub-second Stops (Claude often fires on very quick turns)
-    const prev = this.snapshots.get(e.tmuxSession);
+    const prev = this.snapshots.get(tmuxSession);
     const promptMs = prev?.lastPromptAt?.getTime() || 0;
     const durationSec = promptMs > 0 ? (tsMs - promptMs) / 1000 : Infinity;
     if (durationSec < cfg.claudeStopMinDurationSeconds) return;
 
-    const wsKey = e.cwd || 'unknown';
+    const wsKey = cwd || 'unknown';
     const lastNotify = this.lastNotifyPerWs.get(wsKey) || 0;
     if (Date.now() - lastNotify < NOTIFY_COOLDOWN_MS) return;
     this.lastNotifyPerWs.set(wsKey, Date.now());
 
-    const label = this.sessionLabel(e.tmuxSession, e.cwd, provider.displayName);
+    const label = this.sessionLabel(tmuxSession, cwd, provider.displayName);
     // Say HOW it ended when we know: "✗ tests failed · 3 failed" beats a
     // generic "done" when the run actually went red. For a clean turn, how long
     // it took and what it concluded with — "Ready for your next prompt" was
@@ -1522,9 +1566,9 @@ export class ClaudeTracker {
       // the hint, keeping only the verdict that decides whether you go look.
       short: `${bad ? '✗' : '✓'} ${label}${bad && outcome ? ` · ${stripGlyph(outcomeLabel(outcome))}` : ''}`,
       level: bad ? 'warning' : 'info',
-      groupId: sessionGroupId(e.tmuxSession),
-      openUrl: sessionFocusUrl(e.tmuxSession),
-      toastAction: this.focusToastAction(e.tmuxSession),
+      groupId: sessionGroupId(tmuxSession),
+      openUrl: sessionFocusUrl(tmuxSession),
+      toastAction: this.focusToastAction(tmuxSession),
     });
   }
 
@@ -1544,12 +1588,20 @@ export class ClaudeTracker {
     const label = this.sessionLabel(e.tmuxSession, e.cwd, provider.displayName);
     const tmuxSession = e.tmuxSession;
 
-    if (cfg.waitingAlertStyle === 'alert' && process.platform === 'darwin') {
+    // macosAlert picks its own backend: osascript on macOS, zenity (then a
+    // sticky banner) on Linux, a VS Code modal on a remote host. Gating this on
+    // darwin made every one of those branches unreachable, so picking the
+    // 'alert' style off macOS silently did nothing. Windows has no modal path
+    // there, so it still falls through to the banner below.
+    const canAlert = !!vscode.env.remoteName
+      || process.platform === 'darwin'
+      || process.platform === 'linux';
+    if (cfg.waitingAlertStyle === 'alert' && canAlert) {
       // Modal dialog (persistent until user clicks a button).
       void (async () => {
         const clicked = await macosAlert({
           title: `🤖 ⚠ ${provider.displayName} needs approval`,
-          message: `${label}\n\n${approvalDetail(e.message)}`,
+          message: `${label}\n\n${approvalDetail(e.message, e.toolName)}`,
           primaryButton: 'Show terminal',
           secondaryButton: 'Dismiss',
         });
@@ -1558,9 +1610,11 @@ export class ClaudeTracker {
           // Script Editor, so after the button click macOS keeps focus there
           // unless we explicitly activate our app. `open -a <appName>` raises
           // Cursor/VS Code regardless of the previous frontmost app.
-          try {
-            await promisify(execFile)('/usr/bin/open', ['-a', vscode.env.appName]);
-          } catch { /* best effort */ }
+          if (process.platform === 'darwin') {
+            try {
+              await promisify(execFile)('/usr/bin/open', ['-a', vscode.env.appName]);
+            } catch { /* best effort */ }
+          }
           // Then focus the matching terminal tab inside the IDE.
           this.focusSession(tmuxSession);
         }
@@ -1575,8 +1629,8 @@ export class ClaudeTracker {
         kind: 'agent',
         title: label,
         subtitle: `⚠ ${provider.displayName} needs approval`,
-        body: approvalDetail(e.message),
-        short: `⚠ ${label} · ${approvalDetail(e.message).replace(/^permission: /, '')}`,
+        body: approvalDetail(e.message, e.toolName),
+        short: `⚠ ${label} · ${approvalDetail(e.message, e.toolName).replace(/^permission: /, '')}`,
         sound: cfg.notificationSoundWaiting,
         level: 'warning',
         groupId: sessionGroupId(tmuxSession),
