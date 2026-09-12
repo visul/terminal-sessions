@@ -159,6 +159,7 @@ export const BRANCH_URI_SCHEME = 'terminal-sessions-branch';
 
 export const COMMAND = {
   toggleAllAlerts: 'terminalSessions.toggleAllAlerts',
+  pickNotificationMode: 'terminalSessions.pickNotificationMode',
   alertsEnable: 'terminalSessions.alertsEnable',
   alertsDisable: 'terminalSessions.alertsDisable',
   muteSession: 'terminalSessions.muteSession',

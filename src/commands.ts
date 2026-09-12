@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES } from './config';
+import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES, NativeNotifMode } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId } from './profile-provider';
@@ -311,6 +311,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.dismissCleanupNotice, () => { snoozeCleanupNotice(); refreshSidebar(); }),
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
     vscode.commands.registerCommand(COMMAND.fixClaudeMouseEnv, () => cmdFixClaudeMouseEnv(ctx)),
+    vscode.commands.registerCommand(COMMAND.pickNotificationMode, () => cmdPickNotificationMode()),
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts(ctx)),
     vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(ctx, true)),
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(ctx, false)),
@@ -399,6 +400,51 @@ export function registerCommands(
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     if (NOTIFY_KEYS.some(k => e.affectsConfiguration(`terminalSessions.${k}`))) syncAlertsContext();
   }));
+}
+
+/** Where notifications are delivered. The bell next door is the on/off switch;
+ *  this is the "and where do they show up" half, which used to be reachable
+ *  only by finding the setting. */
+const NOTIF_MODES: { mode: NativeNotifMode; label: string; detail: string }[] = [
+  {
+    mode: 'auto',
+    label: 'Automatic',
+    detail: 'Native banner when the editor is in the background, in-editor toast when it has focus',
+  },
+  {
+    mode: 'always',
+    label: 'Native banners only',
+    detail: 'Always a macOS/Linux banner, nothing inside the editor',
+  },
+  {
+    mode: 'both',
+    label: 'Banner and toast',
+    detail: 'Native banner always, plus an in-editor toast while the window has focus',
+  },
+  {
+    mode: 'never',
+    label: 'In-editor toasts only',
+    detail: 'Never a native banner',
+  },
+];
+
+async function cmdPickNotificationMode(): Promise<void> {
+  const current = getConfig().nativeNotifications;
+  interface Pick extends vscode.QuickPickItem { mode: NativeNotifMode }
+  const items: Pick[] = NOTIF_MODES.map(m => ({
+    label: m.mode === current ? `$(check) ${m.label}` : `     ${m.label}`,
+    detail: m.detail,
+    mode: m.mode,
+  }));
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: 'Where should notifications appear?',
+  });
+  if (!pick || pick.mode === current) return;
+  await vscode.workspace.getConfiguration('terminalSessions')
+    .update('nativeNotifications', pick.mode, vscode.ConfigurationTarget.Global);
+  vscode.window.showInformationMessage(
+    `Notifications: ${NOTIF_MODES.find(m => m.mode === pick.mode)?.label}.`,
+  );
 }
 
 /** Every channel the bell in the view title governs. `waitingAlertStyle` is a
