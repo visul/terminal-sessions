@@ -1,6 +1,7 @@
 import { execFile, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import * as path from 'path';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import { getConfig } from './config';
 import { brandedNotifier, resetBrandedNotifierCache } from './notifier-app';
@@ -9,9 +10,25 @@ import { brandedNotifier, resetBrandedNotifierCache } from './notifier-app';
  *  with the extension, and rebuilt when its version changes. */
 let extRoot = '';
 let extVersion = '0';
+let extState: vscode.Memento | undefined;
 export function initNotifications(ctx: vscode.ExtensionContext): void {
   extRoot = ctx.extensionPath;
   extVersion = String((ctx.extension?.packageJSON as { version?: string } | undefined)?.version || '0');
+  extState = ctx.globalState;
+}
+
+/** Said once, the first time we post under our own bundle: macOS treats it as a
+ *  brand-new app and asks. Dismissing that prompt silences every notification
+ *  with nothing on screen to explain it, so the recovery path is spelled out
+ *  before it can happen rather than buried in a setting's description. */
+const BRANDED_HINT_KEY = 'brandedNotifierHintShown';
+function hintBrandedNotifierOnce(): void {
+  if (!extState || extState.get(BRANDED_HINT_KEY)) return;
+  void extState.update(BRANDED_HINT_KEY, true);
+  void vscode.window.showInformationMessage(
+    'Terminal Sessions now posts notifications under its own icon. macOS asks once to allow them — '
+    + 'if no notifications arrive, enable them in System Settings > Notifications > Terminal Sessions.',
+  );
 }
 function iconPath(): string { return path.join(extRoot, 'media', 'notifier.icns'); }
 function extensionVersion(): string { return extVersion; }
@@ -108,16 +125,20 @@ export async function notify(opts: NotifyOptions): Promise<void> {
         if (alsoToast) showToast({ ...opts, sound: undefined }, true);
         return;
       }
-      // Windows/other: no native backend wired; fall through to toast.
+      // Windows/other: no native backend wired; fall through to the toast —
+      // which is then the only channel there is, so it must not self-dismiss
+      // and must keep its button.
     } catch (e) {
       console.error('[terminal-sessions] native notify failed, falling back to toast:', e);
       showToast(opts, false);
       return;
     }
   }
-  // `auto` with the window focused: the user is right here, so the toast is a
-  // courtesy cue — transient, not another thing to click away.
-  showToast(opts, true);
+  // Nothing native went out on this path (mode `auto` with the window focused,
+  // or a platform with no backend), so the toast is all the user gets: it stays
+  // until dealt with. Only `both` produces a genuinely redundant toast, and
+  // that one is marked transient where it is raised, above.
+  showToast(opts, false);
 }
 
 /**
@@ -140,14 +161,21 @@ async function linuxNotify(opts: NotifyOptions): Promise<void> {
   // notify-send has no icon of ours to carry the source, same as the osascript
   // path, so the badge goes in the text.
   const state = badged(opts);
-  const body = state ? `${state}\n${opts.body}`.trimEnd() : opts.body;
+  const body = escapeMarkup(state ? `${state}\n${opts.body}`.trimEnd() : opts.body);
   await execFileP('/usr/bin/notify-send', [
     '-u', urgency,
     '-t', timeoutMs,
     '-a', 'Terminal Sessions',
-    title,
+    escapeMarkup(title),
     body,
-  ]);
+  ], { timeout: 5000 });
+}
+
+/** Most notification daemons parse the body as Pango markup, so a command line
+ *  carrying `<`, `>` or `&` — `grep <x> && make` — is mangled or dropped, while
+ *  notify-send still exits 0 and the toast fallback never fires. */
+function escapeMarkup(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 /**
@@ -240,9 +268,30 @@ export async function macosAlert(opts: {
  * So: post, keep the handle, and put it on a leash — clicks work while the
  * process lives, and it is reaped afterwards instead of accumulating.
  */
-function runNotifier(tn: string, args: string[], leashMs: number): ChildProcess {
-  const child = execFile(tn, args, () => { /* exit code is not actionable */ });
-  child.on('error', () => { /* spawn failed; nothing to notify about */ });
+function runNotifier(
+  tn: string,
+  args: string[],
+  leashMs: number,
+  onFailure?: () => void,
+): ChildProcess {
+  const started = Date.now();
+  let failed = false;
+  const fail = () => {
+    if (failed) return;
+    failed = true;
+    onFailure?.();
+  };
+  const child = execFile(tn, args, () => { /* exit code handled via 'exit' */ });
+  // Not awaiting the process means its failures are ours to notice: a moved or
+  // unlaunchable binary (a rejected signature on the branded bundle, a bad exec
+  // bit) used to reject the await and land in notify()'s toast fallback. Now it
+  // would post nothing at all, silently, so failure is routed back explicitly.
+  child.on('error', fail);
+  child.on('exit', (code) => {
+    // A healthy notifier sits there servicing the click; one that exits at once
+    // with a non-zero code never delivered anything.
+    if (code !== null && code !== 0 && Date.now() - started < 2000) fail();
+  });
   child.unref();
   const leash = setTimeout(() => { try { child.kill(); } catch { /* already gone */ } }, leashMs);
   (leash as unknown as { unref?: () => void }).unref?.();
@@ -258,22 +307,31 @@ const REMOVE_LEASH_MS = 5_000;
 /** Cached location of `terminal-notifier` — if installed, clicks on our
  *  notifications bring Cursor to the front instead of Script Editor. */
 let _tnPath: string | undefined | null = null;
+/** When the probe last came up empty. A negative result is not permanent: the
+ *  README tells people to `brew install terminal-notifier` for click-to-session,
+ *  and latching "missing" meant doing so had no effect until a window reload. */
+let _tnMissingAt = 0;
+const TN_RETRY_MS = 60_000;
 let _bundleId: string | undefined | null = null;
 
 async function detectTerminalNotifier(): Promise<string | undefined> {
-  if (_tnPath !== null) return _tnPath;
+  if (_tnPath) return _tnPath;
+  if (_tnPath === undefined && Date.now() - _tnMissingAt < TN_RETRY_MS) return undefined;
   const candidates = [
     '/opt/homebrew/bin/terminal-notifier',
     '/usr/local/bin/terminal-notifier',
   ];
   for (const p of candidates) {
+    // X_OK, not existence: a file that is there but not executable would be
+    // "found" and then fail to spawn — which is now a silent no-notification.
     try {
-      await execFileP('/bin/ls', [p]);
+      fs.accessSync(p, fs.constants.X_OK);
       _tnPath = p;
       return p;
     } catch { /* next */ }
   }
   _tnPath = undefined;
+  _tnMissingAt = Date.now();
   return undefined;
 }
 
@@ -281,7 +339,9 @@ async function detectBundleId(): Promise<string | undefined> {
   if (_bundleId !== null) return _bundleId;
   const appName = vscode.env.appName || 'Cursor';
   try {
-    const { stdout } = await execFileP('/usr/bin/osascript', ['-e', `id of app "${appName}"`]);
+    const { stdout } = await execFileP(
+      '/usr/bin/osascript', ['-e', `id of app "${appName}"`], { timeout: 5000 },
+    );
     _bundleId = stdout.trim() || undefined;
     return _bundleId;
   } catch {
@@ -316,7 +376,9 @@ async function resolveNotifier(): Promise<{ bin: string; branded: boolean } | un
   if (!plain) return undefined;
   if (!getConfig().brandedNotifier) return { bin: plain, branded: false };
   const ours = await brandedNotifier(plain, iconPath(), extensionVersion());
-  return ours ? { bin: ours, branded: true } : { bin: plain, branded: false };
+  if (!ours) return { bin: plain, branded: false };
+  hintBrandedNotifierOnce();
+  return { bin: ours, branded: true };
 }
 
 async function macosNotify(opts: NotifyOptions, defaultSound: string): Promise<void> {
@@ -354,8 +416,18 @@ async function macosNotify(opts: NotifyOptions, defaultSound: string): Promise<v
       if (opts.openUrl) args.push('-open', opts.openUrl);
       args.push('-activate', bundleId);
     }
-    const child = runNotifier(tn, args, CLICK_LEASH_MS);
-    if (group && timeoutSec > 0) scheduleBannerRemoval(group, timeoutSec, child);
+    const child = runNotifier(tn, args, CLICK_LEASH_MS, () => {
+      console.error('[terminal-sessions] notifier failed to post; falling back to a toast');
+      showToast(opts, false);
+    });
+    if (group) {
+      // The banner this one replaces can no longer be clicked, so its process
+      // has nothing left to wait for.
+      releaseBanner(group);
+      bannerPoster.set(group, child);
+      child.on('exit', () => { if (bannerPoster.get(group) === child) bannerPoster.delete(group); });
+      if (timeoutSec > 0) scheduleBannerRemoval(group, timeoutSec);
+    }
     return;
   }
 
@@ -385,15 +457,46 @@ export async function removeNotification(groupId: string): Promise<void> {
  *  whether or not per-session grouping is on. */
 async function removeGroup(groupId: string): Promise<void> {
   if (process.platform !== 'darwin' || isRemoteExtensionHost()) return;
-  const tn = await detectTerminalNotifier();
-  if (!tn) return;
-  runNotifier(tn, ['-remove', groupId], REMOVE_LEASH_MS);
+  releaseBanner(groupId);
+  // Notification Center scopes delivered notifications to the identity that
+  // posted them: a `-remove` issued by the plain binary cannot see — let alone
+  // withdraw — a banner posted by our branded bundle, or one posted under
+  // `-sender`. Withdrawing has to use the same binary and the same sender, and
+  // after a settings flip the previous identity still has banners standing, so
+  // sweep every identity we could have posted under.
+  const cfg = getConfig();
+  const plain = await detectTerminalNotifier();
+  const current = await resolveNotifier();
+  const bins = new Set<string>();
+  if (current?.bin) bins.add(current.bin);
+  if (plain) bins.add(plain);
+  const senderId = cfg.notificationSenderIcon ? await detectBundleId() : undefined;
+  for (const bin of bins) {
+    const args = ['-remove', groupId];
+    if (senderId) args.push('-sender', senderId);
+    runNotifier(bin, args, REMOVE_LEASH_MS);
+    // The same group may also be standing without a sender (the setting was
+    // flipped since it was posted), and `-sender` scopes the lookup.
+    if (senderId) runNotifier(bin, ['-remove', groupId], REMOVE_LEASH_MS);
+  }
 }
 
 /** Which banner currently owns a group id, so a timer that fires late does not
  *  withdraw the notification that replaced the one it was scheduled for. */
 const bannerOwner = new Map<string, number>();
+/** The process still standing by to service a click on each group's banner. */
+const bannerPoster = new Map<string, ChildProcess>();
 let bannerSeq = 0;
+
+/** Stop waiting on a banner that is gone: drop its timer's claim and let the
+ *  process that was holding the click open exit now, rather than sitting out
+ *  the two-minute leash for a notification nobody can click any more. */
+function releaseBanner(groupId: string): void {
+  bannerOwner.delete(groupId);
+  const poster = bannerPoster.get(groupId);
+  bannerPoster.delete(groupId);
+  try { poster?.kill(); } catch { /* already gone */ }
+}
 
 /**
  * Show it, then take it back: the banner has its usual few seconds on screen,
@@ -401,16 +504,12 @@ let bannerSeq = 0;
  * residue to clear by hand. This is what `terminal-notifier -timeout` used to
  * do before 2.0.0 dropped the flag.
  */
-function scheduleBannerRemoval(groupId: string, seconds: number, poster?: ChildProcess): void {
+function scheduleBannerRemoval(groupId: string, seconds: number): void {
   const seq = ++bannerSeq;
   bannerOwner.set(groupId, seq);
   const timer = setTimeout(() => {
     if (bannerOwner.get(groupId) !== seq) return;  // superseded; its timer owns it
-    bannerOwner.delete(groupId);
-    void removeGroup(groupId);
-    // The banner is gone, so nothing is left to click: let its process go too
-    // rather than hold it for the full click leash.
-    try { poster?.kill(); } catch { /* already gone */ }
+    void removeGroup(groupId);                     // releases the poster too
   }, seconds * 1000);
   // Never hold the extension host open for a notification.
   (timer as unknown as { unref?: () => void }).unref?.();

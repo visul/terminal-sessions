@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { getConfig } from './config';
 import { notify, sessionFocusUrl, sessionGroupId } from './notifications';
-import { sessionNameForTerminal } from './profile-provider';
+import { resolveSessionNameForTerminal } from './profile-provider';
 import { parseSessionName } from './workspace-id';
 import type { SessionIndex } from './session-manager';
 import { formatDuration } from './util';
@@ -9,9 +9,15 @@ import { formatDuration } from './util';
 interface StartInfo { cmd: string; start: number; terminalName: string; }
 
 /** The tmux session a terminal is attached to, if it is one of ours. Plain
- *  terminals return undefined and are never muted or grouped. */
-function sessionOfTerminal(t: vscode.Terminal): string | undefined {
-  const name = sessionNameForTerminal(t);
+ *  terminals return undefined and are never muted or grouped.
+ *
+ *  Resolved through the index rather than from shellArgs alone: VS Code trims
+ *  creationOptions on restored terminals, so after a window reload the raw
+ *  lookup returns nothing — and a muted session would have gone right back to
+ *  announcing its slow builds, on exactly the tabs most likely to be running
+ *  one. */
+function sessionOfTerminal(t: vscode.Terminal, index: SessionIndex): string | undefined {
+  const name = resolveSessionNameForTerminal(t, index, getConfig().sessionPrefix);
   if (!name) return undefined;
   return parseSessionName(name, getConfig().sessionPrefix) ? name : undefined;
 }
@@ -51,7 +57,7 @@ export function registerLongRunNotifier(ctx: vscode.ExtensionContext, index: Ses
 
       // "Mute Notifications" on a session has to mean the session, not just the
       // agent running in it — a muted tab was still announcing its slow builds.
-      const tmuxSession = sessionOfTerminal(e.terminal);
+      const tmuxSession = sessionOfTerminal(e.terminal, index);
       if (tmuxSession) {
         const parsed = parseSessionName(tmuxSession, getConfig().sessionPrefix);
         if (parsed && index.isSessionMuted(parsed.hash, tmuxSession)) return;
