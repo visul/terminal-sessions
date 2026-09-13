@@ -452,7 +452,6 @@ async function cmdPickNotificationMode(): Promise<void> {
 const NOTIFY_KEYS = [
   'notifyOnClaudeWaiting',
   'notifyOnClaudeStop',
-  'enableLongRunNotifications',
 ] as const;
 
 /** What the bell was silencing, so unmuting restores the mix the user had
@@ -469,8 +468,8 @@ function anyNotificationEnabled(): boolean {
  * extension sends, not just the waiting alerts it started life as.
  *
  * Muting records which channels were on and turns them all off; unmuting puts
- * exactly those back, so someone who had long-run alerts off on purpose does
- * not get them back for free.
+ * exactly those back, so someone who had done notifications off on purpose
+ * does not get them back for free.
  */
 async function cmdSetAllAlerts(ctx: vscode.ExtensionContext, value?: boolean): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
@@ -1962,7 +1961,6 @@ async function cmdUninstallClaudeHook(registry: AgentRegistry): Promise<void> {
 
 async function cmdTestNotification(): Promise<void> {
   await notify({
-    kind: 'shell',
     title: 'Terminal Sessions',
     subtitle: '✓ Test notification',
     body: 'Delivery mode, sound and icon are in settings',

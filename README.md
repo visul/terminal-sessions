@@ -51,11 +51,12 @@ first session.
 ```
 
 1. **Toolbar,** left to right: filter this list as you type, change the
-   filter mode, new session, re-attach ghost terminals, toggle waiting
-   alerts, search every past conversation on the machine, resume from
-   archive, collapse all. The `⋯` menu holds the sort mode, the cleanup tool,
-   switches for each pinned folder, and the terminal-tab marks (on/off, and
-   whether a mark clears when seen or after 30 minutes).
+   filter mode, new session, re-attach ghost terminals, mute or unmute every
+   notification, search every past conversation on the machine, resume from
+   archive, collapse all. The `⋯` menu holds the sort mode, *Where
+   Notifications Appear…*, the cleanup tool, switches for each pinned folder,
+   and the terminal-tab marks (on/off, and whether a mark clears when seen or
+   after 30 minutes).
 2. **Workspace.** One per project, with a count badge: `12⏸` stopped, then the
    live ones — `1⇄` detached (no tab here), `5▶` with a tab open.
 3. **Notes.** Sessions you left a note on, most recently edited first. Only
@@ -258,8 +259,8 @@ from where you are typing.
 
 | Platform | tmux backend | Notifications | Click-to-focus on notif | Status |
 |---|---|---|---|---|
-| **macOS (local)** | Native | macOS Notification Center + modal alert | Yes (osascript / terminal-notifier) | Full support |
-| **Linux (local)** | Native | `notify-send` (libnotify) + optional `zenity` modal | Yes (zenity) | Full support |
+| **macOS (local)** | Native | macOS Notification Center + modal alert | Yes, straight to the session's tab (needs `terminal-notifier`) | Full support |
+| **Linux (local)** | Native | `notify-send` (libnotify), one banner per session, theme sounds + optional `zenity` modal | Yes (zenity modal) | Full support |
 | **Remote-SSH / Remote-WSL** | Native (tmux on the remote) | IPC-forwarded VS Code toast or modal in the local Cursor window | Yes (via VS Code API) | Full support |
 | **Windows (native)** | Not supported — needs WSL or Remote-SSH | Falls back to VS Code toast | No | Requires WSL or SSH |
 
@@ -415,7 +416,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **One sidebar, five agents** — the same live status, context %, cost, history, and auto-resume work for **Claude Code**, **Codex**, **Antigravity** (`agy`), **Grok** (xAI), and **OpenCode**. Each tracked session shows which agent it's running, so a row reads `Codex working 12s` vs `Claude working 12s`
 - **Auto-detection** — Claude is always on; Codex, Antigravity, Grok and OpenCode turn on automatically when their CLI (`codex` / `agy` / `grok` / `opencode`, including a curl-installed `~/.opencode/bin/opencode`) is found on your `PATH`. Override explicitly with `terminalSessions.enabledAgents` (e.g. `["claude", "codex"]`)
 - **Per-agent hooks, one forwarder** — `Terminal Sessions: Install AI Agent Hooks` writes the right hook into each agent's own settings file (`~/.claude/settings.json`, `~/.codex/hooks.json`, `~/.gemini/antigravity-cli/settings.json`); a single shared script normalizes their differing event payloads. Your model and MCP config are never disturbed
-- **Grok needs no hooks** — Grok's lifecycle hooks are project-scoped and trust-gated, so the extension tracks it without installing anything: it discovers live Grok sessions from `~/.grok/active_sessions.json`, matches each to its tmux pane by process tree, and tails the session's ACP `updates.jsonl` for status, tokens, and messages. Nothing is written into your projects
+- **Grok needs no hooks** — Grok's lifecycle hooks are project-scoped and trust-gated, so the extension tracks it without installing anything: it discovers live Grok sessions from `~/.grok/active_sessions.json`, matches each to its tmux pane by process tree, and tails the session's ACP `updates.jsonl` for status, tokens, and messages. Nothing is written into your projects. Without a `Stop` hook, the done notification comes from the same transcript evidence that turns the row green, under the same mute, cooldown and min-duration rules as every other agent
 - **OpenCode gets a plugin, not a hook** — OpenCode has no shell-command hooks and keeps every conversation of every project in one SQLite database, so there is neither a settings entry to add nor a file to tail. `Install AI Agent Hooks` writes one plugin file, `~/.config/opencode/plugin/terminal-sessions.js` (OpenCode loads everything in that folder; `opencode.json` is never touched), and asks you to restart running `opencode` instances (OpenCode does not hot-reload plugins). The plugin runs inside the `opencode` process, so it inherits the pane's `$TMUX_PANE`, and it forwards the lifecycle to the same forwarder as Claude: prompt submitted, tool started/finished, a permission or `question` prompt waiting on you (⚠ — that state never touches OpenCode's database, so no outside reader could see it), turn finished (after the session was really busy, so a subagent finishing never turns the tab green), and exit. It also appends a compact per-conversation JSONL under `~/.terminal-sessions/opencode/` with the model, tokens, cost (OpenCode's own figure), context usage (OpenCode's own formula against its `models.json` catalog, so proxy providers with smaller windows are respected), tool calls and results, and subagent sessions — which is what the sidebar reads. Conversations that predate the plugin still show up in the resume picker, read straight from OpenCode's database, and resume fine; they just carry no cost history. Sessions started outside tmux, or with `OPENCODE_PURE=1`, are not tracked. Auto-approve is `opencode --auto` (the hidden `--yolo` / `--dangerously-skip-permissions` aliases count too)
 - **Agent-correct resume** — restart/resume runs the right command per agent: `claude --resume <id>` (cwd-sensitive), `codex resume <id>` (restores its own recorded cwd), `agy --conversation <id>`, `grok -r <id>`, or `opencode -s <id>` (after a `cd` back to the conversation's recorded directory, because an OpenCode instance binds its project config to the directory it starts in). The extension picks it from the session's recorded agent automatically
 - **Provider abstraction** — adding more agents later is a new provider file, no core changes; all five share one tracker, state machine, and notification path
@@ -445,36 +446,38 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 
 ### Unread results & turn outcome
 - **Unread marker** — an agent that finishes while you're on another tab keeps a verdict on its row until you focus that terminal: teal filled check = done, red `✗ failed` / `✗ tests failed` / `⏳ rate limited`, amber `? asked you`. Persisted across window reloads; the activity-bar badge counts unread sessions. Toggle with `terminalSessions.unreadBadges`
-- **Outcome from the transcript, no LLM** — per-turn tool-result evidence (Claude `is_error`, `N failed`, `FAIL`, `npm ERR!`, `error TSxxxx`, exit codes, rate-limit messages) classifies how the turn ended; idle rows show `idle 3m · ✗ tests failed`, the tooltip shows the decisive line, and the Stop notification says what happened
+- **Outcome from the transcript, no LLM** — per-turn tool-result evidence (Claude `is_error`, `N failed`, `FAIL`, `npm ERR!`, `error TSxxxx`, rate-limit messages) classifies how the turn ended; idle rows show `idle 3m · ✗ tests failed` and the tooltip shows the decisive line. A bare non-zero exit is not evidence on its own (a `grep` that finds nothing exits 1), and declining a permission prompt is your decision, not a failed turn. The verdict stays in the sidebar: notifications only say done or needs you
 - **Dismiss (Mark as Seen)** — right-click a waiting/unread row (bulk OK). A dismissed waiting row shows as idle until the agent does anything new. Palette: `Terminal Sessions: Mark All Sessions as Seen`
 
 ### Notifications
-- **Claude Stop notification** — fires when Claude finishes a response. Distinct from the waiting variant so you can glance at the sound/icon and know whether you need to act. Min-duration filter prevents notif-storms on short turns
-- **Claude Waiting notification** — fires when Claude blocks for user permission (tool approval, risky command, URL access). Distinct sound (default `Sosumi` vs `Glass` for Stop), `⚠ Claude needs approval` title, subtitle is the session label. Two styles via `terminalSessions.waitingAlertStyle`:
-  - `banner` — standard macOS/Linux notification, auto-dismisses
-  - `alert` — **persistent modal dialog** with a `Show terminal` button that activates Cursor and focuses the matching tab. macOS uses `osascript display alert`; Linux uses `zenity --question` (if installed)
+- **Done notification** — fires when an agent finishes a turn, for all five agents. Distinct from the waiting variant so you can glance at the sound/icon and know whether you need to act. It says done and nothing else: there are exactly two agent notifications, done and needs you, and whether the turn went well is read in the sidebar, next to its evidence. Min-duration filter (`claudeStopMinDurationSeconds`, `0` = every turn) prevents notification storms on short turns. Grok, which has no hooks, and any agent whose `Stop` hook went missing are announced from the transcript instead, so a finished turn is never silent just because a hook was absent
+- **Waiting notification** — fires when an agent blocks on you: a tool approval, a risky command, a question. Claude and Antigravity report it through their `Notification` hook, Codex through its own `PermissionRequest` event, OpenCode through the plugin. The notification says what is being asked (`permission: Bash`), and when the agent sends no text of its own it names the tool it wants to run. Claude's idle "waiting for your input" reminder is not a block and does not alert; a hook that states why it fired (the OpenCode plugin does) is believed over the wording, so a relayed question that happens to contain that phrase still gets through. Distinct sound (default `Sosumi` vs `Glass` for done). Two styles via `terminalSessions.waitingAlertStyle`:
+  - `banner` — standard native notification, auto-dismisses
+  - `alert` — **persistent modal dialog** with a `Show terminal` button that brings the editor forward and focuses the matching tab. macOS uses `osascript display alert`; Linux uses `zenity --question`, or a sticky `notify-send -u critical` banner when zenity is missing; a remote workspace gets a VS Code modal. Windows has no modal path and keeps the banner
 - **Click-to-session** (macOS) — with `terminal-notifier` installed (`brew install terminal-notifier`), a banner carries a `focus` deep link back into the extension: clicking it brings Cursor forward **and** opens the session's terminal tab (reattaching it if it was closed) and selects the row in the sidebar. Without `terminal-notifier` notifications still work, but click lands in Script Editor — see the Requirements section for the exact trade-off
-- **One banner per session** — notifications are grouped by session, so a busy session replaces its standing banner instead of stacking a new one for every event, and the banner is withdrawn as soon as you look at that session's tab, dismiss it from the sidebar, or run `Mark All Sessions as Seen`. `terminalSessions.notificationGrouping` (default on); needs `terminal-notifier`, since macOS cannot recall a notification posted through `osascript`
+- **One banner per session** — notifications are grouped by session, so a busy session replaces its standing banner instead of stacking a new one for every event, and the banner is withdrawn as soon as you look at that session's tab, dismiss it from the sidebar, or run `Mark All Sessions as Seen`. `terminalSessions.notificationGrouping` (default on). On macOS it needs `terminal-notifier`, since macOS cannot recall a notification posted through `osascript`. On Linux the replacement rides on the id `notify-send` prints (libnotify 0.7.9 or newer; an older one still posts, the banners just stack) and the withdrawal goes over D-Bus through `gdbus`
 - **Works over Remote-SSH / Remote-WSL** — when the extension host runs on a remote machine (the tmux session lives on the server, Cursor runs on your laptop), OS native notifications posted from the remote can't reach your desktop. The extension auto-detects this via `vscode.env.remoteName` and routes through the VS Code API instead: waiting events become an IPC-forwarded warning toast (banner style) or a blocking modal dialog (`alert` style) that pops up in your local Cursor window. The `Show terminal` button still works the same way — click it and the extension iterates `vscode.window.terminals` on the remote extension host and focuses the matching tab in your local UI. No extra setup on the remote; libnotify/terminal-notifier are not used in remote mode because they would be useless
-- **Global on/off toggle** — the bell icon in the Terminal Sessions sidebar title bar is a master mute for every notification the extension sends: waiting, done, and long-running commands (`notifyOnClaudeWaiting`, `notifyOnClaudeStop`, `enableLongRunNotifications`). Muting remembers which channels were on, so unmuting restores that mix instead of switching everything on. When everything is off the icon switches to `$(bell-slash)`. Command Palette also has `Terminal Sessions: Toggle All Notifications (Global)`
-- **Per-session mute** — right-click a session → `Mute Notifications`. Stop and Waiting notifications for that session are silenced until you unmute. Muted sessions display a `🔕` in the sidebar description. Useful for long-running experiments where you don't want beeps
-- **Native macOS Notification Center** — mode-switchable (`auto`: native when Cursor is unfocused / toast when focused; `always`: native only; `both`: native banner plus a transient in-editor toast while the window has focus, for wide displays where a corner banner is easy to miss; `never`: toast only). On `auto` the toast half is no longer silent: it plays the same sound the banner would have (`terminalSessions.toastSound`), which matters because that is exactly the case where you are sitting at the keyboard. If you want every event in Notification Center regardless of focus, use `always`
+- **Global on/off toggle** — the bell icon in the Terminal Sessions sidebar title bar is a master mute for every notification the extension sends: waiting and done (`notifyOnClaudeWaiting`, `notifyOnClaudeStop`). Muting remembers which channels were on, so unmuting restores that mix instead of switching everything on. When everything is off the icon switches to `$(bell-slash)`. Command Palette also has `Terminal Sessions: Toggle All Notifications (Global)`
+- **Per-session mute** — right-click a session → `Mute Notifications`. Done and waiting notifications for that session are silenced until you unmute, and a banner already on screen for it is withdrawn. Muted sessions display a `🔕` in the sidebar description. Useful for long-running experiments where you don't want beeps
+- **Where notifications appear** — `Where Notifications Appear…` in the view's `⋯` menu picks the delivery mode, each option with a line saying what it does and the current one ticked (setting: `terminalSessions.nativeNotifications`). `auto`: native when the editor is unfocused, toast when focused; `always`: native only; `both`: native banner plus a transient in-editor toast while the window has focus, for wide displays where a corner banner is easy to miss; `never`: toast only. On `auto` the toast half is not silent: it plays the same sound the banner would have (`terminalSessions.toastSound`), which matters because that is exactly the case where you are sitting at the keyboard. If you want every event in Notification Center regardless of focus, use `always`
+- **Your own entry in System Settings (macOS)** — `terminalSessions.brandedNotifier` (default off) posts from a small bundle of the extension's own, built on first use from your installed `terminal-notifier` and re-signed ad-hoc (needs the Xcode command line tools). Banners then carry the Terminal Sessions icon and get a **Terminal Sessions** entry under System Settings → Notifications, where you can switch them to persistent Alerts; plain `terminal-notifier` is never listed there, so its style cannot be changed at all. macOS asks once whether to allow it, and a dismissed prompt means no notifications until you allow them there, which is why it is off by default. If the bundle cannot be built, the normal path is used
 - **Waiting toasts fade on their own** — a VS Code warning toast is sticky and cannot be retracted by the extension, so behind a native banner it was a second thing to click away. When the banner already covered the event, the toast now clears after `terminalSessions.toastAutoDismissSeconds` (default 8, `0` to keep it sticky). A toast that is your only channel (`never`, or a remote workspace) stays and keeps its `Show terminal` button
-- **Native Linux** — uses `notify-send` with urgency `critical` for warnings (sticky until dismissed on most desktop environments); falls back to VS Code toast if libnotify is missing
-- **Sound picker** — 14 macOS built-in sounds (Glass, Ping, Hero, Pop, Sosumi, …). Separate settings for Stop (`notificationSound`) and Waiting (`notificationSoundWaiting`). Linux sound mapping is not implemented; sound is macOS-only
-- **Self-clearing banners** — `terminalSessions.bannerTimeoutSeconds` (default `0` = off) withdraws a native banner N seconds after it is posted, so notifications appear, go, and leave nothing behind in Notification Center. Needs `terminal-notifier`; it replaces its `-timeout` flag, removed in 2.0.0
-- **Long-running command alerts** — notification when a command takes longer than a configurable threshold (default 30s)
+- **Native Linux** — uses `notify-send`: urgency `critical` for errors (sticky until dismissed on most desktop environments), 8 s for warnings, 5 s otherwise, one banner per session as above. Falls back to a VS Code toast if libnotify is missing
+- **Sound picker** — 14 macOS built-in sounds (Glass, Ping, Hero, Pop, Sosumi, …). Separate settings for done (`notificationSound`) and waiting (`notificationSoundWaiting`). Linux plays sounds from the desktop's sound theme instead, chosen by severity (`message-new-instant`, `dialog-warning`, `dialog-error`), since macOS sound names mean nothing there; toasts play the same through `canberra-gtk-play` when it is installed
+- **Self-clearing banners** — `terminalSessions.bannerTimeoutSeconds` (default `0` = off) withdraws a native banner N seconds after it is posted, so notifications appear, go, and leave nothing behind in Notification Center. On macOS it needs `terminal-notifier` and replaces its `-timeout` flag, removed in 2.0.0. On Linux it closes the banner over D-Bus, which also clears it from the desktop's notification list, where the daemon's own timeout would have left it
 - **Post-reboot recovery** — "Recreate Sessions from Index" rebuilds your sessions after a reboot wiped the tmux server; optional `claude --resume <id>` hint toast so you can reattach Claude Code sessions by ID
 
 ### Making macOS notifications persistent
 
 macOS decides whether notifications show as auto-dismissing **banners** or sticky **alerts** at the OS level, not from the app. To make every notification stay on screen until you dismiss it:
 
-1. Open **System Settings → Notifications**
-2. Find the app that posts our notifications: **terminal-notifier** if you installed it, otherwise **Script Editor** (the implicit owner of `osascript` notifications)
+1. Turn on `terminalSessions.brandedNotifier` and allow the one-time macOS prompt
+2. Open **System Settings → Notifications → Terminal Sessions**
 3. Change **Notification style** from `Banners` to `Alerts`
 
-`terminalSessions.notificationSenderIcon` moves them under Cursor's own entry instead, at the cost of click-to-session: with `-sender` in play, `terminal-notifier` handles the click itself and the deep link is dropped.
+Without `brandedNotifier` there is no entry to change: `terminal-notifier` never registers itself in that list. Without `terminal-notifier` at all, notifications are posted through `osascript` and file under **Script Editor**, whose style you can change the same way.
+
+`terminalSessions.notificationSenderIcon` is the older way to borrow the editor's icon. It only works on `terminal-notifier` 2.x (3.0 removed `-sender`, so on a current Homebrew install it does nothing); `brandedNotifier` works on every version and keeps click-to-session.
 
 Alerts get a `Show` button and stay in the top-right corner until you click it or Close. The `terminalSessions.waitingAlertStyle: "alert"` setting is an alternative that works without changing System Settings — it produces a modal dialog instead of a banner.
 
@@ -519,13 +522,14 @@ Two commands:
 The extension works out of the box, but the click-to-focus behavior on notifications depends on small platform helpers. Without them, you still get the notification — you just can't click it to jump straight to the right terminal tab.
 
 **macOS**
-- `brew install terminal-notifier` — makes **click on a `Claude done` / `Claude needs approval` banner focus Cursor** instead of bouncing you to Script Editor. Without it, notifications still show up, but they are posted via `osascript` which attributes them to Script Editor.app; clicking "Show" opens Script Editor, not the IDE. With it, the extension uses `terminal-notifier -activate <Cursor bundle id>` so clicks land in Cursor.
-- For fully persistent banners that stay on screen until you dismiss them: System Settings → Notifications → Script Editor (or Terminal Notifier, if you installed it) → set Notification style to **Alerts** instead of Banners. Alternatively keep banners and flip `terminalSessions.waitingAlertStyle` to `"alert"` so waiting events come through as a modal dialog (persistent and click-to-focus, macOS-only).
+- `brew install terminal-notifier` (2.x or 3.x) — makes **a click on a done / waiting banner open that session's terminal** instead of bouncing you to Script Editor, and lets the extension replace and withdraw its banners. Without it, notifications still show up, but they are posted via `osascript` which attributes them to Script Editor.app; clicking "Show" opens Script Editor, not the IDE.
+- For fully persistent banners that stay on screen until you dismiss them: turn on `terminalSessions.brandedNotifier`, then System Settings → Notifications → **Terminal Sessions** → set Notification style to **Alerts** instead of Banners (see [Making macOS notifications persistent](#making-macos-notifications-persistent)). Alternatively keep banners and flip `terminalSessions.waitingAlertStyle` to `"alert"` so waiting events come through as a modal dialog (persistent and click-to-focus).
 
 **Linux**
 - `libnotify` — required for any native notification at all:
   `sudo apt install libnotify-bin` (Debian/Ubuntu) or `sudo dnf install libnotify` (RHEL/Fedora). Without it, the extension falls back to VS Code toasts (in-editor popups, auto-dismissing).
 - `zenity` (optional) — enables the persistent modal dialog for waiting alerts (`waitingAlertStyle: "alert"`). Without it, the `alert` style silently falls back to a sticky `notify-send -u critical` banner. Install with `sudo apt install zenity` or `sudo dnf install zenity`.
+- `gdbus` (part of GLib, present on GNOME, KDE and most desktops) withdraws a session's banner once you have seen it, or after `bannerTimeoutSeconds`; `canberra-gtk-play` (`sudo apt install gnome-session-canberra` / `sudo dnf install libcanberra-gtk3`) gives in-editor toasts a sound. Both optional: without them banners simply expire on their own and toasts are silent.
 
 ### Build from source (only if contributing)
 - **Node.js 20+**
@@ -534,8 +538,8 @@ The extension works out of the box, but the click-to-focus behavior on notificat
 
 | Platform | Package | Without it | With it |
 |---|---|---|---|
-| macOS | `terminal-notifier` | Notifications appear but clicking them opens Script Editor | Notifications appear and clicks focus Cursor |
-| macOS | Notification style = Alerts (System Settings) | Banners auto-dismiss in 5s | Banners stay until dismissed, have `Show` button |
+| macOS | `terminal-notifier` | Notifications appear but clicking them opens Script Editor; banners stack | Clicks open the session's terminal; one banner per session, withdrawn once seen |
+| macOS | `brandedNotifier` + Notification style = Alerts (System Settings) | Banners auto-dismiss in 5s | Banners stay until dismissed, have `Show` button, carry the extension's icon |
 | Linux | `libnotify-bin` | Notifications fall back to VS Code toasts | Native desktop notifications via `notify-send` |
 | Linux | `zenity` | `waitingAlertStyle: "alert"` falls back to sticky banner | Real modal dialog with `Show terminal` button |
 
@@ -591,7 +595,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 2. Install the extension and reload Cursor (full quit + reopen if you see stale state)
 3. Run `Terminal Sessions: Set as Default Terminal Profile` so every `+` button creates a tmux-wrapped terminal
 4. Find the **Terminal Sessions** section under the Explorer (or drag it out to its own Activity Bar icon / the panel — VS Code remembers where you put it)
-5. Optional: run `Terminal Sessions: Install AI Agent Hooks` to enable live agent state + notifications for Claude, Codex, and Antigravity
+5. Optional: run `Terminal Sessions: Install AI Agent Hooks` to enable live agent state + notifications for Claude, Codex and Antigravity (hooks) and OpenCode (plugin). Grok needs nothing installed
 
 ## Commands
 
@@ -622,7 +626,8 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Test Native Notification` | Fire a sample notification to check your OS setup |
 | `Terminal Sessions: Fix Claude Code Rendering in Shell` | Appends `CLAUDE_CODE_NO_FLICKER=1` to your rc file, for shells outside tmux (optional — the managed tmux.conf already bakes it in). Also offers to comment out a leftover `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` line written by older versions |
 | `Terminal Sessions: Fix Claude Code Mouse (drag-select)` | Finds `CLAUDE_CODE_DISABLE_MOUSE_CLICKS` in your rc files, the tmux server environment or `~/.claude/settings.json` and removes it. That variable makes Claude ignore every mouse click and drag |
-| `Terminal Sessions: Toggle Claude Waiting Alerts (Global)` | Flip the `notifyOnClaudeWaiting` setting |
+| `Terminal Sessions: Toggle All Notifications (Global)` | Master mute for waiting and done notifications (same as the bell in the view title); unmuting restores the mix that was on |
+| `Terminal Sessions: Where Notifications Appear...` | Pick the delivery mode (`auto` / `always` / `both` / `never`); also in the view's `⋯` menu |
 | `Terminal Sessions: Recreate Sessions from Index` | After a reboot, rebuild tmux sessions from the stored index |
 | Right-click on sidebar session → `Restart` | Kill + fresh shell; auto-resume the agent if detected |
 | Right-click on sidebar session → `View Conversation` | Render the session's transcript as Markdown (reads the `.jsonl` directly — works on stopped sessions too) |
@@ -695,16 +700,20 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.claudeSidebarDetails` | `"auto"` | Expand the nested rows under a Claude session: `auto`/`always`/`collapsed`/`off` |
 | `terminalSessions.claudeNoFlicker` | `"auto"` | `CLAUDE_CODE_NO_FLICKER` mode. `auto` = off on Cursor (conversation copyable), on in VS Code (clean alt-screen). `on` = always clean, no copy from live view. `off` = always copyable, slight flicker |
 | `terminalSessions.contextWarnPct` | `0.8` | Threshold (0-1) for the `⚠ 87% ctx` warning next to Claude state |
-| `terminalSessions.nativeNotifications` | `"auto"` | `auto` (native when Cursor unfocused), `always`, `never` |
-| `terminalSessions.notificationSound` | `"Glass"` | macOS sound for Claude Stop notifications |
-| `terminalSessions.notificationSoundWaiting` | `"Sosumi"` | macOS sound for Claude Waiting notifications (distinct from Stop) |
-| `terminalSessions.notifyOnClaudeStop` | `true` | Send a notification when Claude finishes a response |
-| `terminalSessions.notifyOnClaudeWaiting` | `true` | Send a notification when Claude blocks for user permission |
-| `terminalSessions.waitingAlertStyle` | `"banner"` | `banner` (auto-dismiss) or `alert` (persistent modal dialog with Show button) |
-| `terminalSessions.claudeStopMinDurationSeconds` | `15` | Skip Stop notifications for turns shorter than this |
+| `terminalSessions.nativeNotifications` | `"auto"` | `auto` (native when the editor is unfocused, toast when focused), `always`, `both` (native plus a transient toast while focused), `never`. Also via `Where Notifications Appear…` |
+| `terminalSessions.notificationSound` | `"Glass"` | macOS sound for done notifications. Linux uses the desktop sound theme instead |
+| `terminalSessions.notificationSoundWaiting` | `"Sosumi"` | macOS sound for waiting notifications (distinct from done) |
+| `terminalSessions.notifyOnClaudeStop` | `true` | Send a notification when an agent finishes a turn (every agent, despite the name) |
+| `terminalSessions.notifyOnClaudeWaiting` | `true` | Send a notification when an agent blocks on you (every agent, despite the name) |
+| `terminalSessions.waitingAlertStyle` | `"banner"` | `banner` (auto-dismiss) or `alert` (persistent modal dialog with Show button: macOS, Linux with zenity, remote workspaces) |
+| `terminalSessions.claudeStopMinDurationSeconds` | `15` | Skip done notifications for turns shorter than this (`0` = every turn) |
+| `terminalSessions.notificationGrouping` | `true` | One live banner per session, replaced by the next and withdrawn once you have seen the session (macOS with `terminal-notifier`, Linux) |
+| `terminalSessions.bannerTimeoutSeconds` | `0` | Withdraw a native banner N seconds after posting so Notification Center does not fill up (`0` = leave it to the OS). macOS needs `terminal-notifier`; Linux needs `gdbus` |
+| `terminalSessions.brandedNotifier` | `false` | macOS: post from the extension's own bundle, with its icon and a **Terminal Sessions** entry in System Settings → Notifications. macOS asks once to allow it |
+| `terminalSessions.notificationSenderIcon` | `false` | Borrow the editor's icon via `-sender`. `terminal-notifier` 2.x only; use `brandedNotifier` instead |
+| `terminalSessions.toastSound` | `true` | Play the notification sound for in-editor toasts too |
+| `terminalSessions.toastAutoDismissSeconds` | `8` | Fade a waiting toast after N seconds when a native banner already covered the event (`0` = sticky) |
 | `terminalSessions.autoResumeClaude` | `false` | After recreating sessions post-reboot, auto-run `claude --resume` |
-| `terminalSessions.enableLongRunNotifications` | `true` | Notify when a command takes >N seconds |
-| `terminalSessions.longRunThresholdSeconds` | `30` | Threshold for long-run notifications |
 
 ## Session naming scheme
 

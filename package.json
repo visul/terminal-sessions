@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.33.1",
+  "version": "0.33.3",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -95,16 +95,6 @@
           "default": false,
           "description": "Reserved. Cost tracking was removed in v0.4.2 (API rate card was misleading for Max/Team plan users). Tokens usage is still available via Claude's own `claude /status` command."
         },
-        "terminalSessions.enableLongRunNotifications": {
-          "type": "boolean",
-          "default": true,
-          "description": "Notify when a terminal command takes longer than the threshold."
-        },
-        "terminalSessions.longRunThresholdSeconds": {
-          "type": "number",
-          "default": 30,
-          "description": "Minimum duration (seconds) for long-run command notifications."
-        },
         "terminalSessions.nativeNotifications": {
           "type": "string",
           "enum": [
@@ -141,17 +131,17 @@
             "Tink"
           ],
           "default": "Glass",
-          "description": "Default sound for native notifications (macOS built-in sounds). Errors override with Basso."
+          "description": "Sound for `done` notifications (macOS built-in sounds). Linux ignores this and plays the desktop sound theme, chosen by severity."
         },
         "terminalSessions.notifyOnClaudeStop": {
           "type": "boolean",
           "default": true,
-          "description": "Send a notification when Claude Code finishes a response. Requires Claude hook installed."
+          "description": "Send a notification when an agent finishes a turn. Applies to every agent despite the name: hooks for Claude, Codex and Antigravity, the plugin for OpenCode, the transcript for Grok."
         },
         "terminalSessions.notifyOnClaudeWaiting": {
           "type": "boolean",
           "default": true,
-          "description": "Send a notification when Claude Code blocks waiting for your permission (tool approval, risky command, etc.). Distinct sound from the `done` notification so you can tell them apart at a glance."
+          "description": "Send a notification when an agent blocks waiting for you (tool approval, risky command, a question). Applies to every agent despite the name. Distinct sound from the `done` notification so you can tell them apart at a glance."
         },
         "terminalSessions.waitingAlertStyle": {
           "type": "string",
@@ -161,10 +151,10 @@
           ],
           "enumDescriptions": [
             "Banner notification that auto-dismisses after a few seconds (system default).",
-            "Persistent modal alert dialog in the macOS foreground with a `Show terminal` button. Blocks until you dismiss — use only if you miss the banners."
+            "Persistent modal dialog with a `Show terminal` button: osascript on macOS, zenity on Linux (a sticky banner without it), a VS Code modal on a remote workspace. Windows keeps the banner. Blocks until you dismiss — use only if you miss the banners."
           ],
           "default": "banner",
-          "description": "How to surface Claude waiting-for-permission events."
+          "description": "How to surface an agent waiting for you."
         },
         "terminalSessions.notificationSoundWaiting": {
           "type": "string",
@@ -185,17 +175,17 @@
             "Tink"
           ],
           "default": "Sosumi",
-          "description": "Sound for `Claude needs approval` waiting notifications. Defaults to Sosumi so it is distinct from the `done` sound."
+          "description": "Sound for waiting notifications (macOS). Defaults to Sosumi so it is distinct from the `done` sound."
         },
         "terminalSessions.notificationGrouping": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Keep at most one live banner per session: a new notification replaces the standing one, and it is withdrawn once you open (or dismiss) that session. Requires `terminal-notifier` (`brew install terminal-notifier`); without it macOS cannot recall a delivered notification."
+          "markdownDescription": "Keep at most one live banner per session: a new notification replaces the standing one, and it is withdrawn once you open (or dismiss) that session. On macOS this requires `terminal-notifier` (`brew install terminal-notifier`); without it macOS cannot recall a delivered notification. On Linux it needs a `notify-send` that prints ids (libnotify 0.7.9+) and `gdbus` to withdraw."
         },
         "terminalSessions.bannerTimeoutSeconds": {
           "type": "number",
           "default": 0,
-          "markdownDescription": "Withdraw a native banner this many seconds after it is posted, so it disappears from Notification Center instead of piling up there. `0` (default) leaves macOS in charge: the banner slides away on its own but the entry stays in the list until you clear it. This replaces `terminal-notifier -timeout`, which version 2.0.0 removed. Requires `terminal-notifier`; macOS cannot recall a notification posted through `osascript`."
+          "markdownDescription": "Withdraw a native banner this many seconds after it is posted, so it disappears from Notification Center instead of piling up there. `0` (default) leaves the OS in charge: the banner slides away on its own but the entry stays in the list until you clear it. This replaces `terminal-notifier -timeout`, which version 2.0.0 removed. On macOS it requires `terminal-notifier`, since macOS cannot recall a notification posted through `osascript`; on Linux it closes the banner over D-Bus (`gdbus`)."
         },
         "terminalSessions.brandedNotifier": {
           "type": "boolean",
@@ -210,7 +200,7 @@
         "terminalSessions.toastSound": {
           "type": "boolean",
           "default": true,
-          "markdownDescription": "Play the notification sound for in-editor toasts too (macOS). Without this, every event that lands as a toast — `nativeNotifications: auto` while the window is focused — is silent."
+          "markdownDescription": "Play the notification sound for in-editor toasts too (macOS; on Linux through `canberra-gtk-play` when installed). Without this, every event that lands as a toast — `nativeNotifications: auto` while the window is focused — is silent."
         },
         "terminalSessions.toastAutoDismissSeconds": {
           "type": "number",
@@ -220,7 +210,7 @@
         "terminalSessions.claudeStopMinDurationSeconds": {
           "type": "number",
           "default": 15,
-          "markdownDescription": "Only notify on Claude Stop if the turn ran at least N seconds (avoids a notification storm on short turns). Set `0` to be told about every single turn, however quick."
+          "markdownDescription": "Only send a `done` notification if the turn ran at least N seconds (avoids a notification storm on short turns). Set `0` to be told about every single turn, however quick."
         },
         "terminalSessions.autoResumeClaude": {
           "type": "boolean",
@@ -666,7 +656,7 @@
       },
       {
         "command": "terminalSessions.alertsDisable",
-        "title": "Mute All Notifications (Waiting, Done, Long-Running Commands)",
+        "title": "Mute All Notifications (Done and Waiting)",
         "icon": "$(bell)"
       },
       {

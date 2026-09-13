@@ -26,8 +26,6 @@ export interface Config {
   autoRestoreMaxAgeHours: number;
   pruneAfterDays: number;
   enableCostTracker: boolean;
-  enableLongRunNotifications: boolean;
-  longRunThresholdSeconds: number;
   nativeNotifications: NativeNotifMode;
   notificationSound: string;
   notificationSoundWaiting: string;
@@ -81,8 +79,6 @@ export function getConfig(): Config {
     autoRestoreMaxAgeHours: c.get('autoRestoreMaxAgeHours', 72),
     pruneAfterDays: c.get('pruneAfterDays', 14),
     enableCostTracker: c.get('enableCostTracker', true),
-    enableLongRunNotifications: c.get('enableLongRunNotifications', true),
-    longRunThresholdSeconds: c.get('longRunThresholdSeconds', 30),
     nativeNotifications: c.get('nativeNotifications', 'auto') as NativeNotifMode,
     notificationSound: c.get('notificationSound', 'Glass'),
     notificationSoundWaiting: c.get('notificationSoundWaiting', 'Sosumi'),

@@ -20,15 +20,9 @@ import type { AgentRegistry } from './agents/registry';
 import {
   notify, macosAlert, removeNotification, sessionFocusUrl, sessionGroupId,
 } from './notifications';
-import { classifyOutcome, outcomeIsBad, outcomeLabel, type TurnOutcome } from './outcome';
+import { classifyOutcome, outcomeIsBad, type TurnOutcome } from './outcome';
 import { getConfig } from './config';
 import { TranscriptTailer, TranscriptSnapshot, SubagentSnapshot, SubagentState } from './claude-transcript';
-
-/** The outcome labels carry their own glyph for the sidebar, where there is no
- *  title to carry it. In a notification the title already says ✓ or ✗. */
-function stripGlyph(label: string): string {
-  return label.replace(/^[✓✗⚠?⏳]\s*/, '');
-}
 
 /** What the agent is actually asking for, from the hook's own message
  *  ("Claude needs your permission to use Bash"), rather than a fixed sentence
@@ -812,7 +806,6 @@ export class ClaudeTracker {
         this.map.get(tmuxSession)?.cwd,
         snap.lastStopAt?.getTime() ?? Date.now(),
         this.registry.providerForAgent(snap.agent),
-        snap.outcome,
       );
     }
 
@@ -1332,7 +1325,7 @@ export class ClaudeTracker {
           this.lastDerived.set(e.tmuxSession, 'idle');
           this.noteFinished(e.tmuxSession, outcome);
         }
-        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider, outcome);
+        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider);
         break;
       }
       // SessionEnd is fully handled (and gated) before the ownership-transfer
@@ -1518,7 +1511,6 @@ export class ClaudeTracker {
     cwd: string | undefined,
     tsMs: number,
     provider: AgentProvider,
-    outcome?: TurnOutcome,
   ): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
@@ -1539,33 +1531,21 @@ export class ClaudeTracker {
     this.lastNotifyPerWs.set(wsKey, Date.now());
 
     const label = this.sessionLabel(tmuxSession, cwd, provider.displayName);
-    // Say HOW it ended when we know: "✗ tests failed · 3 failed" beats a
-    // generic "done" when the run actually went red. For a clean turn, how long
-    // it took and what it concluded with — "Ready for your next prompt" was
-    // three words restating the title.
-    const bad = outcomeIsBad(outcome);
-
-    // A clean turn has nothing to add beyond how long it took: quoting the
-    // agent's closing line only pasted its throat-clearing into the banner.
-    const detail = outcome && outcome.kind !== 'ok'
-      ? `${stripGlyph(outcomeLabel(outcome))}${outcome.hint ? ' · ' + outcome.hint : ''}`
-      : '';
-    // How long the turn ran belongs to the sidebar, which has room for it. The
-    // banner answers one question — does this session need me? — so a clean
-    // turn carries no third line at all.
-    const body = detail;
+    // Two notifications only: done here, needs-you in triggerWaitingNotify. The
+    // banner used to carry the transcript verdict too ("✗ failed · Exit code 1"),
+    // but that verdict is a text heuristic over tool output — a grep that finds
+    // nothing exits 1 — and a red banner on a turn that went fine is worse than
+    // no verdict: it makes every banner something to go and double-check. The
+    // sidebar keeps the verdict, next to the evidence in its tooltip.
     void notify({
       // Which session first: that is what you scan for when three banners land
-      // at once. State second, detail last — and nothing at all in the detail
-      // line for a turn that simply finished.
+      // at once. State second, and no detail line.
       kind: 'agent',
       title: label,
-      subtitle: `${bad ? '✗' : '✓'} ${provider.displayName} ${bad ? 'failed' : 'done'}`,
-      body,
-      // The toast drops the agent's name (the badge already says an agent) and
-      // the hint, keeping only the verdict that decides whether you go look.
-      short: `${bad ? '✗' : '✓'} ${label}${bad && outcome ? ` · ${stripGlyph(outcomeLabel(outcome))}` : ''}`,
-      level: bad ? 'warning' : 'info',
+      subtitle: `✓ ${provider.displayName} done`,
+      body: '',
+      short: `✓ ${label}`,
+      level: 'info',
       groupId: sessionGroupId(tmuxSession),
       openUrl: sessionFocusUrl(tmuxSession),
       toastAction: this.focusToastAction(tmuxSession),

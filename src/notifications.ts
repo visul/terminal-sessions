@@ -62,7 +62,7 @@ export interface NotifyOptions {
   /** Where this came from. With the branded notifier the app icon says it; on
    *  every other surface (plain terminal-notifier, osascript, VS Code toast) it
    *  becomes a small badge, because "who woke me" is the first thing you read. */
-  kind?: 'agent' | 'shell';
+  kind?: 'agent';
   /** One-line form for the in-editor toast, which is a single truncated line in
    *  a narrow popup and cannot afford the banner's three fields. The source
    *  badge is prepended for you. Falls back to the banner fields when absent. */
@@ -162,7 +162,13 @@ async function linuxNotify(opts: NotifyOptions): Promise<void> {
   // path, so the badge goes in the text.
   const state = badged(opts);
   const body = escapeMarkup(state ? `${state}\n${opts.body}`.trimEnd() : opts.body);
-  const groupId = getConfig().notificationGrouping ? opts.groupId : undefined;
+  const cfg = getConfig();
+  // Same rule as the macOS path: a timeout needs a handle to close by, so an
+  // ungrouped banner gets a throwaway id rather than staying unremovable.
+  const timeoutSec = cfg.bannerTimeoutSeconds;
+  const groupId = (opts.groupId && cfg.notificationGrouping)
+    ? opts.groupId
+    : (timeoutSec > 0 ? `terminal-sessions-tmp-${++bannerSeq}` : undefined);
   const base = [
     '-u', urgency,
     '-t', timeoutMs,
@@ -179,7 +185,12 @@ async function linuxNotify(opts: NotifyOptions): Promise<void> {
   try {
     const { stdout } = await execFileP('/usr/bin/notify-send', [...base, '-p', ...tail], { timeout: 5000 });
     const id = parseInt(String(stdout).trim(), 10);
-    if (groupId && Number.isFinite(id) && id > 0) linuxNotifIds.set(groupId, id);
+    if (groupId && Number.isFinite(id) && id > 0) {
+      linuxNotifIds.set(groupId, id);
+      // The daemon's own `-t` only hides the popup; most desktops keep the
+      // entry in their notification list, which is what this setting is for.
+      if (timeoutSec > 0) scheduleBannerRemoval(groupId, timeoutSec);
+    }
   } catch {
     // --print-id predates neither libnotify 0.7.9 nor some reimplementations;
     // without it there is no handle to replace or withdraw by, but the banner
@@ -205,6 +216,9 @@ function freedesktopSound(level: NotificationLevel | undefined): string {
  *  `notificationGrouping` and `bannerTimeoutSeconds` were macOS-only promises
  *  and every Linux banner sat there until the user swiped it away. */
 async function linuxRemoveGroup(groupId: string): Promise<void> {
+  // A pending timeout for this group has nothing left to close. Without this a
+  // throwaway id per banner would stay in the owner map for the window's life.
+  bannerOwner.delete(groupId);
   const id = linuxNotifIds.get(groupId);
   if (id === undefined) return;
   linuxNotifIds.delete(groupId);
@@ -417,7 +431,7 @@ async function detectBundleId(): Promise<string | undefined> {
 /** The subtitle with a source badge in front — `🤖 ✓ Claude done`. Used
  *  wherever the notification does not carry our own icon. */
 function badged(opts: NotifyOptions): string {
-  const mark = opts.kind === 'agent' ? '🤖' : opts.kind === 'shell' ? '🖥' : '';
+  const mark = opts.kind === 'agent' ? '🤖' : '';
   if (!opts.subtitle) return mark;
   return mark ? `${mark} ${opts.subtitle}` : opts.subtitle;
 }
@@ -519,8 +533,9 @@ async function macosNotify(opts: NotifyOptions, defaultSound: string): Promise<v
 }
 
 /** Take back a banner the user no longer needs (they opened or dismissed the
- *  session). Only terminal-notifier can recall a delivered notification; the
- *  osascript fallback has no such handle, so this is a silent no-op there. */
+ *  session). On macOS only terminal-notifier can recall a delivered
+ *  notification; the osascript fallback has no such handle, so this is a silent
+ *  no-op there. On Linux it closes the banner over D-Bus. */
 export async function removeNotification(groupId: string): Promise<void> {
   if (!getConfig().notificationGrouping) return;
   await removeGroup(groupId);
@@ -602,7 +617,7 @@ function showToast(opts: NotifyOptions, transient: boolean): void {
   // A toast is one truncated line, so it says only what it must: where it came
   // from, how it went, which session — and a detail only when it changes what
   // you do next.
-  const mark = opts.kind === 'agent' ? '🤖' : opts.kind === 'shell' ? '🖥' : '';
+  const mark = opts.kind === 'agent' ? '🤖' : '';
   const msg = opts.short
     ? [mark, opts.short].filter(Boolean).join(' ')
     : (() => {

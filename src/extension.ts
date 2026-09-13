@@ -6,7 +6,6 @@ import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sideb
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
 import { TerminalTracker } from './terminal-tracker';
-import { registerLongRunNotifier } from './long-run-notifier';
 import { initNotifications, onNotifierSettingChanged } from './notifications';
 import { maybeOfferRestore } from './restore';
 import { ClaudeTracker } from './claude-tracker';
@@ -98,8 +97,6 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   const tracker = new TerminalTracker(index);
   tracker.start();
   ctx.subscriptions.push(tracker);
-
-  registerLongRunNotifier(ctx, index);
 
   // Monotonic token for the async active-terminal resolution below: a slow
   // PID walk for a tab you already left must not clobber the newer result

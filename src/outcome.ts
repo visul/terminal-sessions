@@ -48,7 +48,13 @@ const TEST_FAIL_RES: RegExp[] = [
   /\bAssertionError\b/,
   /\bBUILD FAILED\b/i,
   /\bcompilation failed\b/i,
-  /\bexit(?:ed)?(?: with)? code [1-9]\d*\b/i,
+  // No bare "exit code N": Claude prefixes EVERY non-zero exit with
+  // "Exit code 1", and most of those are not failures at all — a grep that
+  // matched nothing, a `diff` that found a difference, a probe for a missing
+  // file, a process killed on purpose (143). Measured over a day of real
+  // transcripts it was more than two thirds of every "tests failed" verdict.
+  // A run that really went red says so in its own output, which the patterns
+  // above catch, and the runtime's is_error flag still marks the command.
 ];
 const TEST_PASS_RES: RegExp[] = [
   /\b(\d+)\s+passed\b.*\b0\s+failed\b/i,
@@ -90,6 +96,8 @@ function matchingLine(s: string, res: RegExp[]): string | undefined {
   return undefined;
 }
 
+const USER_DECLINED_RE = /^\s*The user doesn't want to proceed with this tool use\b/i;
+
 /** Tools whose output is a command's stdout/stderr — the only place the text
  *  heuristics below are meaningful. A `Read` of a CI log or a `Grep` hit on
  *  "AssertionError" is not a failed run. */
@@ -108,6 +116,9 @@ export function noteToolResult(
   toolName?: string,
 ): void {
   const body = text || '';
+  // Declining a permission prompt comes back as an errored tool result, but it
+  // is your decision, not the agent failing at something.
+  if (isError && USER_DECLINED_RE.test(body)) isError = false;
   if (isError) {
     ev.toolErrors++;
     ev.lastToolErrored = true;
