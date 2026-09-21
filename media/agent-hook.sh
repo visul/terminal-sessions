@@ -127,7 +127,8 @@ INTERPRETERS = ("node", "bun", "deno", "python", "python3")
 AGENT_PACKAGES = {"@anthropic-ai/claude-code": "claude", "@openai/codex": "codex"}
 
 def run_ps(*args):
-    return subprocess.run(["ps"] + list(args),
+    # -ww: never cut a line to the terminal width a narrow pane passes down.
+    return subprocess.run(["ps", "-ww"] + list(args),
                           capture_output=True, text=True, timeout=2).stdout.strip()
 
 # This runs on every tool call, and a full process table (ps -A) costs ~250ms.
@@ -153,6 +154,9 @@ def proc_info(pid):
     return int(ppid), comm.strip()
 
 def agent_of(pid, comm):
+    # macOS prints "(claude)" when it cannot read the arguments of a process.
+    if comm.startswith("(") and comm.endswith(")"):
+        comm = comm[1:-1]
     name = os.path.basename(comm)
     if name in AGENT_PROCS:
         return AGENT_PROCS[name]
