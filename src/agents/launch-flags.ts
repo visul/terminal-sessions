@@ -289,10 +289,41 @@ export function collectDescendantPids(roots: readonly number[], tree: ProcTree):
   return out;
 }
 
+const INTERPRETERS = /^(node|bun|deno|python3?)(\b|$)/;
+
+/** Which of `agentNames` a `ps` command line runs, if any. The line is
+ *  space-joined, so an executable path with spaces in it is rebuilt token by
+ *  token, and an agent installed through npm (`node …/claude`) is read from
+ *  its script argument. */
+function agentOfCmd(cmd: string, agentNames: ReadonlySet<string>): string | undefined {
+  const tokens = cmd.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return undefined;
+  const first = path.basename(tokens[0]);
+  if (agentNames.has(first)) return first;
+  if (INTERPRETERS.test(first)) {
+    const script = tokens.slice(1).find(t => !t.startsWith('-'));
+    const base = script ? path.basename(script) : '';
+    if (agentNames.has(base)) return base;
+    if (script?.includes('@anthropic-ai/claude-code') && agentNames.has('claude')) return 'claude';
+    if (script?.includes('@openai/codex') && agentNames.has('codex')) return 'codex';
+    return undefined;
+  }
+  if (!tokens[0].startsWith('/')) return undefined;
+  let exe = tokens[0];
+  for (let i = 1; i < tokens.length && !tokens[i].startsWith('-'); i++) {
+    exe += ' ' + tokens[i];
+    const base = path.basename(exe);
+    if (agentNames.has(base)) return base;
+  }
+  return undefined;
+}
+
 /**
- * True when another agent CLI sits between `pid` and the pane (`rootPids`): the
- * process was started by that agent (a delegated review, a `-p` run from its
- * shell tool), not by the user in the pane. Mirrors the check in
+ * True when another agent process sits between `pid` and the pane (`rootPids`,
+ * the pane process itself included): the process was started by that agent (a
+ * delegated review, a `-p` run from its shell tool), not by the user in the
+ * pane. The same CLI counts too, except as a direct parent, which is its
+ * launcher (an npm shim starting the native binary). Mirrors the check in
  * media/agent-hook.sh, which does the same for hook-based agents.
  */
 export function isDelegatedAgent(
@@ -303,14 +334,16 @@ export function isDelegatedAgent(
   tree: ProcTree,
 ): boolean {
   const roots = new Set(rootPids);
-  const own = new Set(ownNames);
   const agents = new Set(agentNames);
+  let prev = ownNames.find(n => agents.has(n));
   let cur = tree.byPid.get(pid)?.ppid;
-  for (let i = 0; i < 64 && cur !== undefined && cur > 1 && !roots.has(cur); i++) {
+  for (let i = 0; i < 64 && cur !== undefined && cur > 1; i++) {
     const p = tree.byPid.get(cur);
     if (!p) break;
-    const name = path.basename(p.cmd.split(/\s+/)[0] || '');
-    if (agents.has(name) && !own.has(name)) return true;
+    const agent = agentOfCmd(p.cmd, agents);
+    if (agent && agent !== prev) return true;
+    if (roots.has(cur)) break;
+    prev = agent;
     cur = p.ppid;
   }
   return false;

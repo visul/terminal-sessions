@@ -18,6 +18,7 @@ mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
 TMUX_SESSION=""
 PANE_PID=""
+PANE_TTY=""
 if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
   # Pin the lookup to OUR pane ($TMUX_PANE, inherited from the agent process).
   # Without -t, tmux resolves the "current" session — which, while this pane is
@@ -27,8 +28,10 @@ if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
   # out and we report NO tmux session instead of a wrong one (the tracker
   # drops tmux-less events).
   if [ -n "${TMUX_PANE:-}" ]; then
-    PANE_INFO=$(tmux display -t "$TMUX_PANE" -p '#{pane_pid} #{session_name}' 2>/dev/null || echo "")
+    PANE_INFO=$(tmux display -t "$TMUX_PANE" -p '#{pane_pid} #{pane_tty} #{session_name}' 2>/dev/null || echo "")
     PANE_PID=${PANE_INFO%% *}
+    PANE_INFO=${PANE_INFO#* }
+    PANE_TTY=${PANE_INFO%% *}
     TMUX_SESSION=${PANE_INFO#* }
     case "$PANE_PID" in ''|*[!0-9]*) PANE_PID=""; TMUX_SESSION="" ;; esac
   else
@@ -43,7 +46,7 @@ fi
 
 if command -v python3 >/dev/null 2>&1; then
   AGENT="$AGENT" EVENT="$EVENT" TMUX_SESSION="$TMUX_SESSION" PANE_PID="$PANE_PID" \
-    HOOK_PID="$$" CWD_FALLBACK="${PWD:-}" \
+    PANE_TTY="$PANE_TTY" HOOK_PID="$$" CWD_FALLBACK="${PWD:-}" \
     python3 -c '
 import sys, json, time, os, subprocess
 raw = sys.stdin.read()
@@ -112,35 +115,84 @@ out = {
 #   - a detached daemon (the Codex plugin app-server broker) started once from
 #     some pane and then serving every session: each later delegation landed
 #     on that one pane, whichever session asked for it.
-# So walk up from this hook to the pane shell. Not reached means the agent runs
-# outside the pane; another agent CLI on the way means it was delegated to.
-# Either way the event keeps no tmux session, and the tracker drops it.
+# So walk up from this hook to the pane shell, the pane process included. The
+# first agent CLI on the way is the one that fired the hook. Any agent above
+# it means delegation, the same CLI too (claude -p run from a Claude shell),
+# except a direct parent of the same name, which is its launcher (an npm shim
+# starting the native binary). Not reaching the pane means the agent runs
+# outside it. Either way the event keeps no tmux session; the tracker drops it.
 AGENT_PROCS = {"claude": "claude", "codex": "codex", "agy": "agy", "grok": "grok",
                "opencode": "opencode", "opencode.exe": "opencode"}
+INTERPRETERS = ("node", "bun", "deno", "python", "python3")
+AGENT_PACKAGES = {"@anthropic-ai/claude-code": "claude", "@openai/codex": "codex"}
+
+def run_ps(*args):
+    return subprocess.run(["ps"] + list(args),
+                          capture_output=True, text=True, timeout=2).stdout.strip()
+
+# This runs on every tool call, and a full process table (ps -A) costs ~250ms.
+# One ps of the pane terminal covers the pane side of the walk; the few levels
+# off it (the hook itself, an agent shell tool that dropped the terminal) cost
+# one small ps each.
+PANE_PROCS = {}
+def load_pane_procs(tty):
+    if not tty:
+        return
+    try:
+        for line in run_ps("-t", tty.replace("/dev/", "", 1), "-o", "pid=,ppid=,comm=").splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3:
+                PANE_PROCS[int(parts[0])] = (int(parts[1]), parts[2].strip())
+    except Exception:
+        PANE_PROCS.clear()
 
 def proc_info(pid):
-    # One small ps per level: a full process table (ps -A) costs ~250ms, and
-    # this runs on every tool call.
+    if pid in PANE_PROCS:
+        return PANE_PROCS[pid]
+    ppid, comm = run_ps("-o", "ppid=,comm=", "-p", str(pid)).split(None, 1)
+    return int(ppid), comm.strip()
+
+def agent_of(pid, comm):
+    name = os.path.basename(comm)
+    if name in AGENT_PROCS:
+        return AGENT_PROCS[name]
+    if not name.startswith(INTERPRETERS):
+        return ""
+    # An agent installed through npm runs as node: its name is in the script.
     try:
-        line = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)],
-                              capture_output=True, text=True, timeout=2).stdout.strip()
-        ppid, comm = line.split(None, 1)
-        return int(ppid), os.path.basename(comm.strip())
+        args = run_ps("-o", "command=", "-p", str(pid)).split()[1:4]
     except Exception:
-        return None
+        return ""
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        base = os.path.basename(arg)
+        if base in AGENT_PROCS:
+            return AGENT_PROCS[base]
+        for pkg, agent in AGENT_PACKAGES.items():
+            if pkg in arg:
+                return agent
+        break
+    return ""
 
 def pane_attribution(pane_pid, start_pid, me):
-    pid = start_pid
+    pid, owner, prev = start_pid, "", ""
     for _ in range(64):
+        try:
+            ppid, comm = proc_info(pid)
+        except Exception:
+            return ""  # ps failed or raced an exit: attribute as before
+        agent = agent_of(pid, comm)
+        if agent:
+            if not owner:
+                if agent != me:
+                    return "delegated:" + agent
+                owner = agent
+            elif agent != prev:
+                return "delegated:" + agent
+        prev = agent
         if pid == pane_pid:
             return ""
-        info = proc_info(pid)
-        if info is None:
-            return ""  # ps failed or raced an exit: attribute as before
-        ppid, comm = info
-        other = AGENT_PROCS.get(comm)
-        if other and other != me:
-            return "delegated:" + other
         if ppid <= 1:
             break
         pid = ppid
@@ -152,6 +204,7 @@ try:
 except ValueError:
     pane_pid = hook_pid = 0
 if out["tmuxSession"] and pane_pid > 1 and hook_pid > 1:
+    load_pane_procs(os.environ.get("PANE_TTY", ""))
     detached = pane_attribution(pane_pid, hook_pid, out["agent"])
     if detached:
         out["tmuxSession"] = ""
