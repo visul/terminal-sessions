@@ -290,6 +290,33 @@ export function collectDescendantPids(roots: readonly number[], tree: ProcTree):
 }
 
 /**
+ * True when another agent CLI sits between `pid` and the pane (`rootPids`): the
+ * process was started by that agent (a delegated review, a `-p` run from its
+ * shell tool), not by the user in the pane. Mirrors the check in
+ * media/agent-hook.sh, which does the same for hook-based agents.
+ */
+export function isDelegatedAgent(
+  pid: number,
+  rootPids: readonly number[],
+  ownNames: readonly string[],
+  agentNames: readonly string[],
+  tree: ProcTree,
+): boolean {
+  const roots = new Set(rootPids);
+  const own = new Set(ownNames);
+  const agents = new Set(agentNames);
+  let cur = tree.byPid.get(pid)?.ppid;
+  for (let i = 0; i < 64 && cur !== undefined && cur > 1 && !roots.has(cur); i++) {
+    const p = tree.byPid.get(cur);
+    if (!p) break;
+    const name = path.basename(p.cmd.split(/\s+/)[0] || '');
+    if (agents.has(name) && !own.has(name)) return true;
+    cur = p.ppid;
+  }
+  return false;
+}
+
+/**
  * Walk the process subtree under any of `rootPids` (a tmux pane's shell pids) and
  * return the argv of the first descendant whose executable basename matches one
  * of `names` (the agent CLI). Returns undefined when no such process is live —

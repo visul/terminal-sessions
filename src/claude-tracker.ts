@@ -10,7 +10,7 @@ import { detectTmuxPath, panePids, listSessions } from './tmux';
 /** A subagent whose transcript moved this recently is still running, whatever
  *  the lead session is doing. Mirrors DONE_AFTER_MS in claude-transcript. */
 const SUBAGENT_ALIVE_MS = 30_000;
-import { readAgentArgv, processTree, collectDescendantPids } from './agents/launch-flags';
+import { readAgentArgv, processTree, collectDescendantPids, isDelegatedAgent } from './agents/launch-flags';
 import { readGrokActiveSessions } from './agents/grok/provider';
 import { setOpencodePluginSource } from './agents/opencode/provider';
 import type { SessionIndex } from './session-manager';
@@ -1422,12 +1422,16 @@ export class ClaudeTracker {
     if (!rows.length) return;
 
     const tree = processTree();
+    const agentNames = this.registry.all().flatMap(p => p.processNames);
     let changed = false;
     for (const row of rows) {
       const pids = await panePids(tmuxPath, row.name);
       if (!pids.length) continue;
       const descendants = collectDescendantPids(pids, tree);
-      const hit = pending.find(a => descendants.has(a.pid));
+      // A grok another agent runs for a review lives in this pane's tree too;
+      // claiming it would make Start reopen the review, not the conversation.
+      const hit = pending.find(a => descendants.has(a.pid)
+        && !isDelegatedAgent(a.pid, pids, grok.processNames, agentNames, tree));
       if (!hit) continue;
 
       const tp = grok.resolveTranscriptPath(hit.session_id, hit.cwd);

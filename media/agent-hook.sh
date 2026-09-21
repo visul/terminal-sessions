@@ -17,6 +17,7 @@ LOG="$HOME/.terminal-sessions/agent-events.log"
 mkdir -p "$(dirname "$LOG")" 2>/dev/null
 
 TMUX_SESSION=""
+PANE_PID=""
 if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
   # Pin the lookup to OUR pane ($TMUX_PANE, inherited from the agent process).
   # Without -t, tmux resolves the "current" session — which, while this pane is
@@ -26,7 +27,10 @@ if [ -n "${TMUX:-}" ] && command -v tmux >/dev/null 2>&1; then
   # out and we report NO tmux session instead of a wrong one (the tracker
   # drops tmux-less events).
   if [ -n "${TMUX_PANE:-}" ]; then
-    TMUX_SESSION=$(tmux display -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null || echo "")
+    PANE_INFO=$(tmux display -t "$TMUX_PANE" -p '#{pane_pid} #{session_name}' 2>/dev/null || echo "")
+    PANE_PID=${PANE_INFO%% *}
+    TMUX_SESSION=${PANE_INFO#* }
+    case "$PANE_PID" in ''|*[!0-9]*) PANE_PID=""; TMUX_SESSION="" ;; esac
   else
     TMUX_SESSION=$(tmux display -p '#{session_name}' 2>/dev/null || echo "")
   fi
@@ -38,9 +42,10 @@ if [ ! -t 0 ]; then
 fi
 
 if command -v python3 >/dev/null 2>&1; then
-  AGENT="$AGENT" EVENT="$EVENT" TMUX_SESSION="$TMUX_SESSION" CWD_FALLBACK="${PWD:-}" \
+  AGENT="$AGENT" EVENT="$EVENT" TMUX_SESSION="$TMUX_SESSION" PANE_PID="$PANE_PID" \
+    HOOK_PID="$$" CWD_FALLBACK="${PWD:-}" \
     python3 -c '
-import sys, json, time, os
+import sys, json, time, os, subprocess
 raw = sys.stdin.read()
 try:
     data = json.loads(raw) if raw.strip() else {}
@@ -98,6 +103,59 @@ out = {
     "toolInput": tool_input_preview,
     "message": str(message)[:300],
 }
+
+# TMUX_PANE only says which pane the process tree was STARTED from, not that
+# this agent is the one working in it. Two cases inherit it wrongly:
+#   - an agent another agent delegated to (Claude running codex, agy or grok
+#     for a review): its session became the resume head of the pane, so
+#     Start reopened a two-message review instead of the conversation.
+#   - a detached daemon (the Codex plugin app-server broker) started once from
+#     some pane and then serving every session: each later delegation landed
+#     on that one pane, whichever session asked for it.
+# So walk up from this hook to the pane shell. Not reached means the agent runs
+# outside the pane; another agent CLI on the way means it was delegated to.
+# Either way the event keeps no tmux session, and the tracker drops it.
+AGENT_PROCS = {"claude": "claude", "codex": "codex", "agy": "agy", "grok": "grok",
+               "opencode": "opencode", "opencode.exe": "opencode"}
+
+def proc_info(pid):
+    # One small ps per level: a full process table (ps -A) costs ~250ms, and
+    # this runs on every tool call.
+    try:
+        line = subprocess.run(["ps", "-o", "ppid=,comm=", "-p", str(pid)],
+                              capture_output=True, text=True, timeout=2).stdout.strip()
+        ppid, comm = line.split(None, 1)
+        return int(ppid), os.path.basename(comm.strip())
+    except Exception:
+        return None
+
+def pane_attribution(pane_pid, start_pid, me):
+    pid = start_pid
+    for _ in range(64):
+        if pid == pane_pid:
+            return ""
+        info = proc_info(pid)
+        if info is None:
+            return ""  # ps failed or raced an exit: attribute as before
+        ppid, comm = info
+        other = AGENT_PROCS.get(comm)
+        if other and other != me:
+            return "delegated:" + other
+        if ppid <= 1:
+            break
+        pid = ppid
+    return "outside-pane"
+
+try:
+    pane_pid = int(os.environ.get("PANE_PID") or 0)
+    hook_pid = int(os.environ.get("HOOK_PID") or 0)
+except ValueError:
+    pane_pid = hook_pid = 0
+if out["tmuxSession"] and pane_pid > 1 and hook_pid > 1:
+    detached = pane_attribution(pane_pid, hook_pid, out["agent"])
+    if detached:
+        out["tmuxSession"] = ""
+        out["detached"] = detached
 
 # Only present when the hook states it — absent lines keep the old shape.
 if kind:
