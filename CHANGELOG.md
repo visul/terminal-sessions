@@ -9,6 +9,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 ### Fixed
 - **Start reopened a review instead of your conversation.** When Claude hands work to another agent (a Codex review, an Antigravity or Grok delegation), that agent inherits the pane's `TMUX_PANE`, so its hooks reported the review as the session's newest conversation. The next Start resumed a two-message review, not the conversation you had been having. The Codex plugin made it worse: its app-server broker is started once, from whichever pane asked first, and then serves every session, so every later review landed on that one tab. The hook now walks up from itself to the pane's shell and keeps the event only when it gets there without passing through another agent. That includes the same CLI (`claude -p` run from a Claude shell), an agent that is the pane process itself (`exec claude`) and one installed through npm, which runs as `node`. Delegated and detached agents no longer claim a tab; the tab's own agent is unaffected. The walk reads the pane's processes with one `ps`, so the hook is no slower than before.
 
+## [0.33.3] — 2026-09-13
+
 ### Removed
 - **Long-running command notifications** (`enableLongRunNotifications`, `longRunThresholdSeconds`). They told you when a command you typed ran past 30 seconds, which needs VS Code's shell integration to see the command start and end, and that does not reach a shell running inside tmux, so in the extension's own terminals they never fired. What was left was a third kind of notification, with its own failed variant, that only plain terminals could produce. The extension now sends exactly two: done and needs you. The bell and **Mute Notifications** cover both.
 
