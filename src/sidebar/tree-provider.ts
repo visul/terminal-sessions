@@ -570,6 +570,13 @@ class SessionsTreeProvider
       }
       sessions = await this.sessionsForThisPass(tmuxPath, cfg.sessionPrefix);
     }
+    // Gate for the viewsWelcome in package.json. VS Code also treats a tree
+    // that is still loading, or whose provider threw, as empty, and would show
+    // the first-run buttons over a sidebar that has sessions; this key is only
+    // true after a pass that really found none.
+    if (!el) {
+      void vscode.commands.executeCommand('setContext', 'terminalSessions.noSessions', sessions.length === 0);
+    }
     let filtered = sessions;
     if (cfg.sidebarFilterMode === 'running') filtered = sessions.filter(s => !s.stopped);
     else if (cfg.sidebarFilterMode === 'stopped') filtered = sessions.filter(s => s.stopped);
