@@ -538,9 +538,7 @@ export function registerTabState(ctx: vscode.ExtensionContext, tracker: ClaudeTr
   const writer = new TabStateWriter(ctx, tracker);
   writer.start();
   ctx.subscriptions.push({ dispose: () => writer.dispose() });
-  // Delayed: the restore / hook-install / mouse-guard prompts get the floor first.
-  const ask = setTimeout(() => void maybeOfferDescriptionTemplate(ctx), 12_000);
-  ctx.subscriptions.push({ dispose: () => clearTimeout(ask) });
+  // The one-time offer runs from the startup prompt queue (extension.ts).
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration(e => {
     const text = e.affectsConfiguration('terminalSessions.tabStateText');
     const style = e.affectsConfiguration('terminalSessions.tabStateStyle')

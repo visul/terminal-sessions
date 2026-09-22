@@ -4,6 +4,15 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.33.5] — 2026-09-22
+
+### Added
+- **`+` can open persistent sessions from the start.** The empty sidebar now offers it: **Open a Persistent Terminal** and **Make + Open Persistent Sessions**, in place of a row saying to click `+`, which until then opens a plain shell. Users who already have sessions are asked once, in a toast, and never again either way. Both write `terminal.integrated.defaultProfile` for the platform at the settings scope that is in effect (folder, workspace or user), keep the value they replaced, and offer **Undo**; the new **Restore Previous Default Terminal** command does the same later. The setting is never changed without asking, and it only has an effect while the extension is enabled: disabled or uninstalled, the profile is gone and `+` opens the system shell, not a custom profile you had before, so run Restore first if that matters.
+- **Native Windows says what to do.** tmux does not run on Windows, so the sidebar and a one-time notice explain that and link to WSL, where everything works, instead of offering a profile that cannot start. Opening a persistent session there says the same, and on Linux the missing-tmux message no longer suggests Homebrew.
+
+### Changed
+- **Startup prompts come one at a time.** Install hooks, update tmux.conf, the mouse-click check and the tab-description offer used to fire on fixed timers a few seconds apart, so a slow answer to one had the next land on top of it. They now wait for each other, and for the restore offer, and the tab-description offer no longer appears before there is a session to describe.
+
 ## [0.33.4] — 2026-09-22
 
 ### Fixed

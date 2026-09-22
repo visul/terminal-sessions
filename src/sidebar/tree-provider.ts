@@ -615,10 +615,10 @@ class SessionsTreeProvider
           item.iconPath = new vscode.ThemeIcon('filter');
           return [item];
         }
-        const item = new vscode.TreeItem('No persistent sessions yet.',
-          vscode.TreeItemCollapsibleState.None);
-        item.description = 'Click + to create one';
-        return [item];
+        // Nothing at all: an empty result lets the viewsWelcome in package.json
+        // render, with the first-session and make-+-persistent buttons. A
+        // placeholder row here would hide it.
+        return [];
       }
       const grouped = groupByWorkspace(filtered);
       const allByWorkspace = groupByWorkspace(sessions);

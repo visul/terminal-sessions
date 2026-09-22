@@ -180,6 +180,7 @@ export const COMMAND = {
   rename: 'terminalSessions.rename',
   resumeAll: 'terminalSessions.resumeAll',
   setAsDefaultProfile: 'terminalSessions.setAsDefaultProfile',
+  restoreDefaultProfile: 'terminalSessions.restoreDefaultProfile',
   openTmuxConfig: 'terminalSessions.openTmuxConfig',
   reloadTmuxConfig: 'terminalSessions.reloadTmuxConfig',
   setIcon: 'terminalSessions.setIcon',

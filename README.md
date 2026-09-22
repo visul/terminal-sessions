@@ -268,7 +268,7 @@ from where you are typing.
 > - **WSL** — install the extension in the WSL-Remote window, install tmux in WSL (`sudo apt install tmux`)
 > - **Remote-SSH** — connect to a Linux/macOS host, install the extension on the remote side
 >
-> Native Windows (PowerShell, cmd, Git Bash) is not supported.
+> Native Windows (PowerShell, cmd, Git Bash) is not supported. Installed there, the extension says so once and points to WSL, and never offers to change what `+` opens.
 
 > **Remote-SSH / Remote-WSL users:** you do NOT need to install `terminal-notifier` or `libnotify` on the remote machine. The extension detects the remote extension host via `vscode.env.remoteName` and routes notifications through the VS Code API, which forwards them to your local Cursor UI automatically. The `Show terminal` button on waiting alerts still works across the IPC bridge.
 
@@ -593,7 +593,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 
 1. Install tmux on the target machine
 2. Install the extension and reload Cursor (full quit + reopen if you see stale state)
-3. Run `Terminal Sessions: Set as Default Terminal Profile` so every `+` button creates a tmux-wrapped terminal
+3. In the empty **Terminal Sessions** sidebar, click **Make + Open Persistent Sessions** so every `+` button creates a tmux-wrapped terminal (if you already have sessions, a one-time toast offers the same). `Terminal Sessions: Set as Default Terminal Profile` does it later, and `Restore Previous Default Terminal` puts your old default back. Disable or uninstall the extension and `+` opens the system shell again by itself, since VS Code only offers a profile while the extension providing it is enabled; a custom profile you had before comes back only through Restore, so run it before uninstalling, and the `defaultProfile` line stays in settings.json until you remove it
 4. Find the **Terminal Sessions** section under the Explorer (or drag it out to its own Activity Bar icon / the panel — VS Code remembers where you put it)
 5. Optional: run `Terminal Sessions: Install AI Agent Hooks` to enable live agent state + notifications for Claude, Codex and Antigravity (hooks) and OpenCode (plugin). Grok needs nothing installed
 
@@ -614,6 +614,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Clear Sidebar Filter` | Drop the live text filter (same as clicking the `Filter:` header row) |
 | `Terminal Sessions: Keep Claude Transcripts (Stop 30-Day Deletion)...` | Raise Claude Code's `cleanupPeriodDays` to 3650 so old conversations stop being auto-deleted |
 | `Terminal Sessions: Set as Default Terminal Profile` | Write the VS Code setting so `+` auto-wraps |
+| `Terminal Sessions: Restore Previous Default Terminal` | Put back the default `+` opened before |
 | `Terminal Sessions: Open tmux.conf` | Edit `~/.terminal-sessions/tmux.conf` |
 | `Terminal Sessions: Reload tmux Config` | Apply config changes to running sessions |
 | `Terminal Sessions: Install AI Agent Hooks` | Writes lifecycle hooks for each enabled agent into its own settings file (Claude `~/.claude/settings.json`, Codex `~/.codex/hooks.json`, Antigravity `~/.gemini/antigravity-cli/settings.json`) |

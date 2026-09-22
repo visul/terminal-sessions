@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.33.4",
+  "version": "0.33.5",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -532,6 +532,10 @@
       {
         "command": "terminalSessions.setAsDefaultProfile",
         "title": "Terminal Sessions: Set as Default Terminal Profile"
+      },
+      {
+        "command": "terminalSessions.restoreDefaultProfile",
+        "title": "Terminal Sessions: Restore Previous Default Terminal"
       },
       {
         "command": "terminalSessions.openTmuxConfig",
@@ -1637,6 +1641,18 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "terminalSessions.sessions",
+        "when": "!terminalSessions.nativeWindows",
+        "contents": "Terminals opened with the panel's **+** are plain shells that die with the window. A persistent session survives reloads and crashes, and shows up here.\n[Open a Persistent Terminal](command:terminalSessions.newPersistent)\n[Make + Open Persistent Sessions](command:terminalSessions.setAsDefaultProfile)"
+      },
+      {
+        "view": "terminalSessions.sessions",
+        "when": "terminalSessions.nativeWindows",
+        "contents": "Terminal Sessions needs tmux, which does not run on Windows. Open this folder in WSL or over Remote-SSH and install the extension there.\n[How to use WSL](https://code.visualstudio.com/docs/remote/wsl)"
+      }
+    ],
     "views": {
       "explorer": [
         {

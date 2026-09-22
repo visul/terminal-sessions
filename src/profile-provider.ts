@@ -5,6 +5,7 @@ import * as tmux from './tmux';
 import { currentWorkspace, sessionName, parseSessionName } from './workspace-id';
 import { SessionIndex } from './session-manager';
 import { SessionLabel } from './types';
+import { isNativeWindows } from './default-profile';
 
 function iconFromMeta(meta: SessionLabel | undefined): vscode.ThemeIcon {
   const id = meta?.icon || 'terminal-bash';
@@ -29,9 +30,19 @@ export function registerPersistentProfile(index: SessionIndex): vscode.Disposabl
       const cfg = getConfig();
       const tmuxPath = await tmux.detectTmuxPath(cfg.tmuxPath);
       if (!tmuxPath) {
+        if (isNativeWindows()) {
+          await vscode.window.showErrorMessage(
+            'Persistent sessions need tmux, which does not run on Windows. Open the '
+            + 'folder in WSL or over Remote-SSH, or pick another profile from the + menu.',
+          );
+          throw new Error('tmux unavailable on Windows');
+        }
+        // Homebrew is a macOS answer; on Linux the package manager varies, so
+        // the instructions page is the honest suggestion there.
+        const brew = process.platform === 'darwin' ? ['Install via Homebrew'] : [];
         const choice = await vscode.window.showErrorMessage(
           'tmux is not installed. Terminal Sessions needs tmux to provide persistent terminals.',
-          'Install via Homebrew', 'Install Instructions', 'Dismiss',
+          ...brew, 'Install Instructions', 'Dismiss',
         );
         if (choice === 'Install via Homebrew') {
           const term = vscode.window.createTerminal('install tmux');

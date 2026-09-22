@@ -21,6 +21,9 @@ import { maybeWarnMouseEnv } from './mouse-clicks-guard';
 import { registerTabState } from './tab-state';
 import { initNoteStore } from './notes';
 import { registerNoteViews } from './sidebar/note-view';
+import { maybeOfferDefaultProfile, setPlatformContext } from './default-profile';
+import { queuePrompt, openPromptQueue } from './startup-prompts';
+import { maybeOfferDescriptionTemplate } from './tab-state';
 
 // Note: tmux.conf is bootstrapped lazily by tmux.ensureConf() when the first
 // session starts. No need to pre-seed from the extension bundle.
@@ -81,14 +84,22 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
   registerTabState(ctx, claudeTracker);
 
   // Prompt once to install hooks for the enabled agents (remembers declination).
-  void maybePromptInstallClaudeHook(ctx, registry);
+  setPlatformContext();
+  // Startup prompts, one at a time, once the restore offer below is done. Each
+  // returns at once when it has nothing to ask.
+  const hasSessions = (): boolean => Object.values(index.getAllWorkspaces())
+    .some(ws => Object.keys(ws.sessions ?? {}).length > 0);
+  queuePrompt(ctx, () => maybeOfferDefaultProfile(ctx, hasSessions));
+  queuePrompt(ctx, () => maybePromptInstallClaudeHook(ctx, registry));
+  queuePrompt(ctx, () => maybeOfferConfUpgrade(ctx));
   // Leftover CLAUDE_CODE_DISABLE_MOUSE_CLICKS (rc export / old tmux server env /
-  // settings.json env) kills drag-select and clicks inside Claude. Offer a fix once;
-  // delayed so it doesn't fight the restore/hook toasts.
-  setTimeout(async () => {
+  // settings.json env) kills drag-select and clicks inside Claude. Offer a fix once.
+  queuePrompt(ctx, async () => {
     const tmuxPath = await tmuxMod.detectTmuxPath(getConfig().tmuxPath);
-    void maybeWarnMouseEnv(ctx, tmuxPath);
-  }, 8000);
+    await maybeWarnMouseEnv(ctx, tmuxPath);
+  });
+  // Agent state in the tab description: pointless before there is a session.
+  queuePrompt(ctx, async () => { if (hasSessions()) await maybeOfferDescriptionTemplate(ctx); });
 
   const statusBar = new StatusBar(index);
   statusBar.start();
@@ -179,10 +190,6 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     catch { /* silent — user can manually reinstall from command palette */ }
   }
 
-  // One-shot: offer to regenerate tmux.conf if the user is on the pre-v2
-  // template (missing DECSET 2026 passthrough / correct default-terminal).
-  void maybeOfferConfUpgrade(ctx);
-
   const resumeTimer = setTimeout(async () => {
     try {
       const result = await maybeOfferRestore(index, registry, claudeTracker);
@@ -192,6 +199,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
     } catch (e) {
       console.error('[terminal-sessions] resume pipeline failed:', e);
     }
+    openPromptQueue();
   }, 1500);
   ctx.subscriptions.push({ dispose: () => clearTimeout(resumeTimer) });
 }
@@ -253,20 +261,17 @@ async function maybePromptInstallClaudeHook(
   const KEY = 'claudeHookPromptDismissed';
   if (ctx.globalState.get(KEY)) return;
   const names = missing.map(p => p.displayName).join(', ');
-  // Delay so we don't fight the restore toast for focus.
-  setTimeout(async () => {
-    const choice = await vscode.window.showInformationMessage(
-      `Install AI agent hooks for ${names}? ` +
-      'Enables sidebar status (working/waiting/idle), context %, auto-resume after reboot, ' +
-      'and a notification when the agent finishes.',
-      'Install', 'Not now', "Don't ask again",
-    );
-    if (choice === 'Install') {
-      await vscode.commands.executeCommand('terminalSessions.installClaudeHook');
-    } else if (choice === "Don't ask again") {
-      await ctx.globalState.update(KEY, true);
-    }
-  }, 4000);
+  const choice = await vscode.window.showInformationMessage(
+    `Install AI agent hooks for ${names}? ` +
+    'Enables sidebar status (working/waiting/idle), context %, auto-resume after reboot, ' +
+    'and a notification when the agent finishes.',
+    'Install', 'Not now', "Don't ask again",
+  );
+  if (choice === 'Install') {
+    await vscode.commands.executeCommand('terminalSessions.installClaudeHook');
+  } else if (choice === "Don't ask again") {
+    await ctx.globalState.update(KEY, true);
+  }
 }
 
 async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void> {
@@ -276,28 +281,26 @@ async function maybeOfferConfUpgrade(ctx: vscode.ExtensionContext): Promise<void
   // users for (here: v17 unsets CLAUDE_CODE_DISABLE_MOUSE_CLICKS on the server).
   const KEY = 'tmuxConfUpgradeDismissed-v17';
   if (ctx.globalState.get(KEY)) return;
-  setTimeout(async () => {
-    const choice = await vscode.window.showInformationMessage(
-      'Your Terminal Sessions tmux.conf can be updated: v17 clears a leftover '
-      + 'CLAUDE_CODE_DISABLE_MOUSE_CLICKS from the tmux server (older versions set it; '
-      + 'it makes Claude Code ignore clicks and drag-select). Update now? A backup is '
-      + 'saved next to the current file and it applies to live sessions immediately.',
-      'Update', 'Not now', "Don't ask again",
-    );
-    if (choice === 'Update') {
-      const backup = regenerateConf();
-      // Apply to the running tmux server too, so existing sessions get the new
-      // bindings without a manual "Reload tmux Config".
-      const tmuxPath = await detectTmuxPath(getConfig().tmuxPath);
-      if (tmuxPath) { try { await reloadConfig(tmuxPath); } catch { /* no server yet */ } }
-      const msg = backup
-        ? `tmux.conf updated and reloaded. Previous version backed up at ${backup}.`
-        : 'Could not update tmux.conf (permissions?). Check ~/.terminal-sessions/tmux.conf.';
-      vscode.window.showInformationMessage(msg);
-    } else if (choice === "Don't ask again") {
-      await ctx.globalState.update(KEY, true);
-    }
-  }, 6000);
+  const choice = await vscode.window.showInformationMessage(
+    'Your Terminal Sessions tmux.conf can be updated: v17 clears a leftover '
+    + 'CLAUDE_CODE_DISABLE_MOUSE_CLICKS from the tmux server (older versions set it; '
+    + 'it makes Claude Code ignore clicks and drag-select). Update now? A backup is '
+    + 'saved next to the current file and it applies to live sessions immediately.',
+    'Update', 'Not now', "Don't ask again",
+  );
+  if (choice === 'Update') {
+    const backup = regenerateConf();
+    // Apply to the running tmux server too, so existing sessions get the new
+    // bindings without a manual "Reload tmux Config".
+    const tmuxPath = await detectTmuxPath(getConfig().tmuxPath);
+    if (tmuxPath) { try { await reloadConfig(tmuxPath); } catch { /* no server yet */ } }
+    const msg = backup
+      ? `tmux.conf updated and reloaded. Previous version backed up at ${backup}.`
+      : 'Could not update tmux.conf (permissions?). Check ~/.terminal-sessions/tmux.conf.';
+    vscode.window.showInformationMessage(msg);
+  } else if (choice === "Don't ask again") {
+    await ctx.globalState.update(KEY, true);
+  }
 }
 
 export function deactivate(): void { /* handled via ctx.subscriptions */ }

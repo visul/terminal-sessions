@@ -25,6 +25,7 @@ import { AgentRegistry, isForkableAgent, yoloSpecFor, yoloFlagsFor } from './age
 import { isYolo, setYolo } from './agents/launch-flags';
 import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, countExpiringTranscripts, clearExpiryCache, KEEP_FOREVER_DAYS } from './notices';
 import type { AgentProvider, AgentId } from './agents/types';
+import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
  *  giving the shell time to finish rc/zshrc init. Heavy zsh setups (oh-my-zsh,
@@ -252,7 +253,8 @@ export function registerCommands(
       // view is contributed to the built-in Explorer container.
       () => vscode.commands.executeCommand('terminalSessions.sessions.focus')),
     vscode.commands.registerCommand(COMMAND.resumeAll, () => cmdResumeAll(index)),
-    vscode.commands.registerCommand(COMMAND.setAsDefaultProfile, () => cmdSetDefaultProfile()),
+    vscode.commands.registerCommand(COMMAND.setAsDefaultProfile, () => setAsDefaultProfile(ctx)),
+    vscode.commands.registerCommand(COMMAND.restoreDefaultProfile, () => restorePreviousDefaultProfile(ctx)),
     vscode.commands.registerCommand(COMMAND.openTmuxConfig, () => cmdOpenTmuxConfig()),
     vscode.commands.registerCommand(COMMAND.reloadTmuxConfig, () => cmdReloadTmuxConfig()),
     vscode.commands.registerCommand(COMMAND.setIcon, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => cmdSetIcon(index, item, selection)),
@@ -3413,18 +3415,6 @@ async function cmdResumeAll(index: SessionIndex): Promise<void> {
     await sleep(150);
   }
   refreshSidebar();
-}
-
-async function cmdSetDefaultProfile(): Promise<void> {
-  const platformKey = process.platform === 'darwin' ? 'osx'
-    : process.platform === 'linux' ? 'linux' : 'windows';
-  const settingKey = `terminal.integrated.defaultProfile.${platformKey}`;
-  await vscode.workspace.getConfiguration().update(
-    settingKey, 'Persistent Session', vscode.ConfigurationTarget.Global,
-  );
-  vscode.window.showInformationMessage(
-    `Set "${settingKey}" = "Persistent Session". New terminals will auto-wrap in tmux.`,
-  );
 }
 
 // ── Icon / color commands ────────────────────────────────────────────────
