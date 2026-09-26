@@ -417,10 +417,11 @@ export function readTranscriptCwd(transcriptPath: string): string | undefined {
     let head: string;
     let truncated: boolean;
     try {
-      const buf = Buffer.alloc(Math.min(CWD_HEAD_BYTES, fs.fstatSync(fd).size));
+      const size = fs.fstatSync(fd).size;
+      const buf = Buffer.alloc(Math.min(CWD_HEAD_BYTES, size));
       const n = fs.readSync(fd, buf, 0, buf.length, 0);
       head = buf.toString('utf8', 0, n);
-      truncated = n === CWD_HEAD_BYTES;
+      truncated = n < size;
     } finally {
       fs.closeSync(fd);
     }

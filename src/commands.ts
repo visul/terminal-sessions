@@ -1453,6 +1453,7 @@ async function relaunchSession(
   claudeTracker: ClaudeTracker,
   flags: readonly string[] | (() => readonly string[]),
   failureLabel: string,
+  tab?: vscode.Terminal,
 ): Promise<boolean> {
   const { name, hash, cwd } = target;
   try {
@@ -1462,7 +1463,10 @@ async function relaunchSession(
     // finds the dead tab and any sendText goes nowhere. dispose() is sync on
     // our side but the actual close fires onDidCloseTerminal async — wait for
     // it (with a 500 ms ceiling) before creating the replacement.
-    const dead = findTerminalForSession(name);
+    // A caller that already resolved the tab passes it: the lookup by name
+    // misses renamed tabs and, once the tab is gone, can fall back to another
+    // workspace's tab with the same `#<tabId>`.
+    const dead = tab ?? findTerminalForSession(name);
     if (dead) await disposeAndWait(dead, 500);
     // recordSession keeps existing label/icon/color; just ensures entry exists.
     index.recordSession(hash, name);
@@ -1605,15 +1609,14 @@ async function cmdRestartAll(
       const target = await relaunchTargetFor(tmuxPath, index, registry, claudeTracker, name);
       if (!target) { failed++; continue; }
       progress.report({ message: `${i + 1}/${n} ${target.labelDisplay}`, increment: 100 / n });
-      // Close the tab we resolved (it may be renamed, which relaunchSession's
-      // lookup by name would miss) so the replacement lands at the end.
-      // eslint-disable-next-line no-await-in-loop
-      await disposeAndWait(tab, 500);
+      // Hand over the tab we resolved, so exactly that one is closed and the
+      // replacement lands at the end.
       // eslint-disable-next-line no-await-in-loop
       const ok = await relaunchSession(
         tmuxPath, target, index, claudeTracker,
         () => index.getResumeFlags(target.hash, target.name, target.provider.id),
         `Restart of ${target.labelDisplay}`,
+        tab,
       );
       if (!ok) { failed++; continue; }
       restarted++;
@@ -2310,7 +2313,7 @@ async function cmdReattachAll(
           // the same folder share a history head often enough that without this
           // they both resume the same id and interleave into one transcript.
           rHistory.filter(id => {
-            if (claimed.has(id)) return false;
+            if (claimed.has(id) || claudeTracker.isConversationTaken(id, s.name)) return false;
             const owner = ownersByWs.get(s.workspaceHash)?.get(`${rProvider.id} ${id}`);
             return !owner || owner === s.name;
           }),
@@ -2320,10 +2323,11 @@ async function cmdReattachAll(
         // Owner-gated pass found nothing — retry over anything still unclaimed, so
         // a conversation whose assigned owner can't actually use it (cwd scope,
         // pruned transcript) still gets picked up. restore.ts does the same; this
-        // keeps the two batch paths on one policy.
+        // keeps the two batch paths on one policy. Never a conversation another
+        // pane is running or was just handed, which the owner map can't see.
         const finalResume = reattachResume ?? resolveResumeFromHistory(
           rProvider,
-          rHistory.filter(id => !claimed.has(id)),
+          rHistory.filter(id => !claimed.has(id) && !claudeTracker.isConversationTaken(id, s.name)),
           cwd,
           s.workspacePath,
         );
