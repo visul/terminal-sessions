@@ -6,6 +6,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 
 ## [0.33.6] — 2026-09-22
 
+### Added
+- **Re-attach every terminal, not only the broken ones.** The sidebar's **...** menu has **Re-attach All Terminals**. The title-bar button still re-attaches only the tabs marked disconnected or exited; the new entry also re-creates the live tabs, in the same order. Sessions keep running in tmux, so nothing is lost and no agent is resumed.
+- **Restart every session at once.** **Restart All Sessions** in the same menu does what Restart does for each session with an open tab: a fresh shell, then the agent conversation resumed. Sessions go one at a time, a couple of seconds apart, so the agents do not all start together, and the tabs come back in the order they had. It asks first and says how many sessions are mid-task; the progress notification can cancel the rest.
+
 ### Fixed
 - **Reload Window froze the extension host on large transcripts.** Restoring sessions looks up each recorded conversation's working folder, and it did so by reading the whole transcript into memory to inspect its first 100 lines. Transcripts grow to hundreds of MB: one of 304 MB took 1.5 s and about 900 MB of memory per read, and restore can read several of them in a row, so every extension in the window stopped responding for seconds. Only the first 5 MB are read now, which holds the working folder with a wide margin (the largest need measured was 67 KB). When a first prompt carries a pasted image and its line runs past that, the folder is taken from the start of the cut line, where Claude writes it before the message.
 

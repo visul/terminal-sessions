@@ -354,6 +354,8 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.toggleShowCompletedSubagents, () => cmdToggleShowCompletedSubagents()),
     vscode.commands.registerCommand(COMMAND.collapseSessions, () => collapseAllSessions()),
     vscode.commands.registerCommand(COMMAND.reattachAll, () => cmdReattachAll(index, registry, claudeTracker)),
+    vscode.commands.registerCommand(COMMAND.reattachAllTerminals, () => cmdReattachAll(index, registry, claudeTracker, true)),
+    vscode.commands.registerCommand(COMMAND.restartAll, () => cmdRestartAll(index, registry, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.newGroup, (item?: WorkspaceTreeItem | GroupTreeItem) => cmdNewGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.newMasterGroup, (item?: WorkspaceTreeItem | GroupTreeItem) => cmdNewMasterGroup(index, item)),
     vscode.commands.registerCommand(COMMAND.moveGroupToMaster, (item?: GroupTreeItem) => cmdMoveGroupToMaster(index, item)),
@@ -1364,6 +1366,19 @@ async function resolveRelaunchTarget(
     if (!pick) return undefined;
     name = pick.sessionName;
   }
+  return relaunchTargetFor(tmuxPath, index, registry, claudeTracker, name);
+}
+
+/** The relaunch target for a known tmux session name: cwd plus the
+ *  conversation to resume. */
+async function relaunchTargetFor(
+  tmuxPath: string,
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  name: string,
+): Promise<RelaunchTarget | undefined> {
+  const cfg = getConfig();
   const parsed = parseSessionName(name, cfg.sessionPrefix);
   if (!parsed) return undefined;
   const ws = index.getWorkspace(parsed.hash);
@@ -1515,6 +1530,107 @@ async function cmdRestart(
     () => index.getResumeFlags(target.hash, target.name, target.provider.id),
     'Restart',
   );
+}
+
+/**
+ * Restart every session that has a tab open, in panel order, and resume each
+ * one's conversation. Same kill + fresh shell + resume as Restart, one session
+ * at a time: each relaunch waits for its shell to init before sending the
+ * resume, which also spaces the agents' startups apart. Disposing each tab and
+ * creating its replacement at the end, left to right, keeps the tab order.
+ */
+async function cmdRestartAll(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+): Promise<void> {
+  const tmuxPath = await requireTmux();
+  if (!tmuxPath) return;
+  const cfg = getConfig();
+  const sessions = await enrichSessions(tmuxPath, cfg.sessionPrefix, index);
+  const byName = new Map<string, SessionInfo>();
+  for (const s of sessions) byName.set(s.name, s);
+
+  let skippedStopped = 0;
+  let unresolved = 0;
+  const targets: Array<{ name: string; tab: vscode.Terminal }> = [];
+  const queued = new Set<string>();
+  for (const term of vscode.window.terminals) {
+    // eslint-disable-next-line no-await-in-loop
+    const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
+    const s = name ? byName.get(name) : undefined;
+    if (!name || !s) { unresolved++; continue; }
+    if (s.stopped) { skippedStopped++; continue; }
+    if (queued.has(name)) continue;
+    queued.add(name);
+    targets.push({ name, tab: term });
+  }
+
+  if (targets.length === 0) {
+    const parts: string[] = ['No session terminals to restart.'];
+    if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
+    if (skippedStopped > 0) parts.push(`${skippedStopped} stopped`);
+    vscode.window.showInformationMessage(parts.join(' · '));
+    return;
+  }
+
+  const n = targets.length;
+  const busy = targets.filter(t => {
+    const state = claudeTracker.getSnapshot(t.name)?.state;
+    return state === 'working' || state === 'tool';
+  }).length;
+  const busyLine = busy > 0
+    ? `\n\n${busy} ${busy === 1 ? 'is' : 'are'} working and will lose the current step.`
+    : '';
+  const confirm = await vscode.window.showWarningMessage(
+    `Restart ${n} session${n === 1 ? '' : 's'} and resume their agents?${busyLine}`,
+    { modal: true }, 'Restart All',
+  );
+  if (confirm !== 'Restart All') return;
+
+  let restarted = 0;
+  let resumed = 0;
+  let failed = 0;
+  await vscode.window.withProgress({
+    location: vscode.ProgressLocation.Notification,
+    title: 'Restarting sessions',
+    cancellable: true,
+  }, async (progress, token) => {
+    for (const [i, { name, tab }] of targets.entries()) {
+      if (token.isCancellationRequested) break;
+      // Resolve one at a time: the previous relaunch has reserved its
+      // conversation by now, so siblings sharing a history head each get
+      // their own conversation instead of the same one.
+      // eslint-disable-next-line no-await-in-loop
+      const target = await relaunchTargetFor(tmuxPath, index, registry, claudeTracker, name);
+      if (!target) { failed++; continue; }
+      progress.report({ message: `${i + 1}/${n} ${target.labelDisplay}`, increment: 100 / n });
+      // Close the tab we resolved (it may be renamed, which relaunchSession's
+      // lookup by name would miss) so the replacement lands at the end.
+      // eslint-disable-next-line no-await-in-loop
+      await disposeAndWait(tab, 500);
+      // eslint-disable-next-line no-await-in-loop
+      const ok = await relaunchSession(
+        tmuxPath, target, index, claudeTracker,
+        () => index.getResumeFlags(target.hash, target.name, target.provider.id),
+        `Restart of ${target.labelDisplay}`,
+      );
+      if (!ok) { failed++; continue; }
+      restarted++;
+      if (target.sessionId) resumed++;
+      // Without a resume there is no shell-init wait; still space the attaches.
+      // eslint-disable-next-line no-await-in-loop
+      else await sleep(150);
+    }
+  });
+
+  const parts: string[] = [`Restarted ${restarted}/${n} session${n === 1 ? '' : 's'}`];
+  if (resumed > 0) parts.push(`resumed ${resumed}`);
+  if (skippedStopped > 0) parts.push(`${skippedStopped} stopped`);
+  if (failed > 0) parts.push(`${failed} failed`);
+  if (restarted + failed < n) parts.push(`${n - restarted - failed} cancelled`);
+  vscode.window.showInformationMessage(parts.join(' · '));
+  refreshSidebar();
 }
 
 /**
@@ -2081,11 +2197,15 @@ async function cmdNewPersistent(index: SessionIndex, targetUri?: vscode.Uri): Pr
  * Iterates in the current sidebar sort order so the new terminals append in
  * the order the user expects. After Cursor restart this is the common path —
  * everything is a ghost, everything gets recreated in sidebar order.
+ *
+ * `includeLive` (the "..." menu variant) re-attaches live tabs too, as a soft
+ * reconnect: the tmux session keeps running, only the tab's client is new.
  */
 async function cmdReattachAll(
   index: SessionIndex,
   registry: AgentRegistry,
   claudeTracker: ClaudeTracker,
+  includeLive = false,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
@@ -2113,7 +2233,8 @@ async function cmdReattachAll(
     // That absence (no shellArgs, not exited) is our signal it's stale. A tab we
     // created this session still has its shellArgs and is genuinely live.
     const restoredDisconnected = !exited && sessionNameForTerminal(term) === undefined;
-    if (!exited && !restoredDisconnected) { skippedLive++; continue; }
+    const live = !exited && !restoredDisconnected;
+    if (live && !includeLive) { skippedLive++; continue; }
     // eslint-disable-next-line no-await-in-loop
     const name = await resolveTmuxNameForTerminalLive(term, index, cfg.sessionPrefix);
     const s = name ? byName.get(name) : undefined;
@@ -2125,11 +2246,11 @@ async function cmdReattachAll(
     // so `tmux attach` fully restores it. Skip the agent resume that would
     // otherwise type into a live TUI — resume stays reserved for exited ghosts
     // whose pane may have fallen back to a bare shell.
-    toReattach.push({ session: s, ghost: term, softReconnect: restoredDisconnected });
+    toReattach.push({ session: s, ghost: term, softReconnect: restoredDisconnected || live });
   }
 
   if (toReattach.length === 0) {
-    const parts: string[] = ['No ghost terminals to re-attach.'];
+    const parts: string[] = [includeLive ? 'No session terminals to re-attach.' : 'No ghost terminals to re-attach.'];
     if (skippedLive > 0) parts.push(`${skippedLive} already live`);
     if (unresolved > 0) parts.push(`${unresolved} unrecognized`);
     if (skippedStopped > 0) parts.push(`${skippedStopped} stopped`);

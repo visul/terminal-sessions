@@ -460,6 +460,18 @@
         "icon": "$(debug-restart)"
       },
       {
+        "command": "terminalSessions.reattachAllTerminals",
+        "title": "Re-attach All Terminals",
+        "category": "Terminal Sessions",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "terminalSessions.restartAll",
+        "title": "Restart All Sessions",
+        "category": "Terminal Sessions",
+        "icon": "$(debug-restart)"
+      },
+      {
         "command": "terminalSessions.newGroup",
         "title": "Terminal Sessions: New Group...",
         "shortTitle": "New Group",
@@ -1237,6 +1249,16 @@
           "command": "terminalSessions.resumeFromArchive",
           "when": "view == terminalSessions.sessions",
           "group": "navigation@5"
+        },
+        {
+          "command": "terminalSessions.reattachAllTerminals",
+          "when": "view == terminalSessions.sessions",
+          "group": "1_maintenance@0"
+        },
+        {
+          "command": "terminalSessions.restartAll",
+          "when": "view == terminalSessions.sessions",
+          "group": "1_maintenance@0.5"
         },
         {
           "command": "terminalSessions.cleanupSessions",

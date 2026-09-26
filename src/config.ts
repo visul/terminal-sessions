@@ -213,6 +213,8 @@ export const COMMAND = {
   toggleShowCompletedSubagents: 'terminalSessions.toggleShowCompletedSubagents',
   collapseSessions: 'terminalSessions.collapseSessions',
   reattachAll: 'terminalSessions.reattachAll',
+  reattachAllTerminals: 'terminalSessions.reattachAllTerminals',
+  restartAll: 'terminalSessions.restartAll',
   newGroup: 'terminalSessions.newGroup',
   renameGroup: 'terminalSessions.renameGroup',
   deleteGroup: 'terminalSessions.deleteGroup',
