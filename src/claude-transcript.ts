@@ -404,13 +404,43 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
   }
 }
 
+// The cwd sits in the first few KB of a transcript (67 KB was the worst case
+// measured across 138 real ones), but transcripts grow to hundreds of MB. Only
+// the head is read; a full readFileSync of a 304 MB file blocked the extension
+// host for 1.5 s and spiked its memory by ~900 MB on every restore pass.
+const CWD_HEAD_BYTES = 5 * 1024 * 1024;
+const CWD_FIELD = /"cwd":"((?:[^"\\]|\\.)*)"/;
+
 export function readTranscriptCwd(transcriptPath: string): string | undefined {
   try {
-    const buf = fs.readFileSync(transcriptPath, 'utf8');
-    const lines = buf.split('\n');
+    const fd = fs.openSync(transcriptPath, 'r');
+    let head: string;
+    let truncated: boolean;
+    try {
+      const buf = Buffer.alloc(Math.min(CWD_HEAD_BYTES, fs.fstatSync(fd).size));
+      const n = fs.readSync(fd, buf, 0, buf.length, 0);
+      head = buf.toString('utf8', 0, n);
+      truncated = n === CWD_HEAD_BYTES;
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = head.split('\n');
     for (let i = 0; i < Math.min(lines.length, 100); i++) {
       const line = lines[i];
       if (!line || line[0] !== '{') continue;
+      // The last line is cut when the file is bigger than the head (e.g. a first
+      // prompt with a pasted image). `cwd` precedes the message payload in
+      // Claude's JSONL, so pull it out of the partial line instead of parsing.
+      if (truncated && i === lines.length - 1) {
+        const m = CWD_FIELD.exec(line);
+        if (m) {
+          try {
+            const cwd = JSON.parse(`"${m[1]}"`);
+            if (typeof cwd === 'string' && cwd.startsWith('/')) return cwd;
+          } catch { /* bad escape in the partial line */ }
+        }
+        break;
+      }
       try {
         const obj = JSON.parse(line);
         if (typeof obj.cwd === 'string' && obj.cwd.startsWith('/')) {

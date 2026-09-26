@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.33.6] — 2026-09-22
+
+### Fixed
+- **Reload Window froze the extension host on large transcripts.** Restoring sessions looks up each recorded conversation's working folder, and it did so by reading the whole transcript into memory to inspect its first 100 lines. Transcripts grow to hundreds of MB: one of 304 MB took 1.5 s and about 900 MB of memory per read, and restore can read several of them in a row, so every extension in the window stopped responding for seconds. Only the first 5 MB are read now, which holds the working folder with a wide margin (the largest need measured was 67 KB). When a first prompt carries a pasted image and its line runs past that, the folder is taken from the start of the cut line, where Claude writes it before the message.
+
 ## [0.33.5] — 2026-09-22
 
 ### Added
