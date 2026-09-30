@@ -147,9 +147,15 @@ once it is your turn, back to normal when the mark clears. VS Code does
 not let an extension change a tab's icon or colour, so only the name is
 tinted, and an icon or colour you picked stays as it is. A yellow name
 with a `⚠` at the end of the row is VS Code's own "relaunch needed"
-warning (some extension changed the terminal environment). It covers the
-colour; **Re-attach All Terminals** in the `⋯` menu clears it without
-stopping anything.
+warning (some extension changed the terminal environment); on a tab the
+extension colours, the name and the `⚠` take the agent colour instead.
+**Re-attach All Terminals** in the `⋯` menu clears the warning without
+stopping anything. After *Restart Extensions* (not a window reload), the
+tabs that were already open stay uncoloured until the next reload: their
+order can no longer be matched safely. The same goes for the tabs a
+window opens with when one of them sits in the editor area. And since
+only drawn tabs can be matched, nothing is coloured until every tab has
+been on screen once (a tab list too long to show them all).
 
 The `⋯` menu also turns the whole thing off and on. See
 [`terminalSessions.tabStateText`](#settings) for the setting behind it, and

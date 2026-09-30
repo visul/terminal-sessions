@@ -262,12 +262,14 @@ class TabStateWriter {
   private log?: vscode.OutputChannel;
   private disposed = false;
   /** Tab name colour: magenta while working, green once it is your turn. */
-  private readonly colors = new TabColorDecorations();
+  private readonly colors: TabColorDecorations;
 
   constructor(
     private readonly ctx: vscode.ExtensionContext,
     private readonly tracker: ClaudeTracker,
-  ) {}
+  ) {
+    this.colors = new TabColorDecorations(ctx.workspaceState);
+  }
 
   start(): void {
     this.timer = setInterval(() => void this.tick(), TICK_MS);
@@ -341,9 +343,9 @@ class TabStateWriter {
         const snap = this.tracker.getSnapshot(p.session);
         const kind = tabStateKind(snap, now, clear).kind;
         // The name colour needs no tmux client: it is drawn by VS Code itself.
-        const colorKind = kind === 'working' ? 'working' : progressFor(kind) === PROGRESS.error ? 'turn' : undefined;
-        if (colorKind) {
-          marked.set(p.session, { term, kind: colorKind });
+        if (kind === 'working' || progressFor(kind) === PROGRESS.error) {
+          const why = kind as 'working' | 'waiting' | 'done' | 'failed';
+          marked.set(p.session, { term, kind: kind === 'working' ? 'working' : 'turn', why });
         }
         if (!p.attached) {
           // Nobody to receive it — tmux drops passthrough without a client.
