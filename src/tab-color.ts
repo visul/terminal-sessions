@@ -33,9 +33,11 @@
 // time each was last active, and are kept for two weeks.
 //
 // Also accepted: the tab list asks only for the rows it has drawn. A
-// terminal that is never drawn (scrolled out of a long tab list, or hidden
-// from the user) never reports its id, and until it does nothing is
-// painted, because a missing id would shift every later rank.
+// terminal that is never drawn (scrolled out of a long tab list) never
+// reports its id, and until it does nothing is painted, because a missing
+// id would shift every later rank. Terminals created hidden from the user
+// (`hideFromUser`, e.g. an agent's background shell) never get a row at
+// all, so they are left out of both sides of the count.
 
 import * as vscode from 'vscode';
 
@@ -62,6 +64,12 @@ export interface MarkedTab {
   kind: TabColorKind;
   /** What the hover says; green covers finished, blocked and failed alike. */
   why: keyof typeof TOOLTIPS;
+}
+
+/** The terminals that get a row in the tab list, in `window.terminals` order. */
+function listedTerminals(): readonly vscode.Terminal[] {
+  return vscode.window.terminals.filter(t =>
+    !(t.creationOptions as vscode.TerminalOptions | undefined)?.hideFromUser);
 }
 
 function instanceIdOf(uri: vscode.Uri): number | undefined {
@@ -100,13 +108,17 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
       vscode.window.registerFileDecorationProvider(this),
       // A closed terminal leaves its id behind with no way to tell which one
       // it was: start over, every rendered tab is asked again.
-      vscode.window.onDidCloseTerminal(t => {
-        this.unordered.delete(t);
-        this.ids.clear();
-        this.overflowed = false;
-        this.emitter.fire(undefined);
-      }),
+      vscode.window.onDidCloseTerminal(t => { this.unordered.delete(t); this.recount(); }),
+      // A new tab is drawn (and asked for) before this host hears of the
+      // terminal, which reads as one id too many. Count again once it has.
+      vscode.window.onDidOpenTerminal(() => this.recount()),
     );
+  }
+
+  private recount(): void {
+    this.ids.clear();
+    this.overflowed = false;
+    this.emitter.fire(undefined);
   }
 
   /** The sessions to paint, keyed by tmux session name. Repaints only when
@@ -127,11 +139,11 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
     if (id === undefined) return undefined;
     const grew = !this.ids.has(id);
     this.ids.add(id);
-    const terms = vscode.window.terminals;
+    const terms = listedTerminals();
     // More ids than terminals: a tab the API does not list (or an id the
-    // close hook missed). The ranks cannot be trusted; paint nothing until
-    // the next close starts over. Never re-query from here: the same URIs
-    // would overflow again on every round.
+    // open/close hooks missed). The ranks cannot be trusted; paint nothing
+    // until the next open or close starts over. Never re-query from here:
+    // the same URIs would overflow again on every round.
     if (this.ids.size > terms.length) this.overflowed = true;
     if (this.overflowed || this.ids.size < terms.length) return undefined;
     // Just became complete: the tabs asked before this one got nothing.
@@ -139,7 +151,7 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
     if (this.marked.size === 0) return undefined;
     const rank = Array.from(this.ids).sort((a, b) => a - b).indexOf(id);
     // The oldest ids are the unordered terminals, listed first.
-    if (rank < this.unordered.size) return undefined;
+    if (rank < terms.filter(t => this.unordered.has(t)).length) return undefined;
     const term = terms[rank];
     if (this.unordered.has(term)) return undefined;
     for (const m of this.marked.values()) {

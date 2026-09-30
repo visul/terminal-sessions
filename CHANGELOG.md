@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.33.7] — 2026-09-30
+
+### Fixed
+- **Tab name colours could stop for good until a reload.** A new terminal's tab is drawn before the extension hears of the terminal, so for a moment the tab list held one tab more than the extension knew about; the colouring treated that as a mismatch it could not resolve and painted nothing until some terminal was closed. It now counts again whenever a terminal opens. Terminals created hidden (an agent's background shell) no longer block the count either, since they never get a tab.
+
 ## [0.33.6] — 2026-09-30
 
 ### Added
