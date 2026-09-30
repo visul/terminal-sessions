@@ -43,8 +43,8 @@ const SUMMARIES_DB = path.join(AGY_HOME, 'conversation_summaries.db');
 
 /** Antigravity's conversation titles (what its resume picker shows) live in a
  *  sqlite db: the LLM-generated title sits in the `preview` column (3–5 title-cased
- *  words, despite the name) and `title` is empty unless the user renamed the
- *  conversation. Read through the `sqlite3` CLI so we need no native module; an
+ *  words, despite the name) and `title` is empty or a copy of it unless the user
+ *  renamed the conversation. Read through the `sqlite3` CLI so we need no native module; an
  *  empty map when the CLI or the db is missing. Cached a few seconds because the
  *  resume picker asks once per candidate. */
 interface AgyTitles { custom?: string; auto?: string }
@@ -69,8 +69,10 @@ function agyTitlesById(): Map<string, AgyTitles> {
       const rows = out.trim() ? JSON.parse(out) as { id?: unknown; title?: unknown; preview?: unknown }[] : [];
       for (const r of rows) {
         if (typeof r.id !== 'string') continue;
+        // Newer agy builds also store the generated title in `title`, equal
+        // to `preview`; only a title that differs from it is a `/rename`.
         map.set(r.id, {
-          custom: typeof r.title === 'string' && r.title ? r.title : undefined,
+          custom: typeof r.title === 'string' && r.title && r.title !== r.preview ? r.title : undefined,
           auto: typeof r.preview === 'string' && looksLikeTitle(r.preview) ? r.preview : undefined,
         });
       }

@@ -367,6 +367,21 @@
           "default": "on",
           "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works and one mark (the `$(error)` glyph) the moment it is your turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well; it shows only when `${sequence}` sits NEXT TO `${progress}` in the template, and only on terminals restored across a window reload (VS Code records that title on nameless terminals alone). The tab's name is tinted too, magenta while the agent works and green once it is your turn. Requires the managed tmux config (`allow-passthrough on`)."
         },
+        "terminalSessions.renameConversation": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "always",
+            "never"
+          ],
+          "enumDescriptions": [
+            "After a rename, ask whether the current conversation gets the name too.",
+            "Name the current conversation too, without asking.",
+            "Rename only the session and its tab."
+          ],
+          "default": "ask",
+          "markdownDescription": "What **Rename...** (sidebar row, or VS Code's Rename... on the terminal tab) does with the session's current agent conversation. Claude gets the name in `claude --resume` and, from the next prompt, in its prompt box; other agents get it in this extension's conversation lists. A name given inside the agent with `/rename` is never replaced without asking, whatever this is set to."
+        },
         "terminalSessions.tabStateDebug": {
           "type": "boolean",
           "default": false,
@@ -534,7 +549,7 @@
       },
       {
         "command": "terminalSessions.rename",
-        "title": "Rename Session",
+        "title": "Rename...",
         "icon": "$(edit)"
       },
       {
@@ -1114,10 +1129,6 @@
       ],
       "terminal/title/context": [
         {
-          "command": "terminalSessions.rename",
-          "group": "3_edit@0"
-        },
-        {
           "command": "terminalSessions.toggleFavorite",
           "group": "4_session@0"
         },
@@ -1184,10 +1195,6 @@
         {
           "command": "terminalSessions.viewConversation",
           "group": "5_conversation@1"
-        },
-        {
-          "command": "terminalSessions.nameSession",
-          "group": "5_conversation@2"
         },
         {
           "command": "terminalSessions.copySessionId",
@@ -1445,11 +1452,6 @@
           "command": "terminalSessions.viewConversation",
           "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
           "group": "open@6"
-        },
-        {
-          "command": "terminalSessions.nameSession",
-          "when": "view == terminalSessions.sessions && viewItem =~ /^session/",
-          "group": "open@7"
         },
         {
           "command": "terminalSessions.revealSessionFolder",

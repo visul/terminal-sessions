@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { SessionIndex } from './session-manager';
 import { registerPersistentProfile } from './profile-provider';
-import { registerCommands, syncActiveTerminalContext, syncSpecialFolderContexts } from './commands';
+import { registerCommands, syncActiveTerminalContext, syncSpecialFolderContexts, wireRenameFlow } from './commands';
 import { registerSidebar, refreshSidebar, revealSessionInSidebar } from './sidebar/tree-provider';
 import { StatusBar } from './status-bar';
 import { maybePromptResume } from './toast';
@@ -107,7 +107,7 @@ export async function activate(ctx: vscode.ExtensionContext): Promise<void> {
 
   const tracker = new TerminalTracker(index);
   tracker.start();
-  ctx.subscriptions.push(tracker);
+  ctx.subscriptions.push(tracker, wireRenameFlow(tracker, index, registry, claudeTracker));
 
   // Monotonic token for the async active-terminal resolution below: a slow
   // PID walk for a tab you already left must not clobber the newer result

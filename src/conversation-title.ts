@@ -3,9 +3,9 @@
  * (resume pickers, Find Session, View Conversation, rename prefill).
  *
  * Precedence:
- *   1. customTitle — a title the user set INSIDE the agent (Claude `/rename` →
- *      custom-title, Grok `/rename`). The user typed it most recently for that
- *      conversation, so it wins over everything.
+ *   1. customTitle — a title set INSIDE the agent (Claude `/rename` →
+ *      custom-title, Grok and Antigravity `/rename`), or written there by the
+ *      extension's Rename when the user said yes. It wins over everything.
  *   2. named       — the extension's own sidecar name (Rename Conversation…), any agent.
  *   3. autoTitle   — the agent's generated title (Claude `ai-title`, Codex `thread_name`,
  *      Antigravity summaries db, Grok `generated_title`).

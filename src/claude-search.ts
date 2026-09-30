@@ -90,8 +90,8 @@ export class ClaudeSearchIndex {
         // extra `turns > 0` guard forced a wasteful re-read of every 0-turn /
         // promptless file on each refresh — an unchanged file yields identical
         // results, and promptless-but-large files now get a sentinel entry.)
-        // The custom-title sidecar has its own mtime (a rename via the extension
-        // writes/removes only that file), so it is part of the key too — an
+        // The custom-title sidecar has its own mtime (clearing a name via the
+        // extension removes only that file), so it is part of the key too — an
         // exact match, so a cleared title (sidecar gone → 0) also re-scans.
         const titleModified = sidecarMtime(fpath);
         if (existing && existing.lastModified >= stat.mtimeMs
@@ -261,7 +261,7 @@ function readTranscriptSummary(
       transcriptPath: fpath,
       cwd,
       title: fallback.slice(0, 80),
-      customTitle: readClaudeCustomTitle(fpath) ?? customTitle,
+      customTitle: customTitle || readClaudeCustomTitle(fpath),
       aiTitle,
       firstPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
       lastPrompt: (lastPrompt || '').slice(0, MAX_PREVIEW),
@@ -275,7 +275,7 @@ function readTranscriptSummary(
     transcriptPath: fpath,
     cwd,
     title,
-    customTitle: readClaudeCustomTitle(fpath) ?? customTitle,
+    customTitle: customTitle || readClaudeCustomTitle(fpath),
     aiTitle,
     firstPrompt: firstPrompt.slice(0, MAX_PREVIEW),
     lastPrompt: (lastPrompt || firstPrompt).slice(0, MAX_PREVIEW),

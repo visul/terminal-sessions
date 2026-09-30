@@ -8,11 +8,23 @@ interface TrackedInfo {
   sessionName: string;
   workspaceHash: string;
   lastSeenName: string;
+  /** Until then the tab may still show its old title: a title the extension
+   *  asked for is on its way, and the old one must not read as a rename. */
+  holdUntil?: number;
+}
+
+/** A tab rename the user made (not one the extension applied itself). */
+export interface UserTabRename {
+  workspaceHash: string;
+  sessionName: string;
+  label: string;
 }
 
 /**
  * Watches all persistent terminals for name changes (from tab right-click → Rename)
  * and saves the new name as the session label in our index so it survives restart.
+ * The last title seen on a live tab is kept too (`tabName`), so a reload does not
+ * read an old title on a restored tab as a rename.
  *
  * Terminals restored across a window reload come back with trimmed
  * `creationOptions` (no shellArgs), so the cheap shellArgs match can't identify
@@ -28,6 +40,9 @@ export class TerminalTracker implements vscode.Disposable {
   private resolving = new WeakSet<vscode.Terminal>();
   private interval: NodeJS.Timeout | undefined;
   private disposables: vscode.Disposable[] = [];
+  private readonly renamedByUser = new vscode.EventEmitter<UserTabRename>();
+  /** Fires after a rename typed on the tab has been saved as the label. */
+  readonly onDidRenameByUser = this.renamedByUser.event;
 
   constructor(private index: SessionIndex) {
     this.disposables.push(
@@ -44,7 +59,25 @@ export class TerminalTracker implements vscode.Disposable {
   dispose(): void {
     if (this.interval) clearInterval(this.interval);
     this.disposables.forEach(d => d.dispose());
+    this.renamedByUser.dispose();
     this.tracked.clear();
+  }
+
+  /** The open tab of a session, reload-restored tabs included. */
+  terminalFor(sessionName: string): vscode.Terminal | undefined {
+    for (const [term, info] of this.tracked) {
+      if (info.sessionName === sessionName && !term.exitStatus) return term;
+    }
+    return undefined;
+  }
+
+  /** The extension is about to give this tab `name` itself: not a user rename. */
+  expectName(terminal: vscode.Terminal, name: string): void {
+    const info = this.tracked.get(terminal);
+    if (!info) return;
+    info.lastSeenName = name;
+    info.holdUntil = Date.now() + 2000;
+    this.index.setSessionTabName(info.workspaceHash, info.sessionName, name);
   }
 
   private maybeTrack(terminal: vscode.Terminal): void {
@@ -87,12 +120,16 @@ export class TerminalTracker implements vscode.Disposable {
     // carries a name the extension would not have rendered for the session's
     // current label, that name is the user's and the index gets it.
     if (restored) this.reconcile(terminal, parsed.hash, sessionName, parsed.tabId);
+    if (terminal.name && terminal.name !== 'tmux') this.index.setSessionTabName(parsed.hash, sessionName, terminal.name);
   }
 
   private reconcile(terminal: vscode.Terminal, hash: string, sessionName: string, tabId: number): void {
     const tabName = (terminal.name || '').trim();
     if (!tabName || tabName === 'tmux') return;
     const meta = this.index.getSessionMeta(hash, sessionName);
+    // Still the title it had when last open: the label may have been renamed
+    // since (in the sidebar), and that newer name stays.
+    if (meta?.tabName && tabName === meta.tabName.trim()) return;
     const wsLabel = this.index.getWorkspace(hash)?.label;
     const extracted = this.extractLabel(tabName, tabId);
     if (!extracted) return;
@@ -113,12 +150,18 @@ export class TerminalTracker implements vscode.Disposable {
     for (const t of vscode.window.terminals) this.maybeTrack(t);
     for (const [term, info] of this.tracked) {
       if (term.name === info.lastSeenName) continue;
+      if (info.holdUntil && Date.now() < info.holdUntil) continue;
       const parsed = parseSessionName(info.sessionName, cfg.sessionPrefix);
       const newLabel = this.extractLabel(term.name, parsed?.tabId);
-      if (newLabel) {
-        this.index.setSessionLabel(info.workspaceHash, info.sessionName, newLabel);
-      }
       info.lastSeenName = term.name;
+      // "tmux" is VS Code falling back to the process name, not a rename.
+      if (!newLabel || newLabel === 'tmux') continue;
+      const before = this.index.getSessionLabel(info.workspaceHash, info.sessionName);
+      this.index.setSessionLabel(info.workspaceHash, info.sessionName, newLabel);
+      this.index.setSessionTabName(info.workspaceHash, info.sessionName, term.name);
+      if (newLabel !== before?.trim()) {
+        this.renamedByUser.fire({ workspaceHash: info.workspaceHash, sessionName: info.sessionName, label: newLabel });
+      }
     }
   }
 

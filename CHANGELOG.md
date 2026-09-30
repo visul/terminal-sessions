@@ -4,6 +4,18 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [Unreleased]
+
+### Changed
+- **One Rename for the session, its tab and its conversation.** A session could carry three names that drifted apart: the sidebar row, the terminal tab and the conversation. Now **Rename…** on a sidebar row and VS Code's own **Rename…** on the tab do the same thing: the row and the tab get the new name together, and a notification asks whether the session's current conversation gets it too. For Claude, **Yes** writes the name the way `/rename` does, so `claude --resume` shows it and a running Claude shows it in its prompt box from the next prompt. Other agents get the name in this extension's conversation lists. A name given inside the agent with `/rename` is only replaced after asking (**Replace** or **Keep**). The new setting `terminalSessions.renameConversation` answers the question for you (`always`, `never`); the default is `ask`. Nothing is renamed on its own, and names you already have are not touched.
+- **Rename Session and Rename Conversation… left the menus.** The sidebar row has **Rename…** instead, and the terminal tab uses VS Code's own **Rename…**. Conversations that no session holds any more are still renamed from the archive picker.
+
+### Fixed
+- **A sidebar rename did not reach the open tab,** only the next re-attach. It now renames the tab at once.
+- **A window reload could undo a sidebar rename.** The restored tab still showed the old name, and that was read back as a rename. The extension now remembers the name each tab last had, so an unchanged tab no longer counts as renamed.
+- **A `/rename` in Claude could lose to an older name from the extension.** Claude's own resume list takes the newest name recorded in the conversation; the extension read its separate title file first. Both now agree, and a name given in the extension is recorded the same way.
+- **Grok and Antigravity renames were read wrong.** A Grok `/rename` title was treated as generated, so an extension name hid it. Antigravity's generated titles were treated as renames, so they hid the extension's name.
+
 ## [0.33.7] — 2026-09-30
 
 ### Fixed

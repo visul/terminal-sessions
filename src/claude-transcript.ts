@@ -274,9 +274,13 @@ export function readClaudeCustomTitle(transcriptPath: string): string | undefine
   } catch { return undefined; }
 }
 
-/** Write (or, with an empty title, remove) Claude's own custom-title sidecar so a
- *  name given in the extension shows up in `claude --resume` too. The transcript
- *  .jsonl is never touched. Returns false when the write failed. */
+/** Name a Claude conversation the way `/rename` does, so `claude --resume` and a
+ *  later resume show it: append a `custom-title` + `agent-name` record pair to
+ *  the transcript (Claude's resume list takes the LAST custom-title record over
+ *  the sidecar, and a running Claude adopts the newest one when it re-stamps
+ *  its metadata) and write the custom-title.json sidecar. An empty title only
+ *  removes the sidecar; records already in the transcript stay. Returns false
+ *  when a write failed. */
 export function writeClaudeCustomTitle(transcriptPath: string, title: string | undefined): boolean {
   const p = claudeCustomTitlePath(transcriptPath);
   try {
@@ -285,10 +289,36 @@ export function writeClaudeCustomTitle(transcriptPath: string, title: string | u
       catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
       return true;
     }
+    const sessionId = path.basename(transcriptPath, '.jsonl');
+    // One write: two lines appended together cannot be split by Claude's own
+    // appends to the same file.
+    fs.appendFileSync(transcriptPath,
+      `${JSON.stringify({ type: 'custom-title', customTitle: title, sessionId })}\n`
+      + `${JSON.stringify({ type: 'agent-name', agentName: title, sessionId })}\n`);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify({ customTitle: title }));
     return true;
   } catch { return false; }
+}
+
+/** Where a title waits for the running Claude: the extension's UserPromptSubmit
+ *  hook (media/agent-hook.sh) hands it to Claude as `sessionTitle` on the next
+ *  prompt, which renames the live session (prompt box label included), then
+ *  deletes the file. */
+export const PENDING_TITLE_DIR = path.join(os.homedir(), '.terminal-sessions', 'pending-titles');
+
+export function queueClaudeLiveTitle(sessionId: string, title: string): void {
+  if (!/^[A-Za-z0-9-]+$/.test(sessionId)) return; // becomes a file name
+  try {
+    fs.mkdirSync(PENDING_TITLE_DIR, { recursive: true });
+    fs.writeFileSync(path.join(PENDING_TITLE_DIR, sessionId), title);
+    // A conversation that never gets another prompt leaves its file behind.
+    const stale = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    for (const f of fs.readdirSync(PENDING_TITLE_DIR)) {
+      const p = path.join(PENDING_TITLE_DIR, f);
+      try { if (fs.statSync(p).mtimeMs < stale) fs.unlinkSync(p); } catch { /* raced the hook */ }
+    }
+  } catch { /* the transcript records still carry the name */ }
 }
 
 export function readTranscriptSummary(transcriptPath: string): TranscriptSummary | undefined {
@@ -390,7 +420,8 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
     return {
       cwd,
       firstUserMessage: (firstUser ?? firstCommandName ?? (sawLocalCommand ? '(local command)' : undefined))?.slice(0, 200),
-      customTitle: readClaudeCustomTitle(transcriptPath) ?? customTitle,
+      // The last record wins over the sidecar, as in Claude's own resume list.
+      customTitle: customTitle || readClaudeCustomTitle(transcriptPath),
       autoTitle,
       lineCount,
       byteSize: stat.size,

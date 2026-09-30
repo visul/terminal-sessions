@@ -164,6 +164,8 @@ export function reduceGrokTranscriptLine(state: TranscriptTailState, line: strin
 export interface GrokTranscriptSummary {
   cwd?: string;
   firstUserMessage?: string;
+  /** The title set with `/rename` (`title_is_manual` in summary.json). */
+  customTitle?: string;
   /** `session_summary` / `generated_title` from summary.json — Grok's own title. */
   autoTitle?: string;
   lineCount?: number;
@@ -180,10 +182,16 @@ export function readGrokTranscriptSummary(transcriptPath: string): GrokTranscrip
   catch { return undefined; }
   let cwd: string | undefined;
   let title: string | undefined;
+  let manual: string | undefined;
   let msgs: number | undefined;
   try {
     const info = JSON.parse(fs.readFileSync(path.join(path.dirname(transcriptPath), 'summary.json'), 'utf8'));
     cwd = typeof info?.info?.cwd === 'string' ? info.info.cwd : undefined;
+    // `/rename` writes the title field and sets `title_is_manual`, which stops
+    // Grok from regenerating it; that one is the user's name.
+    if (info?.title_is_manual === true && typeof info?.generated_title === 'string' && info.generated_title.trim()) {
+      manual = info.generated_title;
+    }
     const t = info?.session_summary ?? info?.generated_title;
     title = typeof t === 'string' ? t : undefined;
     msgs = typeof info?.num_chat_messages === 'number' ? info.num_chat_messages : undefined;
@@ -191,7 +199,8 @@ export function readGrokTranscriptSummary(transcriptPath: string): GrokTranscrip
   return {
     cwd,
     firstUserMessage: title ? compactPreview(title, 200) : undefined,
-    autoTitle: title ? compactPreview(title, 200) : undefined,
+    customTitle: manual ? compactPreview(manual, 200) : undefined,
+    autoTitle: title && !manual ? compactPreview(title, 200) : undefined,
     lineCount: msgs,
     byteSize: stat.size,
     mtimeMs: stat.mtimeMs,

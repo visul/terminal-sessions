@@ -59,6 +59,8 @@ export interface Config {
   activityLimit: number;
   killedLimit: number;
   tabStateText: TabStateTextMode;
+  /** Whether Rename also names the session's current conversation. */
+  renameConversation: 'ask' | 'always' | 'never';
   tabStateStyle: TabStateStyle;
   tabStateClear: TabStateClear;
   tabStateDebug: boolean;
@@ -127,6 +129,7 @@ export function getConfig(): Config {
     activityLimit: Math.max(1, c.get<number>('activityLimit', 50)),
     killedLimit: Math.max(1, c.get<number>('killedLimit', 50)),
     tabStateText: c.get<string>('tabStateText', 'on') === 'off' ? 'off' : 'on',
+    renameConversation: ((v: string) => (v === 'always' || v === 'never' ? v : 'ask'))(c.get<string>('renameConversation', 'ask')),
     tabStateStyle: (TAB_STATE_STYLES as string[]).includes(c.get<string>('tabStateStyle', 'blue'))
       ? (c.get<string>('tabStateStyle', 'blue') as TabStateStyle) : 'blue',
     tabStateClear: c.get<string>('tabStateClear', 'seen') === 'timer' ? 'timer' : 'seen',

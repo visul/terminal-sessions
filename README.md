@@ -175,13 +175,12 @@ orders them by VS Code's group names, so the vertical order differs).
  │ Resume Other Session… (Claude / Codex / Antigravity) │
  │ Reveal Session Folder in Explorer / Finder        │
  │ View Conversation                                 │
- │ Rename Conversation…                              │
  │ Copy Last Conversation ID                         │
  │ Copy Last Conversation Path                       │
  ├─ Organize ───────────────────────────────────────┤
  │ Add to / Remove from Favorites                    │
  │ Move to Group…                                    │
- │ Rename Session                                    │
+ │ Rename…                                           │
  │ Change Icon… / Change Color…                      │
  │ Mute / Unmute Notifications                       │
  │ Dismiss (Mark as Seen)                            │
@@ -205,13 +204,12 @@ orders them by VS Code's group names, so the vertical order differs).
   own history and continue it in this tab. For anything that ever ran on the
   machine, use **Resume Session from Archive…** in the view toolbar instead.
 - **View Conversation** — the whole transcript rendered as a readable document.
-- **Rename Conversation…** — name the conversation itself. For Claude this
-  writes the same file `/rename` writes, so the name shows up in
-  `claude --resume` too.
 - **Copy Last Conversation ID / Path** — for `claude --resume <id>` or for
   opening the raw `.jsonl`.
-- **Move to Group…**, **Rename Session**, **Change Icon / Color** — the row is
-  yours to organize; names and colours survive restarts.
+- **Rename…** — one name for the row and its tab, applied to the open tab
+  at once. See [One Rename](#one-rename) for the conversation part.
+- **Move to Group…**, **Change Icon / Color** — the row is yours to
+  organize; names and colours survive restarts.
 - **Mute Notifications** — silence one noisy session without touching the rest.
 - **Dismiss (Mark as Seen)** — clear the unread verdict without opening the tab.
 - **Switch to YOLO Mode** — relaunch the same conversation with the agent's
@@ -233,7 +231,7 @@ place of **Kill Session**.
  │ Reveal in Terminal Sessions View                  │
  │ Reveal Session Folder in Explorer / Finder        │
  ├───────────────────────────────────────────────────┤
- │ Rename Session       (next to VS Code's Rename…)  │
+ │ Rename…                       (VS Code's own)     │
  ├───────────────────────────────────────────────────┤
  │ Add/Remove Favorite                               │
  │ Switch to YOLO Mode (auto-approve)                │
@@ -242,7 +240,6 @@ place of **Kill Session**.
  ├───────────────────────────────────────────────────┤
  │ Fork Conversation (new parallel branch)           │
  │ View Conversation                                 │
- │ Rename Conversation…                              │
  │ Copy Last Conversation ID                         │
  │ Copy Last Conversation Path                       │
  ├───────────────────────────────────────────────────┤
@@ -256,18 +253,40 @@ place of **Kill Session**.
  └───────────────────────────────────────────────────┘
 ```
 
-Use **Rename Session** rather than VS Code's own **Rename…** on a busy
-window. VS Code edits the name in place in the tab list, and that list is
-redrawn whenever any tab's state changes, so with agents running the edit
-is thrown away mid-word. **Rename Session** asks in a box at the top of the
-window instead, which nothing redraws. The new name reaches the sidebar
-too.
-
 Right-clicking inside the terminal body offers **Add/Remove Favorite**, the
 reveal actions (the selected path in Finder / Explorer, the session folder,
 the row in the Terminal Sessions view), **View Conversation** and the two
 **Copy Last Conversation** entries, so you can grab a conversation id straight
 from where you are typing.
+
+### One Rename
+
+**Rename…** on the sidebar row and VS Code's own **Rename…** on the tab do
+the same thing: the row and the tab get the new name together, and it
+survives a window reload. Then a notification asks whether the session's
+current conversation gets the name too:
+
+```
+Also rename the current Claude conversation to "api"?
+                                            [Yes]  [No]
+```
+
+- **Yes** names the conversation in the resume pickers, Find Session and
+  the viewer. For Claude it is also written the way `/rename` writes it,
+  so `claude --resume` shows it, and the prompt box of a running Claude
+  takes it from the next prompt.
+- A name given inside the agent with `/rename` is never replaced without
+  asking. Then the choice is **Replace** or **Keep**.
+- `terminalSessions.renameConversation` turns the question off: `always`
+  names the conversation without asking (a `/rename` name still asks),
+  `never` renames only the row and the tab.
+- Nothing is renamed on its own: new sessions and conversations keep the
+  names they start with until you rename them.
+
+VS Code edits a tab's name in place in the tab list, and that list is
+redrawn whenever any tab's state changes, so with an agent working on
+that window the edit can be thrown away mid-word. Rename from the sidebar
+then; it asks in a box at the top of the window.
 
 ### A day with it
 
@@ -338,7 +357,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
 - **Kill & Delete Data…** — right-click a session in the sidebar (or a terminal tab) to kill it AND permanently delete its conversations' on-disk data across every agent (Claude/Codex/Antigravity/Grok/OpenCode): transcripts, Claude sidecar dirs (subagents/tool-results/workflows), todos files, and per-session scratchpads under `/tmp/claude-*`. A modal confirmation shows exactly what's about to go (conversation count, file count, size on disk). Safety first: conversations still used by other sessions — live in another pane, or recorded as another session's resume history — are skipped and kept; every path is validated (strict UUID-named artifacts inside your home or the claude tmp dir only) and re-checked at delete time; symlinks are never followed. The session skips the graveyard — regular Kill stays reversible, this one doesn't
-- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Fork Conversation (Claude), View Conversation, Rename Session, Rename Conversation…, Copy Last Conversation ID / Path, Lock/Unlock, Kill Session, Kill & Delete Data…, and Stop and Restart at the very end, below VS Code's own Kill Terminal. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
+- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Fork Conversation (Claude), View Conversation, Copy Last Conversation ID / Path, Lock/Unlock, Kill Session, Kill & Delete Data…, and Stop and Restart at the very end, below VS Code's own Kill Terminal. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
 - **Auto-prune** stale sessions after configurable days (default 14)
 - **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
@@ -468,7 +487,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 ### Archive, conversation viewer & cleanup
 - **Resume Session from Archive** — the `$(history)` button on the sidebar toolbar (or `Terminal Sessions: Resume Session from Archive…`) opens a picker of **every** past conversation on disk, across every agent you have enabled, even when nothing is live in tmux for it. Defaults to the current workspace with a one-click toggle to show all projects. Accepting a row resumes it into your active session or a fresh persistent one
 - **View Conversation** — right-click a session (or the eye button in the archive picker) to open a readable Markdown rendering of the conversation in VS Code's preview: user and assistant turns, with thinking blocks and tool calls in collapsible sections. No more squinting at raw `.jsonl`
-- **Rename Conversation** — one name for a conversation everywhere: the resume pickers, Find Session and the viewer title. For Claude it is written to Claude's own `<id>/custom-title.json` (the file `/rename` writes and `claude --resume` reads), so renaming in the sidebar or with `/rename` inside Claude gives the same result; the transcript `.jsonl` is never modified. Titles set inside the agent win, then the extension's name, then the agent's generated title (Claude `ai-title`, Codex thread name, Antigravity summaries, Grok `generated_title`), then the first prompt
+- **One Rename** — **Rename…** on a sidebar row or VS Code's **Rename…** on a tab names the row and the tab together, then asks whether the current conversation gets the name too (`terminalSessions.renameConversation`: ask, always, never). For Claude the name is written the way `/rename` writes it, so `claude --resume` shows it and a running Claude takes it from the next prompt; a name set with `/rename` is only replaced after asking. Conversations no session holds any more are renamed from the archive picker. Titles set inside the agent win, then the extension's name, then the agent's generated title (Claude `ai-title`, Codex thread name, Antigravity summaries, Grok `generated_title`), then the first prompt
 - **Clean Up Empty / Invalid Sessions** — a maintenance action (sidebar overflow `⋯` menu) that finds empty or "Invalid API key" conversations and soft-deletes them into `~/.claude/projects/.bak`, with a preview and confirmation. **Claude only** — Codex, Antigravity, and Grok transcripts are never classified or moved, and the soft-delete refuses any path outside `~/.claude/projects`. The agent's own database and session index are never touched; moved files can be restored manually
 - **Transcript-cleanup warning** — Claude Code silently **deletes** conversation transcripts after 30 days (`cleanupPeriodDays`, and everything above — resume, archive, viewer — needs those files). A one-line dismissible notice at the top of the sidebar warns when your setting is risky (unset or under 90 days), and counts the transcripts about to expire within the next `terminalSessions.transcriptExpiryWarnDays` days: *"7 Claude chats expire soon — first in ~5d, click to keep them"*. Click writes `"cleanupPeriodDays": 3650` into `~/.claude/settings.json` (surgical edit — the rest of the file stays byte-for-byte identical; refuses to touch invalid JSON). The ✕ snoozes the notice for 30 days; it re-arms on purpose, because the data loss is permanent
 
@@ -660,7 +679,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `Terminal Sessions: Recreate Sessions from Index` | After a reboot, rebuild tmux sessions from the stored index |
 | Right-click on sidebar session → `Restart` | Kill + fresh shell; auto-resume the agent if detected |
 | Right-click on sidebar session → `View Conversation` | Render the session's transcript as Markdown (reads the `.jsonl` directly — works on stopped sessions too) |
-| Right-click on sidebar session or terminal tab → `Rename Conversation...` | Name the conversation (shown in the resume pickers, Find Session and the viewer; for Claude also in `claude --resume`) |
+| Right-click on sidebar session → `Rename...`, or VS Code's `Rename...` on the tab | Name the session and its tab; asks whether the current conversation gets the name too (for Claude also in `claude --resume` and its prompt box) |
 | Right-click on sidebar session → `Stop` / `Start` | Pause/respawn the tmux session while keeping the sidebar row |
 | Right-click on sidebar session → `Switch to YOLO Mode` / `Switch to Normal Mode` | Relaunch the same conversation with (or without) the agent's auto-approve flags; 🚨 chip marks YOLO sessions |
 | Right-click on killed row (or Command Palette) → `Restore Session` | Bring a killed session back from the graveyard and resume its conversation |

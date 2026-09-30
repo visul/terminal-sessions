@@ -147,6 +147,14 @@ export class SessionIndex {
     this.save();
   }
 
+  setSessionTabName(hash: string, sessionName: string, tabName: string): void {
+    this.reloadIfChanged();
+    const meta = this.data.workspaces[hash]?.sessions[sessionName];
+    if (!meta || meta.tabName === tabName) return;
+    meta.tabName = tabName;
+    this.save();
+  }
+
   setSessionIcon(hash: string, sessionName: string, icon: string | undefined): void {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
@@ -566,8 +574,8 @@ export class SessionIndex {
   }
 
   /** Set (or clear, when name is empty/undefined) a friendly label for an agent
-   *  session id. Stored in the sidecar `sessionNames` map; never touches
-   *  ~/.claude. */
+   *  session id, in the sidecar `sessionNames` map. Writing the agent's own
+   *  title is the caller's job (see renameConversation in commands.ts). */
   setSessionName(sessionId: string, name: string | undefined): void {
     this.reloadIfChanged();
     if (!sessionId) return;

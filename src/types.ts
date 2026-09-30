@@ -124,6 +124,10 @@ export interface GroupLabel {
 
 export interface SessionLabel {
   label?: string;
+  // The tab title last seen while the tab was open. A tab restored by a window
+  // reload that still shows exactly this was not renamed while nobody watched,
+  // so a newer sidebar label must not be replaced by it.
+  tabName?: string;
   icon?: string;
   color?: string;
   createdAt: string;

@@ -17,7 +17,7 @@ import { conversationTitle } from './conversation-title';
 import { maybeWarnMouseEnv, findMouseEnvLines, commentOutMouseEnv } from './mouse-clicks-guard';
 import { ClaudeTracker } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
-import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle } from './claude-transcript';
+import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle, queueClaudeLiveTitle } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
 import { scanArchive, ArchivedSession, classifyForCleanup, softDeleteSession } from './archive';
 import { planTrash, executeTrash, formatBytes } from './trash';
@@ -25,6 +25,7 @@ import { AgentRegistry, isForkableAgent, yoloSpecFor, yoloFlagsFor } from './age
 import { isYolo, setYolo } from './agents/launch-flags';
 import { readClaudeCleanupDays, setClaudeCleanupDays, snoozeCleanupNotice, countExpiringTranscripts, clearExpiryCache, KEEP_FOREVER_DAYS } from './notices';
 import type { AgentProvider, AgentId } from './agents/types';
+import type { TerminalTracker } from './terminal-tracker';
 import { setAsDefaultProfile, restorePreviousDefaultProfile } from './default-profile';
 
 /** Delay between opening the attached terminal and sending `claude --resume`,
@@ -244,7 +245,7 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
     vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
-    vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem | vscode.Terminal) => cmdRename(index, item)),
+    vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.refreshSidebar, () => refreshSidebar()),
     vscode.commands.registerCommand(COMMAND.revealSidebar,
       // <viewId>.focus reveals the view wherever the user has placed it (Explorer
@@ -602,11 +603,93 @@ async function cmdViewConversation(
   }
 }
 
+interface ConversationRef { sessionId: string; transcriptPath?: string; agent: AgentId }
+
+/** The conversation running in a session now, else the last one that ran there. */
+function currentConversation(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  hash: string,
+  tmuxName: string,
+  workspacePath?: string,
+): ConversationRef | undefined {
+  const { provider, history } = resumeContextFor(index, registry, claudeTracker, hash, tmuxName);
+  const cwd = index.getSessionMeta(hash, tmuxName)?.folderPath || workspacePath || '';
+  const resolved = resolveResumeFromHistory(provider, history, cwd, workspacePath);
+  const sessionId = resolved?.sessionId ?? history[0];
+  return sessionId ? { sessionId, transcriptPath: resolved?.transcriptPath, agent: provider.id } : undefined;
+}
+
+/** Name a conversation in the extension's sidecar map (any agent) and, for
+ *  Claude, in Claude itself: the transcript records `/rename` writes (read by
+ *  `claude --resume`) plus a title the running Claude picks up on the next
+ *  prompt. Empty clears. Returns a note for the status bar. */
+function applyConversationName(index: SessionIndex, c: ConversationRef, name: string | undefined): string {
+  index.setSessionName(c.sessionId, name);
+  if (c.agent !== 'claude' || !c.transcriptPath) return '';
+  if (!writeClaudeCustomTitle(c.transcriptPath, name)) return ' (Could not write Claude\'s title.)';
+  if (!name) return ' Cleared in Claude too.';
+  queueClaudeLiveTitle(c.sessionId, name);
+  return ' Claude shows it from the next prompt.';
+}
+
+/** The agent's own name for a conversation, when the user gave it one there
+ *  (`/rename`) rather than through this extension. */
+function manualAgentTitle(index: SessionIndex, registry: AgentRegistry, c: ConversationRef): string | undefined {
+  const native = c.transcriptPath
+    ? registry.getProvider(c.agent)?.readTranscriptSummary?.(c.transcriptPath)?.customTitle?.trim()
+    : undefined;
+  return native && native !== index.getSessionName(c.sessionId)?.trim() ? native : undefined;
+}
+
 /**
- * Rename a conversation. The name goes to the extension's sidecar map (any agent)
- * AND, for Claude, to Claude's own `<id>/custom-title.json` — the file `/rename`
- * writes and `claude --resume` reads — so the two stay one name. Empty input
- * clears both. Accepts a sidebar row, a terminal tab, or an explicit
+ * After a session was renamed: offer the same name to its current conversation
+ * (`terminalSessions.renameConversation` = ask, the default). A name the user
+ * gave inside the agent with `/rename` is never replaced without asking, even
+ * with the setting on `always`.
+ */
+export async function offerConversationRename(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  hash: string,
+  tmuxName: string,
+  name: string,
+): Promise<void> {
+  const mode = getConfig().renameConversation;
+  if (mode === 'never') return;
+  const c = currentConversation(index, registry, claudeTracker, hash, tmuxName, index.getWorkspace(hash)?.path);
+  if (!c) return;
+  const agentName = registry.getProvider(c.agent)?.displayName ?? 'agent';
+  const manual = manualAgentTitle(index, registry, c);
+  if (manual === name) return;
+  if (manual) {
+    // Only Claude's own name can be replaced from here; for the others the
+    // /rename name keeps winning, so there is nothing to offer.
+    if (c.agent !== 'claude') return;
+    const pick = await vscode.window.showInformationMessage(
+      `${agentName} already has its own name "${manual}" for this conversation (set with /rename). Replace it with "${name}"?`,
+      'Replace', 'Keep');
+    if (pick !== 'Replace') return;
+  } else {
+    if (index.getSessionName(c.sessionId) === name) return;
+    if (mode === 'ask') {
+      const pick = await vscode.window.showInformationMessage(
+        `Also rename the current ${agentName} conversation to "${name}"?`, 'Yes', 'No');
+      if (pick !== 'Yes') return;
+    }
+  }
+  const note = applyConversationName(index, c, name);
+  refreshSidebar();
+  vscode.window.setStatusBarMessage(`Conversation renamed to "${name}".${note}`, 3500);
+}
+
+/**
+ * Rename a conversation (the archive picker's Rename, for conversations no
+ * session holds any more). The name goes to the extension's sidecar map and,
+ * for Claude, into Claude itself (see applyConversationName). Empty input
+ * clears. Accepts a sidebar row, a terminal tab, or an explicit
  * { sessionId, current, transcriptPath, agent } from the archive picker.
  * Returns the saved name (undefined when cleared/cancelled).
  */
@@ -628,16 +711,9 @@ async function cmdNameSession(
     agent = arg.agent;
   } else {
     const session = await resolveSessionInfoFromInvocation(arg as SessionTreeItem | vscode.Terminal | undefined, index);
-    if (session) {
-      const { provider, history } =
-        resumeContextFor(index, registry, claudeTracker, session.workspaceHash, session.name);
-      const cwd = index.getSessionMeta(session.workspaceHash, session.name)?.folderPath
-        || session.workspacePath || '';
-      const resolved = resolveResumeFromHistory(provider, history, cwd, session.workspacePath);
-      sessionId = resolved?.sessionId ?? history[0];
-      transcriptPath = resolved?.transcriptPath;
-      agent = provider.id;
-    }
+    const c = session && currentConversation(
+      index, registry, claudeTracker, session.workspaceHash, session.name, session.workspacePath);
+    if (c) ({ sessionId, transcriptPath, agent } = c);
   }
 
   if (!sessionId) {
@@ -664,13 +740,8 @@ async function cmdNameSession(
   });
   if (input === undefined) return current; // cancelled
   const name = input.trim() || undefined;
-  index.setSessionName(sessionId, name);
-  let native = '';
-  if (agent === 'claude' && transcriptPath) {
-    native = writeClaudeCustomTitle(transcriptPath, name)
-      ? (name ? ' Claude shows it in `claude --resume` too.' : ' Cleared in Claude too.')
-      : ' (Could not write Claude\'s custom-title.json.)';
-  }
+  const native = agent ? applyConversationName(index, { sessionId, transcriptPath, agent }, name) : '';
+  if (!agent) index.setSessionName(sessionId, name);
   refreshSidebar();
   vscode.window.setStatusBarMessage(
     name ? `Conversation renamed to "${name}".${native}` : `Conversation name cleared.${native}`,
@@ -3509,32 +3580,61 @@ async function cmdKillStale(index: SessionIndex): Promise<void> {
 }
 
 
+let renameTracker: TerminalTracker | undefined;
+
+/** Hook the tab tracker into Rename: a rename typed on a tab (VS Code's own
+ *  Rename...) gets the same conversation offer as the sidebar's Rename. */
+export function wireRenameFlow(
+  tracker: TerminalTracker,
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+): vscode.Disposable {
+  renameTracker = tracker;
+  const sub = tracker.onDidRenameByUser(e => {
+    refreshSidebar();
+    void offerConversationRename(index, registry, claudeTracker, e.workspaceHash, e.sessionName, e.label);
+  });
+  return { dispose: () => { sub.dispose(); renameTracker = undefined; } };
+}
+
 /**
- * Rename from a terminal tab's right-click menu. VS Code's own Rename... edits
- * the name inline in the tab list, and that list re-renders every row whenever
- * ANY tab's title, icon or status changes, recreating the editor with the old
- * name. With agents running (the state glyphs this extension writes) the edit
- * is thrown away mid-word. `workbench.action.terminal.rename` asks in the
- * quick-input box instead, which is not part of the list; it renames the
- * ACTIVE terminal, so the right-clicked tab is made active first. The new tab
- * name reaches the index through TerminalTracker, like any tab rename.
+ * Give an open tab a new title. `renameWithArg` renames the ACTIVE terminal
+ * only, so the tab is made active for the moment (focus stays where it was)
+ * and the previously active one is brought back. The tracker is told first, so
+ * the new title is not read as a rename typed by the user.
  */
-async function renameTab(tab: vscode.Terminal): Promise<void> {
-  if (vscode.window.activeTerminal !== tab) {
+async function retitleTab(tab: vscode.Terminal, name: string): Promise<void> {
+  if (tab.name === name || tab.exitStatus) return;
+  const prev = vscode.window.activeTerminal;
+  if (prev !== tab) {
     tab.show(true);
     // eslint-disable-next-line no-await-in-loop
     for (let i = 0; i < 20 && vscode.window.activeTerminal !== tab; i++) await sleep(50);
-    if (vscode.window.activeTerminal !== tab) {
-      vscode.window.showWarningMessage('Could not switch to that terminal to rename it.');
-      return;
-    }
+    if (vscode.window.activeTerminal !== tab) return;
   }
-  await vscode.commands.executeCommand('workbench.action.terminal.rename');
+  renameTracker?.expectName(tab, name);
+  await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
+  // eslint-disable-next-line no-await-in-loop
+  for (let i = 0; i < 20 && tab.name !== name; i++) await sleep(50);
+  // Not applied: the tracker must go on expecting the title the tab still has.
+  if (tab.name !== name) renameTracker?.expectName(tab, tab.name);
+  if (prev && prev !== tab && !prev.exitStatus) prev.show(true);
 }
 
-async function cmdRename(index: SessionIndex, item?: SessionTreeItem | vscode.Terminal): Promise<void> {
-  if (!item) return;
-  if (!(item instanceof SessionTreeItem)) { await renameTab(item); return; }
+/**
+ * Rename from the sidebar: the label, the open tab's title (at once, not on the
+ * next reattach) and, if the user agrees, the current conversation. On a tab,
+ * VS Code's own Rename... does the same through TerminalTracker.
+ */
+async function cmdRename(
+  index: SessionIndex,
+  registry: AgentRegistry,
+  claudeTracker: ClaudeTracker,
+  item?: SessionTreeItem,
+): Promise<void> {
+  if (!(item instanceof SessionTreeItem)) return;
+  const { workspaceHash: hash, name: tmuxName } = item.session;
   const current = item.session.label ? `"${item.session.label}"` : `#${item.session.tabId}`;
   const newLabel = await vscode.window.showInputBox({
     prompt: `Rename session ${current}`,
@@ -3543,8 +3643,15 @@ async function cmdRename(index: SessionIndex, item?: SessionTreeItem | vscode.Te
     validateInput: (v) => v.length > 60 ? 'Label too long (max 60 chars)' : null,
   });
   if (newLabel === undefined) return;
-  index.setSessionLabel(item.session.workspaceHash, item.session.name, newLabel.trim());
+  const label = newLabel.trim();
+  index.setSessionLabel(hash, tmuxName, label);
   refreshSidebar();
+  const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);
+  if (tab) {
+    const wsLabel = index.getWorkspace(hash)?.label ?? item.session.workspaceLabel;
+    await retitleTab(tab, defaultTermName(wsLabel, item.session.tabId, label));
+  }
+  if (label) await offerConversationRename(index, registry, claudeTracker, hash, tmuxName, label);
 }
 
 async function cmdResumeAll(index: SessionIndex): Promise<void> {
