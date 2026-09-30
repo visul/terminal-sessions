@@ -267,7 +267,8 @@ fi
 # output this hook ever prints, and only when such a file exists. The file is
 # claimed by renaming it first, so a newer name written meanwhile is not lost.
 # Skipped when the newest custom-title in the transcript is another name: the
-# user renamed with /rename after answering, and that name stays.
+# user renamed with /rename after answering, and that name stays. The last
+# 256 KB are enough: Claude re-stamps its title records every 32 KB it writes.
 PENDING="$HOME/.terminal-sessions/pending-titles"
 if [ "$AGENT" = "claude" ] && [ "$EVENT" = "UserPromptSubmit" ] && [ -d "$PENDING" ] \
   && [ -n "$(ls "$PENDING" 2>/dev/null)" ] && command -v python3 >/dev/null 2>&1; then

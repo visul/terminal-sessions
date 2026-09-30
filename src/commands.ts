@@ -3663,6 +3663,8 @@ async function cmdRename(
   });
   if (newLabel === undefined) return;
   const label = newLabel.trim();
+  // Any conversation question still open for an older name is now stale.
+  renameGeneration.set(tmuxName, (renameGeneration.get(tmuxName) ?? 0) + 1);
   index.setSessionLabel(hash, tmuxName, label);
   refreshSidebar();
   const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);

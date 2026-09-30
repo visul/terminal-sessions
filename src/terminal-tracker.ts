@@ -8,9 +8,9 @@ interface TrackedInfo {
   sessionName: string;
   workspaceHash: string;
   lastSeenName: string;
-  /** A title the extension asked VS Code for and is waiting to see; when it
-   *  shows up it is taken as the extension's, not as a rename by the user. */
-  expected?: { name: string; until: number };
+  /** Titles the extension asked VS Code for (name → give up at), still to be
+   *  seen; when one shows up it is the extension's, not a rename by the user. */
+  expected?: Map<string, number>;
 }
 
 /** Longer than one poll, so a slow retitle is still recognised. */
@@ -77,7 +77,9 @@ export class TerminalTracker implements vscode.Disposable {
   /** The extension is about to give this tab `name` itself: not a user rename. */
   expectName(terminal: vscode.Terminal, name: string): void {
     const info = this.tracked.get(terminal);
-    if (info) info.expected = { name, until: Date.now() + EXPECT_MS };
+    if (!info) return;
+    info.expected ??= new Map();
+    info.expected.set(name, Date.now() + EXPECT_MS);
   }
 
   private maybeTrack(terminal: vscode.Terminal): void {
@@ -149,9 +151,11 @@ export class TerminalTracker implements vscode.Disposable {
     // available) get another look on the next tick.
     for (const t of vscode.window.terminals) this.maybeTrack(t);
     for (const [term, info] of this.tracked) {
-      if (info.expected && (term.name === info.expected.name || Date.now() > info.expected.until)) {
-        const ours = term.name === info.expected.name;
-        info.expected = undefined;
+      if (info.expected) {
+        const ours = info.expected.has(term.name);
+        const now = Date.now();
+        for (const [name, until] of info.expected) if (name === term.name || now > until) info.expected.delete(name);
+        if (info.expected.size === 0) info.expected = undefined;
         if (ours) {
           info.lastSeenName = term.name;
           this.index.setSessionTabName(info.workspaceHash, info.sessionName, term.name);
