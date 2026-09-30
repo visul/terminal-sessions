@@ -264,25 +264,50 @@ fi
 # A name given with Rename... waits in pending-titles/<sessionId> for the
 # running Claude: hand it over as sessionTitle on the next prompt (that renames
 # the live session, prompt box label included), then drop the file. The only
-# output this hook ever prints, and only when such a file exists.
+# output this hook ever prints, and only when such a file exists. The file is
+# claimed by renaming it first, so a newer name written meanwhile is not lost.
+# Skipped when the newest custom-title in the transcript is another name: the
+# user renamed with /rename after answering, and that name stays.
 PENDING="$HOME/.terminal-sessions/pending-titles"
 if [ "$AGENT" = "claude" ] && [ "$EVENT" = "UserPromptSubmit" ] && [ -d "$PENDING" ] \
-  && [ -n "$(ls -A "$PENDING" 2>/dev/null)" ] && command -v python3 >/dev/null 2>&1; then
+  && [ -n "$(ls "$PENDING" 2>/dev/null)" ] && command -v python3 >/dev/null 2>&1; then
   PENDING="$PENDING" python3 -c '
 import sys, json, os, re
 try:
-    sid = json.loads(sys.stdin.read() or "{}").get("session_id") or ""
+    data = json.loads(sys.stdin.read() or "{}")
 except Exception:
-    sid = ""
+    data = {}
+sid = data.get("session_id") or ""
 if isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9-]+", sid):
     p = os.path.join(os.environ["PENDING"], sid)
+    claimed = p + ".claimed-" + str(os.getpid())
+    title = ""
     try:
-        with open(p, encoding="utf-8") as f:
+        os.rename(p, claimed)
+        with open(claimed, encoding="utf-8") as f:
             title = f.read().strip()
-        os.remove(p)
+        os.remove(claimed)
     except OSError:
-        title = ""
-    if title:
+        pass
+    last = None
+    tp = data.get("transcript_path")
+    if title and isinstance(tp, str) and tp:
+        try:
+            with open(tp, "rb") as f:
+                f.seek(0, 2)
+                f.seek(max(0, f.tell() - 262144))
+                tail = f.read().decode("utf-8", "replace")
+            for line in tail.splitlines():
+                if "\"type\":\"custom-title\"" in line:
+                    try:
+                        rec = json.loads(line)
+                        if isinstance(rec.get("customTitle"), str):
+                            last = rec["customTitle"]
+                    except Exception:
+                        pass
+        except OSError:
+            pass
+    if title and (last is None or last == title):
         sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "sessionTitle": title}}))
 ' <<<"$STDIN_JSON" 2>/dev/null
 fi

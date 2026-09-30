@@ -278,18 +278,23 @@ export function readClaudeCustomTitle(transcriptPath: string): string | undefine
  *  later resume show it: append a `custom-title` + `agent-name` record pair to
  *  the transcript (Claude's resume list takes the LAST custom-title record over
  *  the sidecar, and a running Claude adopts the newest one when it re-stamps
- *  its metadata) and write the custom-title.json sidecar. An empty title only
- *  removes the sidecar; records already in the transcript stay. Returns false
- *  when a write failed. */
+ *  its metadata) and write the custom-title.json sidecar. An empty title
+ *  appends an empty custom-title record (so an older one no longer wins),
+ *  removes the sidecar and drops a title still waiting for the running Claude.
+ *  Returns false when a write failed. */
 export function writeClaudeCustomTitle(transcriptPath: string, title: string | undefined): boolean {
   const p = claudeCustomTitlePath(transcriptPath);
+  const sessionId = path.basename(transcriptPath, '.jsonl');
   try {
     if (!title) {
-      try { fs.unlinkSync(p); }
-      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+      fs.appendFileSync(transcriptPath, `${JSON.stringify({ type: 'custom-title', customTitle: '', sessionId })}\n`);
+      for (const f of [p, pendingTitlePath(sessionId)]) {
+        if (!f) continue;
+        try { fs.unlinkSync(f); }
+        catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
+      }
       return true;
     }
-    const sessionId = path.basename(transcriptPath, '.jsonl');
     // One write: two lines appended together cannot be split by Claude's own
     // appends to the same file.
     fs.appendFileSync(transcriptPath,
@@ -307,11 +312,21 @@ export function writeClaudeCustomTitle(transcriptPath: string, title: string | u
  *  deletes the file. */
 export const PENDING_TITLE_DIR = path.join(os.homedir(), '.terminal-sessions', 'pending-titles');
 
+function pendingTitlePath(sessionId: string): string | undefined {
+  // The id becomes a file name: nothing that could leave the directory.
+  return /^[A-Za-z0-9-]+$/.test(sessionId) ? path.join(PENDING_TITLE_DIR, sessionId) : undefined;
+}
+
 export function queueClaudeLiveTitle(sessionId: string, title: string): void {
-  if (!/^[A-Za-z0-9-]+$/.test(sessionId)) return; // becomes a file name
+  const dest = pendingTitlePath(sessionId);
+  if (!dest) return;
   try {
     fs.mkdirSync(PENDING_TITLE_DIR, { recursive: true });
-    fs.writeFileSync(path.join(PENDING_TITLE_DIR, sessionId), title);
+    // Written aside and renamed into place, so the hook never reads half a
+    // title. A dot-name is not an id, so the hook never picks it up.
+    const tmp = path.join(PENDING_TITLE_DIR, `.${sessionId}.${process.pid}`);
+    fs.writeFileSync(tmp, title);
+    fs.renameSync(tmp, dest);
     // A conversation that never gets another prompt leaves its file behind.
     const stale = Date.now() - 7 * 24 * 60 * 60 * 1000;
     for (const f of fs.readdirSync(PENDING_TITLE_DIR)) {
@@ -379,7 +394,9 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
               }
               // Agent-team teammates tag every record with their role; the team
               // lead carries only `teamName`. `agentName` present ⇒ teammate.
-              if (!isTeammate && typeof obj.agentName === 'string' && obj.agentName) {
+              // Not the `agent-name` record a rename writes: that one names the
+              // conversation, it is not a team role.
+              if (!isTeammate && obj.type !== 'agent-name' && typeof obj.agentName === 'string' && obj.agentName) {
                 isTeammate = true;
               }
               if (!firstUser && obj.type === 'user') {

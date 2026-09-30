@@ -605,7 +605,7 @@ async function cmdViewConversation(
 
 interface ConversationRef { sessionId: string; transcriptPath?: string; agent: AgentId }
 
-/** The conversation running in a session now, else the last one that ran there. */
+/** The conversation running in a session now, else the one Start would resume. */
 function currentConversation(
   index: SessionIndex,
   registry: AgentRegistry,
@@ -616,6 +616,13 @@ function currentConversation(
 ): ConversationRef | undefined {
   const { provider, history } = resumeContextFor(index, registry, claudeTracker, hash, tmuxName);
   const cwd = index.getSessionMeta(hash, tmuxName)?.folderPath || workspacePath || '';
+  // The live one even when it is still tiny: the resume pick below skips
+  // brief conversations and would name an older one instead.
+  const live = claudeTracker.getSessionId(tmuxName);
+  if (live) {
+    const tp = provider.resolveTranscriptPath(live, cwd, undefined);
+    return { sessionId: live, transcriptPath: tp && fs.existsSync(tp) ? tp : undefined, agent: provider.id };
+  }
   const resolved = resolveResumeFromHistory(provider, history, cwd, workspacePath);
   const sessionId = resolved?.sessionId ?? history[0];
   return sessionId ? { sessionId, transcriptPath: resolved?.transcriptPath, agent: provider.id } : undefined;
@@ -643,6 +650,10 @@ function manualAgentTitle(index: SessionIndex, registry: AgentRegistry, c: Conve
   return native && native !== index.getSessionName(c.sessionId)?.trim() ? native : undefined;
 }
 
+/** Latest rename per session: an offer still open when a newer rename came in
+ *  must not apply its older name. */
+const renameGeneration = new Map<string, number>();
+
 /**
  * After a session was renamed: offer the same name to its current conversation
  * (`terminalSessions.renameConversation` = ask, the default). A name the user
@@ -657,29 +668,41 @@ export async function offerConversationRename(
   tmuxName: string,
   name: string,
 ): Promise<void> {
+  const gen = (renameGeneration.get(tmuxName) ?? 0) + 1;
+  renameGeneration.set(tmuxName, gen);
   const mode = getConfig().renameConversation;
   if (mode === 'never') return;
   const c = currentConversation(index, registry, claudeTracker, hash, tmuxName, index.getWorkspace(hash)?.path);
   if (!c) return;
   const agentName = registry.getProvider(c.agent)?.displayName ?? 'agent';
-  const manual = manualAgentTitle(index, registry, c);
-  if (manual === name) return;
-  if (manual) {
-    // Only Claude's own name can be replaced from here; for the others the
-    // /rename name keeps winning, so there is nothing to offer.
-    if (c.agent !== 'claude') return;
-    const pick = await vscode.window.showInformationMessage(
-      `${agentName} already has its own name "${manual}" for this conversation (set with /rename). Replace it with "${name}"?`,
-      'Replace', 'Keep');
-    if (pick !== 'Replace') return;
-  } else {
-    if (index.getSessionName(c.sessionId) === name) return;
-    if (mode === 'ask') {
+  let asked = false;
+  let replaced: string | undefined;
+  // Looped because the answer takes time: a /rename made while the question
+  // was open must get its own question, not be overwritten by the "Yes".
+  for (;;) {
+    const manual = manualAgentTitle(index, registry, c);
+    if (manual === name) return;
+    if (manual) {
+      // Only Claude's own name can be replaced from here; for the others the
+      // /rename name keeps winning, so there is nothing to offer.
+      if (c.agent !== 'claude') return;
+      if (manual === replaced) break;
+      const pick = await vscode.window.showInformationMessage(
+        `${agentName} already has its own name "${manual}" for this conversation (set with /rename). Replace it with "${name}"?`,
+        'Replace', 'Keep');
+      if (pick !== 'Replace') return;
+      replaced = manual;
+    } else {
+      if (index.getSessionName(c.sessionId) === name) return;
+      if (mode === 'always' || asked) break;
       const pick = await vscode.window.showInformationMessage(
         `Also rename the current ${agentName} conversation to "${name}"?`, 'Yes', 'No');
       if (pick !== 'Yes') return;
+      asked = true;
     }
+    if (renameGeneration.get(tmuxName) !== gen) return;
   }
+  if (renameGeneration.get(tmuxName) !== gen) return;
   const note = applyConversationName(index, c, name);
   refreshSidebar();
   vscode.window.setStatusBarMessage(`Conversation renamed to "${name}".${note}`, 3500);
@@ -3602,7 +3625,7 @@ export function wireRenameFlow(
  * Give an open tab a new title. `renameWithArg` renames the ACTIVE terminal
  * only, so the tab is made active for the moment (focus stays where it was)
  * and the previously active one is brought back. The tracker is told first, so
- * the new title is not read as a rename typed by the user.
+ * the new title, whenever it shows, is not read as a rename typed by the user.
  */
 async function retitleTab(tab: vscode.Terminal, name: string): Promise<void> {
   if (tab.name === name || tab.exitStatus) return;
@@ -3615,10 +3638,6 @@ async function retitleTab(tab: vscode.Terminal, name: string): Promise<void> {
   }
   renameTracker?.expectName(tab, name);
   await vscode.commands.executeCommand('workbench.action.terminal.renameWithArg', { name });
-  // eslint-disable-next-line no-await-in-loop
-  for (let i = 0; i < 20 && tab.name !== name; i++) await sleep(50);
-  // Not applied: the tracker must go on expecting the title the tab still has.
-  if (tab.name !== name) renameTracker?.expectName(tab, tab.name);
   if (prev && prev !== tab && !prev.exitStatus) prev.show(true);
 }
 

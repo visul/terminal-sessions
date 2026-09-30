@@ -8,10 +8,13 @@ interface TrackedInfo {
   sessionName: string;
   workspaceHash: string;
   lastSeenName: string;
-  /** Until then the tab may still show its old title: a title the extension
-   *  asked for is on its way, and the old one must not read as a rename. */
-  holdUntil?: number;
+  /** A title the extension asked VS Code for and is waiting to see; when it
+   *  shows up it is taken as the extension's, not as a rename by the user. */
+  expected?: { name: string; until: number };
 }
+
+/** Longer than one poll, so a slow retitle is still recognised. */
+const EXPECT_MS = 5000;
 
 /** A tab rename the user made (not one the extension applied itself). */
 export interface UserTabRename {
@@ -74,10 +77,7 @@ export class TerminalTracker implements vscode.Disposable {
   /** The extension is about to give this tab `name` itself: not a user rename. */
   expectName(terminal: vscode.Terminal, name: string): void {
     const info = this.tracked.get(terminal);
-    if (!info) return;
-    info.lastSeenName = name;
-    info.holdUntil = Date.now() + 2000;
-    this.index.setSessionTabName(info.workspaceHash, info.sessionName, name);
+    if (info) info.expected = { name, until: Date.now() + EXPECT_MS };
   }
 
   private maybeTrack(terminal: vscode.Terminal): void {
@@ -149,8 +149,16 @@ export class TerminalTracker implements vscode.Disposable {
     // available) get another look on the next tick.
     for (const t of vscode.window.terminals) this.maybeTrack(t);
     for (const [term, info] of this.tracked) {
+      if (info.expected && (term.name === info.expected.name || Date.now() > info.expected.until)) {
+        const ours = term.name === info.expected.name;
+        info.expected = undefined;
+        if (ours) {
+          info.lastSeenName = term.name;
+          this.index.setSessionTabName(info.workspaceHash, info.sessionName, term.name);
+          continue;
+        }
+      }
       if (term.name === info.lastSeenName) continue;
-      if (info.holdUntil && Date.now() < info.holdUntil) continue;
       const parsed = parseSessionName(info.sessionName, cfg.sessionPrefix);
       const newLabel = this.extractLabel(term.name, parsed?.tabId);
       info.lastSeenName = term.name;

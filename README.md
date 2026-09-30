@@ -697,7 +697,6 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Sidebar overflow `⋯` → `Clean Up Empty / Invalid Sessions...` | Soft-delete empty/invalid conversations to `~/.claude/projects/.bak` |
 | Right-click on sidebar session → `Session Note` | Open the note editor pinned to that session (also focuses whichever host you last typed in) |
 | Right-click on a Notes row → `Delete Session Note` | Delete that session's note; the confirmation shows the text first |
-| Right-click on sidebar session → `Rename` | Set a friendly label |
 | Right-click on sidebar session → `Change Icon` / `Change Color` | Pick custom icon or theme color |
 | Right-click on sidebar session → `Mute Notifications` / `Unmute Notifications` | Per-session silencing |
 | Right-click on sidebar session → `Lock (Protect from Kill)` / `Unlock (Allow Kill)` | Protect a session from Kill (padlock takes the Kill slot); Unlock to allow killing again |
