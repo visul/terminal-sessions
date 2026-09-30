@@ -4,7 +4,7 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
-## [0.33.6] — 2026-09-22
+## [0.33.6] — 2026-09-30
 
 ### Added
 - **Re-attach every terminal, not only the broken ones.** The sidebar's **...** menu has **Re-attach All Terminals**. The title-bar button still re-attaches only the tabs marked disconnected or exited; the new entry also re-creates the live tabs, in the same order. Sessions keep running in tmux, so nothing is lost and no agent is resumed.
