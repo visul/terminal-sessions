@@ -244,7 +244,7 @@ export function registerCommands(
     }),
     vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
     vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
-    vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, item)),
+    vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem | vscode.Terminal) => cmdRename(index, item)),
     vscode.commands.registerCommand(COMMAND.refreshSidebar, () => refreshSidebar()),
     vscode.commands.registerCommand(COMMAND.revealSidebar,
       // <viewId>.focus reveals the view wherever the user has placed it (Explorer
@@ -3509,8 +3509,32 @@ async function cmdKillStale(index: SessionIndex): Promise<void> {
 }
 
 
-async function cmdRename(index: SessionIndex, item?: SessionTreeItem): Promise<void> {
+/**
+ * Rename from a terminal tab's right-click menu. VS Code's own Rename... edits
+ * the name inline in the tab list, and that list re-renders every row whenever
+ * ANY tab's title, icon or status changes, recreating the editor with the old
+ * name. With agents running (the state glyphs this extension writes) the edit
+ * is thrown away mid-word. `workbench.action.terminal.rename` asks in the
+ * quick-input box instead, which is not part of the list; it renames the
+ * ACTIVE terminal, so the right-clicked tab is made active first. The new tab
+ * name reaches the index through TerminalTracker, like any tab rename.
+ */
+async function renameTab(tab: vscode.Terminal): Promise<void> {
+  if (vscode.window.activeTerminal !== tab) {
+    tab.show(true);
+    // eslint-disable-next-line no-await-in-loop
+    for (let i = 0; i < 20 && vscode.window.activeTerminal !== tab; i++) await sleep(50);
+    if (vscode.window.activeTerminal !== tab) {
+      vscode.window.showWarningMessage('Could not switch to that terminal to rename it.');
+      return;
+    }
+  }
+  await vscode.commands.executeCommand('workbench.action.terminal.rename');
+}
+
+async function cmdRename(index: SessionIndex, item?: SessionTreeItem | vscode.Terminal): Promise<void> {
   if (!item) return;
+  if (!(item instanceof SessionTreeItem)) { await renameTab(item); return; }
   const current = item.session.label ? `"${item.session.label}"` : `#${item.session.tabId}`;
   const newLabel = await vscode.window.showInputBox({
     prompt: `Rename session ${current}`,

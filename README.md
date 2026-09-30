@@ -142,6 +142,15 @@ turn you watched finish never gets one. Prefer a plain clock instead? The
 view's `⋯` menu switches to *Clear After 30 Minutes*, and back. A session
 blocked on a prompt keeps its mark either way, until you answer.
 
+The tab's name is coloured as well: magenta while the agent works, green
+once it is your turn, back to normal when the mark clears. VS Code does
+not let an extension change a tab's icon or colour, so only the name is
+tinted, and an icon or colour you picked stays as it is. A yellow name
+with a `⚠` at the end of the row is VS Code's own "relaunch needed"
+warning (some extension changed the terminal environment). It covers the
+colour; **Re-attach All Terminals** in the `⋯` menu clears it without
+stopping anything.
+
 The `⋯` menu also turns the whole thing off and on. See
 [`terminalSessions.tabStateText`](#settings) for the setting behind it, and
 `terminalSessions.tabStateStyle` for the mark set: `blue` (default), `dark`
@@ -218,6 +227,8 @@ place of **Kill Session**.
  │ Reveal in Terminal Sessions View                  │
  │ Reveal Session Folder in Explorer / Finder        │
  ├───────────────────────────────────────────────────┤
+ │ Rename Session       (next to VS Code's Rename…)  │
+ ├───────────────────────────────────────────────────┤
  │ Add/Remove Favorite                               │
  │ Switch to YOLO Mode (auto-approve)                │
  │ Switch to Normal Mode (ask before acting)         │
@@ -229,11 +240,22 @@ place of **Kill Session**.
  │ Copy Last Conversation ID                         │
  │ Copy Last Conversation Path                       │
  ├───────────────────────────────────────────────────┤
- │ Restart Session  ·  Stop Session                  │
  │ Lock (Protect from Kill) / Unlock (Allow Kill)    │
  │ Kill Session  ·  Kill & Delete Data…              │
+ ├───────────────────────────────────────────────────┤
+ │ Kill Terminal                 (VS Code's own)     │
+ ├───────────────────────────────────────────────────┤
+ │ Stop Session (keep in sidebar)                    │
+ │ Restart Session (kill + fresh shell)              │
  └───────────────────────────────────────────────────┘
 ```
+
+Use **Rename Session** rather than VS Code's own **Rename…** on a busy
+window. VS Code edits the name in place in the tab list, and that list is
+redrawn whenever any tab's state changes, so with agents running the edit
+is thrown away mid-word. **Rename Session** asks in a box at the top of the
+window instead, which nothing redraws. The new name reaches the sidebar
+too.
 
 Right-clicking inside the terminal body offers **Add/Remove Favorite**, the
 reveal actions (the selected path in Finder / Explorer, the session folder,
@@ -310,7 +332,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
 - **Kill & Delete Data…** — right-click a session in the sidebar (or a terminal tab) to kill it AND permanently delete its conversations' on-disk data across every agent (Claude/Codex/Antigravity/Grok/OpenCode): transcripts, Claude sidecar dirs (subagents/tool-results/workflows), todos files, and per-session scratchpads under `/tmp/claude-*`. A modal confirmation shows exactly what's about to go (conversation count, file count, size on disk). Safety first: conversations still used by other sessions — live in another pane, or recorded as another session's resume history — are skipped and kept; every path is validated (strict UUID-named artifacts inside your home or the claude tmp dir only) and re-checked at delete time; symlinks are never followed. The session skips the graveyard — regular Kill stays reversible, this one doesn't
-- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Fork Conversation (Claude), View Conversation, Rename Conversation…, Copy Last Conversation ID / Path, Restart, Stop, Lock/Unlock, Kill Session, Kill & Delete Data…. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
+- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Fork Conversation (Claude), View Conversation, Rename Session, Rename Conversation…, Copy Last Conversation ID / Path, Lock/Unlock, Kill Session, Kill & Delete Data…, and Stop and Restart at the very end, below VS Code's own Kill Terminal. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
 - **Auto-prune** stale sessions after configurable days (default 14)
 - **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available

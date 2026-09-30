@@ -365,7 +365,7 @@
             "Write the agent's state into the tab description."
           ],
           "default": "on",
-          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works and one mark (the `$(error)` glyph) the moment it is your turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well; it shows only when `${sequence}` sits NEXT TO `${progress}` in the template, and only on terminals restored across a window reload (VS Code records that title on nameless terminals alone). Requires the managed tmux config (`allow-passthrough on`)."
+          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works and one mark (the `$(error)` glyph) the moment it is your turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well; it shows only when `${sequence}` sits NEXT TO `${progress}` in the template, and only on terminals restored across a window reload (VS Code records that title on nameless terminals alone). The tab's name is tinted too, magenta while the agent works and green once it is your turn. Requires the managed tmux config (`allow-passthrough on`)."
         },
         "terminalSessions.tabStateDebug": {
           "type": "boolean",
@@ -1114,16 +1114,20 @@
       ],
       "terminal/title/context": [
         {
+          "command": "terminalSessions.rename",
+          "group": "3_edit@0"
+        },
+        {
           "command": "terminalSessions.toggleFavorite",
           "group": "4_session@0"
         },
         {
           "command": "terminalSessions.restart",
-          "group": "6_stop@1"
+          "group": "8_restart@1"
         },
         {
           "command": "terminalSessions.stop",
-          "group": "6_stop@2"
+          "group": "8_restart@0"
         },
         {
           "command": "terminalSessions.kill",

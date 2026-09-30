@@ -43,6 +43,7 @@ import { findTerminalForSession, sessionNameForTerminal } from './profile-provid
 import { parseSessionName } from './workspace-id';
 import type { ClaudeTracker, ClaudeSnapshot } from './claude-tracker';
 import { outcomeIsBad } from './outcome';
+import { TabColorDecorations, type MarkedTab } from './tab-color';
 
 const execFileP = promisify(execFile);
 
@@ -260,6 +261,8 @@ class TabStateWriter {
    *  which of state, terminal lookup and tty write went wrong. */
   private log?: vscode.OutputChannel;
   private disposed = false;
+  /** Tab name colour: magenta while working, green once it is your turn. */
+  private readonly colors = new TabColorDecorations();
 
   constructor(
     private readonly ctx: vscode.ExtensionContext,
@@ -303,6 +306,7 @@ class TabStateWriter {
     try {
       const cfg = getConfig();
       if (cfg.tabStateText !== 'on') {
+        this.colors.set(new Map());
         await this.clearAll();
         if (!this.blankedOnce) { this.blankedOnce = true; await this.blankThisWindow(cfg.tmuxPath, cfg.sessionPrefix); }
         return;
@@ -313,13 +317,16 @@ class TabStateWriter {
       // No `${sequence}` in the user's template means nothing we write can be
       // seen — so write nothing. (Re-read every tick: adding it by hand starts
       // the text flowing without a reload.)
-      if (!templateShowsSequence()) { await this.clearAll(); return; }
+      if (!templateShowsSequence()) { this.colors.set(new Map()); await this.clearAll(); return; }
       let panes: PaneRow[] = [];
       try { panes = await activePanes(tmux, cfg.sessionPrefix); }
-      catch { this.last.clear(); this.passthroughOk = false; return; } // server gone: re-ask everything
+      catch { this.last.clear(); this.passthroughOk = false; this.colors.set(new Map()); return; } // server gone: re-ask everything
       if (this.disposed) return;
       const now = Date.now();
       const live = new Set<string>();
+      const marked = new Map<string, MarkedTab>();
+      // 'seen' needs the unread markers; with those disabled, fall back to the clock.
+      const clear: TabStateClear = cfg.unreadBadges ? cfg.tabStateClear : 'timer';
       const debug = cfg.tabStateDebug;
       if (debug) this.dbg(`tick panes=${panes.length} terminals=${vscode.window.terminals.length}`);
       for (const p of panes) {
@@ -331,6 +338,13 @@ class TabStateWriter {
           continue;
         }
         live.add(p.session);
+        const snap = this.tracker.getSnapshot(p.session);
+        const kind = tabStateKind(snap, now, clear).kind;
+        // The name colour needs no tmux client: it is drawn by VS Code itself.
+        const colorKind = kind === 'working' ? 'working' : progressFor(kind) === PROGRESS.error ? 'turn' : undefined;
+        if (colorKind) {
+          marked.set(p.session, { term, kind: colorKind });
+        }
         if (!p.attached) {
           // Nobody to receive it — tmux drops passthrough without a client.
           // Forget the text so it is written again once a client is back.
@@ -338,11 +352,8 @@ class TabStateWriter {
           if (debug) this.dbg(`${p.session} skip: no tmux client attached`);
           continue;
         }
-        // 'seen' needs the unread markers; with those disabled, fall back to the clock.
-        const clear: TabStateClear = cfg.unreadBadges ? cfg.tabStateClear : 'timer';
-        const snap = this.tracker.getSnapshot(p.session);
         const text = formatTabState(snap, now, cfg.tabStateStyle, clear);
-        const code = progressFor(tabStateKind(snap, now, clear).kind);
+        const code = progressFor(kind);
         if (debug) {
           const t = (d?: Date): string => (d ? d.toISOString().slice(11, 23) : '-');
           this.dbg(
@@ -354,6 +365,7 @@ class TabStateWriter {
         }
         this.write(p.session, p.tty, text, code, debug);
       }
+      this.colors.set(marked);
       // A session that disappeared took its tab with it; drop the memory so a
       // reused name starts clean.
       for (const name of Array.from(this.last.keys())) {
@@ -445,6 +457,7 @@ class TabStateWriter {
     if (this.timer) clearInterval(this.timer);
     if (this.debounce) clearTimeout(this.debounce);
     this.log?.dispose();
+    this.colors.dispose();
     void this.clearAll();
   }
 }
