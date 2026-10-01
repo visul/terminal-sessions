@@ -283,6 +283,10 @@ export class ClaudeTracker {
    *  lets the tab mark show every finish and clear on the next visit. */
   private tabSeenAt = new Map<string, number>();
   private tabClearedAt = new Map<string, number>();
+  /** A Stop that came while background agents still ran. Normally the lead is
+   *  woken when they report back and its next Stop is the finish; if it never
+   *  wakes, getSnapshot delivers this one once the agents are done. */
+  private pendingFinish = new Map<string, { cwd: string | undefined; agent: AgentId | undefined }>();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
 
@@ -414,6 +418,7 @@ export class ClaudeTracker {
     this.flagCapTried.delete(tmuxSession);
     this.lastDerived.delete(tmuxSession);
     this.dismissedAt.delete(tmuxSession);
+    this.pendingFinish.delete(tmuxSession);
     // Stop tailing the transcript so a killed session stops doing 3s stat/parse
     // work (and holding an fs.watch) forever — but only when no OTHER tmux still
     // owns the same sessionId (ownership can transfer via resume in another tab).
@@ -485,6 +490,9 @@ export class ClaudeTracker {
   /** Clear every unread marker in the index (palette command). */
   markAllSeen(): number {
     if (!this.index) return 0;
+    // Read the finishes first: getSnapshot may deliver a pending one, and that
+    // must land before the unread markers are cleared, not after.
+    for (const name of this.snapshots.keys()) this.clearTabMark(name);
     let n = 0;
     for (const name of this.snapshots.keys()) {
       const parsed = this.parsedOf(name);
@@ -493,8 +501,6 @@ export class ClaudeTracker {
         n++;
       }
     }
-    const now = Date.now();
-    for (const name of this.snapshots.keys()) this.tabClearedAt.set(name, now);
     this._onChange.fire();
     this.clearAllBanners();
     return n;
@@ -505,14 +511,23 @@ export class ClaudeTracker {
     for (const name of this.snapshots.keys()) void removeNotification(sessionGroupId(name));
   }
 
+  /** The finish Mark as Seen clears: the one on screen now. Hook stamps have
+   *  second precision, so comparing a later finish against the wall clock of
+   *  the click could hide a finish that landed in the same second. */
+  private clearTabMark(tmuxSession: string): void {
+    // No finish on record means no mark to clear.
+    const at = this.getSnapshot(tmuxSession)?.lastStopAt?.getTime();
+    if (at !== undefined) this.tabClearedAt.set(tmuxSession, at);
+  }
+
   /** Silence a waiting/unread row: the unread marker is cleared and a current
    *  'waiting' state renders as idle until the agent does something new. */
   dismiss(tmuxSession: string): void {
     if (this.snapshots.get(tmuxSession)?.state === 'waiting') {
       this.dismissedAt.set(tmuxSession, Date.now());
     }
+    this.clearTabMark(tmuxSession); // before markSeen; see markAllSeen
     this.markSeen(tmuxSession);
-    this.tabClearedAt.set(tmuxSession, Date.now());
     void removeNotification(sessionGroupId(tmuxSession));
     this._onChange.fire();
   }
@@ -829,7 +844,10 @@ export class ClaudeTracker {
     const prev = this.lastDerived.get(tmuxSession);
     this.lastDerived.set(tmuxSession, snap.state);
     const vouched = !!snap.lastStopAt && Date.now() - snap.lastStopAt.getTime() < 120_000;
-    if ((prev === 'working' || prev === 'tool') && snap.state === 'idle' && vouched) {
+    if ((prev === 'working' || prev === 'tool') && snap.state === 'idle' && vouched && agentsAtWork(snap)) {
+      // Same deferral as a hook Stop with background agents still running.
+      this.pendingFinish.set(tmuxSession, { cwd: this.map.get(tmuxSession)?.cwd, agent: snap.agent });
+    } else if ((prev === 'working' || prev === 'tool') && snap.state === 'idle' && vouched) {
       this.noteFinished(tmuxSession, snap.outcome);
       // Same edge, same evidence. This is the ONLY completion signal a session
       // tracked without hooks ever gets — Grok installs none, so a Grok turn
@@ -846,8 +864,23 @@ export class ClaudeTracker {
         this.map.get(tmuxSession)?.cwd,
         snap.lastStopAt?.getTime() ?? Date.now(),
         this.registry.providerForAgent(snap.agent),
-        agentsAtWork(snap),
       );
+    }
+
+    // A finish deferred for background agents: the lead resumed (its own next
+    // Stop will report), or the agents are done and the lead stayed idle, in
+    // which case this is the finish.
+    const pending = this.pendingFinish.get(tmuxSession);
+    if (pending && snap.state !== 'idle') {
+      this.pendingFinish.delete(tmuxSession);
+    } else if (pending && !agentsAtWork(snap)) {
+      this.pendingFinish.delete(tmuxSession);
+      // The session finishes now, not at the lead's earlier Stop: a visit or
+      // Mark as Seen during the agents' run must not cover this finish.
+      snap.lastStopAt = new Date();
+      raw.lastStopAt = snap.lastStopAt;
+      this.noteFinished(tmuxSession, snap.outcome);
+      this.triggerStopNotify(tmuxSession, pending.cwd, Date.now(), this.registry.providerForAgent(pending.agent));
     }
 
     // Only an idle row can carry a result; a relaunched/working session must
@@ -1294,6 +1327,8 @@ export class ClaudeTracker {
         // A (re)launch starts a fresh run: whatever the previous run left unread
         // is history now, not something the new run finished.
         if (Date.now() - tsMs < NOTIFY_STALE_MS) this.markSeen(e.tmuxSession);
+        // Nor does a finish the previous run left pending belong to this one.
+        this.pendingFinish.delete(e.tmuxSession);
         // Fresh launch/resume → re-read this pane's process flags (a Restart may
         // have relaunched with different character flags).
         this.flagCapTried.delete(e.tmuxSession);
@@ -1364,13 +1399,19 @@ export class ClaudeTracker {
         const outcome = t ? classifyOutcome(t) : undefined;
         // Live event only — a Stop replayed from the log at activation must not
         // re-flag sessions the user already looked at.
+        // Background agents still running: the lead is woken when they report
+        // back and its next Stop is the real finish, so no unread marker and
+        // no "done" banner yet. Kept pending in case the lead never wakes.
+        const agentsRunning = runningAgents(t) > 0;
         if (Date.now() - tsMs < NOTIFY_STALE_MS) {
           this.lastDerived.set(e.tmuxSession, 'idle');
-          this.noteFinished(e.tmuxSession, outcome);
+          if (agentsRunning) this.pendingFinish.set(e.tmuxSession, { cwd: e.cwd, agent });
+          else {
+            this.pendingFinish.delete(e.tmuxSession);
+            this.noteFinished(e.tmuxSession, outcome);
+          }
         }
-        // Background agents still running: the lead is woken when they report
-        // back and its next Stop is the real finish, so no "done" banner yet.
-        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider, runningAgents(t) > 0);
+        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider, agentsRunning);
         break;
       }
       // SessionEnd is fully handled (and gated) before the ownership-transfer

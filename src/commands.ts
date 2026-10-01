@@ -476,10 +476,12 @@ async function cmdPickAlertSound(): Promise<void> {
   qp.placeholder = 'Alert When Done sound (each one plays as you move to it)';
   qp.activeItems = items.filter(i => i.sound === current);
   let stop: (() => void) | undefined;
-  let opened = false;
+  let moved = false;
   qp.onDidChangeActive(active => {
-    // The first activation is the picker opening on the current sound: stay quiet.
-    if (!opened) { opened = true; return; }
+    // The picker opening on the current sound is not a move: stay quiet until
+    // the user goes somewhere (whether or not VS Code reports that opening).
+    if (!moved && active[0]?.sound === current) return;
+    moved = true;
     stop?.();
     stop = active[0] ? playAlertSound(active[0].sound) : undefined;
   });
@@ -916,6 +918,8 @@ async function cmdSetSessionAlertOnDone(
   const many = selectionTargets(selection);
   if (many) {
     bulkApply(many, (hash, name) => index.setSessionAlertOnDone(hash, name, on), n => `${n} sessions: ${verb}.`);
+    // The active terminal may be in the selection: refresh its tab menu.
+    void syncActiveTerminalContext(index);
     return;
   }
   const session = await resolveSessionInfoFromInvocation(item, index);

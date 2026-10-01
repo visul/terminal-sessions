@@ -261,7 +261,7 @@ export async function macosAlert(opts: {
   // Remote extension host: we cannot reach the user's desktop with osascript
   // or zenity (those would run on the remote machine). Use VS Code's own
   // modal API, which is IPC-forwarded to the local Cursor window.
-  if (isRemoteExtensionHost()) {
+  const vscodeModal = async (): Promise<string | undefined> => {
     const primary = opts.primaryButton || 'Show terminal';
     const secondary = opts.secondaryButton || 'Dismiss';
     const pick = await vscode.window.showWarningMessage(
@@ -271,7 +271,8 @@ export async function macosAlert(opts: {
       secondary,
     );
     return pick === primary ? primary : undefined;
-  }
+  };
+  if (isRemoteExtensionHost()) return vscodeModal();
   if (process.platform === 'linux') {
     // Try zenity for a real modal with button. Falls through to notify-send
     // on exec failures (zenity not installed, no display, etc.).
@@ -296,7 +297,9 @@ export async function macosAlert(opts: {
           opts.title, opts.message,
         ]);
       } catch { /* ignore */ }
-      return undefined;
+      // The banner reaches the desktop; the modal is what the caller waits
+      // on, so returning still means somebody answered.
+      return vscodeModal();
     }
   }
   if (process.platform !== 'darwin') return undefined;

@@ -151,7 +151,7 @@
           ],
           "enumDescriptions": [
             "Banner notification that auto-dismisses after a few seconds (system default).",
-            "Persistent modal dialog with a `Show terminal` button: osascript on macOS, zenity on Linux (a sticky banner without it), a VS Code modal on a remote workspace. Windows keeps the banner. Blocks until you dismiss — use only if you miss the banners."
+            "Persistent modal dialog with a `Show terminal` button: osascript on macOS, zenity on Linux (without it, a sticky banner plus a VS Code modal), a VS Code modal on a remote workspace. Windows keeps the banner. Blocks until you dismiss — use only if you miss the banners."
           ],
           "default": "banner",
           "description": "How to surface an agent waiting for you."
