@@ -287,12 +287,14 @@ export function writeClaudeCustomTitle(transcriptPath: string, title: string | u
   const sessionId = path.basename(transcriptPath, '.jsonl');
   try {
     if (!title) {
-      fs.appendFileSync(transcriptPath, `${JSON.stringify({ type: 'custom-title', customTitle: '', sessionId })}\n`);
+      // Files first: an empty record with the old sidecar still there would
+      // bring the old title back.
       for (const f of [p, pendingTitlePath(sessionId)]) {
         if (!f) continue;
         try { fs.unlinkSync(f); }
         catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') return false; }
       }
+      fs.appendFileSync(transcriptPath, `${JSON.stringify({ type: 'custom-title', customTitle: '', sessionId })}\n`);
       return true;
     }
     // One write: two lines appended together cannot be split by Claude's own
@@ -437,8 +439,9 @@ export function readTranscriptSummary(transcriptPath: string): TranscriptSummary
     return {
       cwd,
       firstUserMessage: (firstUser ?? firstCommandName ?? (sawLocalCommand ? '(local command)' : undefined))?.slice(0, 200),
-      // The last record wins over the sidecar, as in Claude's own resume list.
-      customTitle: customTitle || readClaudeCustomTitle(transcriptPath),
+      // The last record wins over the sidecar, as in Claude's own resume list;
+      // an empty one means the name was cleared.
+      customTitle: customTitle !== undefined ? customTitle || undefined : readClaudeCustomTitle(transcriptPath),
       autoTitle,
       lineCount,
       byteSize: stat.size,

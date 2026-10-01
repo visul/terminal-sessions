@@ -152,9 +152,17 @@ export class TerminalTracker implements vscode.Disposable {
     for (const t of vscode.window.terminals) this.maybeTrack(t);
     for (const [term, info] of this.tracked) {
       if (info.expected) {
-        const ours = info.expected.has(term.name);
         const now = Date.now();
-        for (const [name, until] of info.expected) if (name === term.name || now > until) info.expected.delete(name);
+        for (const [name, until] of info.expected) if (now > until) info.expected.delete(name);
+        const ours = info.expected.has(term.name);
+        // Seen: it and every title asked for before it are done with (the
+        // map keeps insertion order).
+        if (ours) {
+          for (const name of [...info.expected.keys()]) {
+            info.expected.delete(name);
+            if (name === term.name) break;
+          }
+        }
         if (info.expected.size === 0) info.expected = undefined;
         if (ours) {
           info.lastSeenName = term.name;

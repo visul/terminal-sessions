@@ -279,25 +279,23 @@ try:
 except Exception:
     data = {}
 sid = data.get("session_id") or ""
+p = ""
 if isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9-]+", sid):
     p = os.path.join(os.environ["PENDING"], sid)
-    claimed = p + ".claimed-" + str(os.getpid())
-    title = ""
-    try:
-        os.rename(p, claimed)
-        with open(claimed, encoding="utf-8") as f:
-            title = f.read().strip()
-        os.remove(claimed)
-    except OSError:
-        pass
+if p and os.path.exists(p):
+    # Newest custom-title in the transcript tail, read BEFORE the pending file
+    # is claimed: when the transcript cannot be read the file stays for the
+    # next prompt (fail closed, a /rename is never overwritten blind).
     last = None
+    readable = False
     tp = data.get("transcript_path")
-    if title and isinstance(tp, str) and tp:
+    if isinstance(tp, str) and tp:
         try:
             with open(tp, "rb") as f:
                 f.seek(0, 2)
                 f.seek(max(0, f.tell() - 262144))
                 tail = f.read().decode("utf-8", "replace")
+            readable = True
             for line in tail.splitlines():
                 if "\"type\":\"custom-title\"" in line:
                     try:
@@ -306,6 +304,16 @@ if isinstance(sid, str) and re.fullmatch(r"[A-Za-z0-9-]+", sid):
                             last = rec["customTitle"]
                     except Exception:
                         pass
+        except OSError:
+            pass
+    title = ""
+    if readable:
+        claimed = p + ".claimed-" + str(os.getpid())
+        try:
+            os.rename(p, claimed)
+            with open(claimed, encoding="utf-8") as f:
+                title = f.read().strip()
+            os.remove(claimed)
         except OSError:
             pass
     if title and (last is None or last == title):

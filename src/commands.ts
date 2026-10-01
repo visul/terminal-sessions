@@ -618,7 +618,10 @@ function currentConversation(
   const cwd = index.getSessionMeta(hash, tmuxName)?.folderPath || workspacePath || '';
   // The live one even when it is still tiny: the resume pick below skips
   // brief conversations and would name an older one instead.
-  const live = claudeTracker.getSessionId(tmuxName);
+  // (Live = the agent still runs: after it exits the mapping stays, and Start
+  // would resume the pick below, so Rename names that one too.)
+  const snap = claudeTracker.getSnapshot(tmuxName);
+  const live = snap && snap.state !== 'none' ? claudeTracker.getSessionId(tmuxName) : undefined;
   if (live) {
     const tp = provider.resolveTranscriptPath(live, cwd, undefined);
     return { sessionId: live, transcriptPath: tp && fs.existsSync(tp) ? tp : undefined, agent: provider.id };
@@ -654,6 +657,12 @@ function manualAgentTitle(index: SessionIndex, registry: AgentRegistry, c: Conve
  *  must not apply its older name. */
 const renameGeneration = new Map<string, number>();
 
+function bumpRenameGeneration(tmuxName: string): number {
+  const gen = (renameGeneration.get(tmuxName) ?? 0) + 1;
+  renameGeneration.set(tmuxName, gen);
+  return gen;
+}
+
 /**
  * After a session was renamed: offer the same name to its current conversation
  * (`terminalSessions.renameConversation` = ask, the default). A name the user
@@ -667,9 +676,10 @@ export async function offerConversationRename(
   hash: string,
   tmuxName: string,
   name: string,
+  /** The rename this offer belongs to; a new one is counted when not given. */
+  gen = bumpRenameGeneration(tmuxName),
 ): Promise<void> {
-  const gen = (renameGeneration.get(tmuxName) ?? 0) + 1;
-  renameGeneration.set(tmuxName, gen);
+  if (renameGeneration.get(tmuxName) !== gen) return;
   const mode = getConfig().renameConversation;
   if (mode === 'never') return;
   const c = currentConversation(index, registry, claudeTracker, hash, tmuxName, index.getWorkspace(hash)?.path);
@@ -760,6 +770,7 @@ async function cmdNameSession(
   const input = await vscode.window.showInputBox({
     prompt: 'Name for this conversation (empty to clear)',
     value: current ?? '',
+    validateInput: (v) => v.trim().length > 200 ? 'Name too long (max 200 chars)' : null,
   });
   if (input === undefined) return current; // cancelled
   const name = input.trim() || undefined;
@@ -3664,7 +3675,7 @@ async function cmdRename(
   if (newLabel === undefined) return;
   const label = newLabel.trim();
   // Any conversation question still open for an older name is now stale.
-  renameGeneration.set(tmuxName, (renameGeneration.get(tmuxName) ?? 0) + 1);
+  const gen = bumpRenameGeneration(tmuxName);
   index.setSessionLabel(hash, tmuxName, label);
   refreshSidebar();
   const tab = renameTracker?.terminalFor(tmuxName) ?? findTerminalForSession(tmuxName);
@@ -3672,7 +3683,8 @@ async function cmdRename(
     const wsLabel = index.getWorkspace(hash)?.label ?? item.session.workspaceLabel;
     await retitleTab(tab, defaultTermName(wsLabel, item.session.tabId, label));
   }
-  if (label) await offerConversationRename(index, registry, claudeTracker, hash, tmuxName, label);
+  // A newer rename may have come in while the tab was being retitled.
+  if (label) await offerConversationRename(index, registry, claudeTracker, hash, tmuxName, label, gen);
 }
 
 async function cmdResumeAll(index: SessionIndex): Promise<void> {
