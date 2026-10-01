@@ -4,7 +4,7 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
-## [Unreleased]
+## [0.34.0] — 2026-10-01
 
 ### Added
 - **Alert When Done.** Right-click a session or its tab → **Alert When Done** for the one task you are waiting on. When it finishes you hear a longer sound, a macOS ringtone (`terminalSessions.notificationSoundAlert`, default `Crystals`), and a dialog with **Show terminal** stays until you click it. Clicking the dialog stops the sound. **Alert When Done Sound...** (view `⋯` menu, and the right-click of a session with the alert on) plays each sound as you move through the list. Short turns and the cooldown no longer hide that finish. The row shows `🔔`. It is the opposite of **Mute Notifications**, so turning on one turns off the other.
