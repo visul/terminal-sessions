@@ -235,7 +235,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.attachTo, (item?: SessionTreeItem) => cmdAttachTo(index, item)),
     vscode.commands.registerCommand(COMMAND.kill, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
-      return many ? cmdKillMany(index, many) : cmdKill(index, item);
+      return many ? cmdKillMany(index, claudeTracker, many) : cmdKill(index, claudeTracker, item);
     }),
     vscode.commands.registerCommand(COMMAND.killDelete, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
       const many = selectionTargets(selection);
@@ -243,8 +243,8 @@ export function registerCommands(
         ? cmdKillDeleteMany(index, claudeTracker, registry, many)
         : cmdKillDelete(index, claudeTracker, registry, item);
     }),
-    vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index)),
-    vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index)),
+    vscode.commands.registerCommand(COMMAND.killWorkspace, () => cmdKillWorkspace(index, claudeTracker)),
+    vscode.commands.registerCommand(COMMAND.killAllStale, () => cmdKillStale(index, claudeTracker)),
     vscode.commands.registerCommand(COMMAND.rename, (item?: SessionTreeItem) => cmdRename(index, registry, claudeTracker, item)),
     vscode.commands.registerCommand(COMMAND.refreshSidebar, () => refreshSidebar()),
     vscode.commands.registerCommand(COMMAND.revealSidebar,
@@ -2165,16 +2165,12 @@ async function cmdStart(
   // project directory.
   const { provider: startProvider, history: startHistory } =
     resumeContextFor(index, registry, claudeTracker, parsed.hash, name);
-  const startResume = resolveResumeFromHistory(
-    startProvider,
-    // Don't start on a conversation another pane already holds (live, or a resume
-    // dispatched seconds ago that hasn't booted). Starting two tangled tabs one
-    // after the other is the ordinary cleanup workflow and used to land both on
-    // the same conversation.
-    startHistory.filter(id => !claudeTracker.isConversationTaken(id, name)),
-    startCwd,
-    ws.path,
-  );
+  // Don't start on a conversation another pane already holds (live, or a resume
+  // dispatched seconds ago that hasn't booted). Starting two tangled tabs one
+  // after the other is the ordinary cleanup workflow and used to land both on
+  // the same conversation.
+  const freeHistory = startHistory.filter(id => !claudeTracker.isConversationTaken(id, name));
+  const startResume = resolveResumeFromHistory(startProvider, freeHistory, startCwd, ws.path);
   const claudeSessionId = startResume?.sessionId;
   const claudeTranscriptPath = startResume?.transcriptPath;
 
@@ -2183,9 +2179,16 @@ async function cmdStart(
   // ~30 days, `cleanupPeriodDays`). Without this the session just opens as an
   // inexplicable empty shell.
   if (!startResume && startHistory.length > 0) {
-    vscode.window.showWarningMessage(
-      `"${meta?.label || name}" started as a clean shell — its recorded conversation(s) are no longer on disk `
-      + `(Claude Code deletes old transcripts after ~30 days).`,
+    const holder = freeHistory.length < startHistory.length
+      ? startHistory.map(id => claudeTracker.conversationHolder(id)).find(h => h && h !== name)
+      : undefined;
+    const holderLabel = holder
+      ? (index.getSessionLabel(parseSessionName(holder, cfg.sessionPrefix)?.hash ?? '', holder) || holder)
+      : undefined;
+    vscode.window.showWarningMessage(holderLabel
+      ? `"${meta?.label || name}" started as a clean shell — its conversation is open in "${holderLabel}".`
+      : `"${meta?.label || name}" started as a clean shell — its recorded conversation(s) are no longer on disk `
+        + `(Claude Code deletes old transcripts after ~30 days).`,
     );
   }
 
@@ -3267,6 +3270,7 @@ async function cmdAttachTo(index: SessionIndex, item?: SessionTreeItem): Promise
 
 async function cmdKill(
   index: SessionIndex,
+  claudeTracker: ClaudeTracker,
   item?: SessionTreeItem | vscode.Terminal,
 ): Promise<void> {
   const tmuxPath = await requireTmux();
@@ -3305,6 +3309,9 @@ async function cmdKill(
   );
   if (confirm !== 'Kill') return;
   await tmux.killSession(tmuxPath, name);
+  // Drop the dead pane's claim on its conversation, or Restore sees it as
+  // still held and opens a clean shell instead of resuming it.
+  claudeTracker.forgetSession(name);
   if (parsedForLabel) index.removeSession(parsedForLabel.hash, name, cfg.killedLimit);
   refreshSidebar();
 }
@@ -3312,7 +3319,7 @@ async function cmdKill(
 /** Bulk Kill over a multi-selection: one aggregate confirmation, then each
  *  session goes to the graveyard exactly like a single Kill. Locked rows are
  *  skipped (and said so), never silently killed. */
-async function cmdKillMany(index: SessionIndex, rows: SessionTreeItem[]): Promise<void> {
+async function cmdKillMany(index: SessionIndex, claudeTracker: ClaudeTracker, rows: SessionTreeItem[]): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
@@ -3337,6 +3344,7 @@ async function cmdKillMany(index: SessionIndex, rows: SessionTreeItem[]): Promis
   for (const t of targets) {
     // eslint-disable-next-line no-await-in-loop
     try { await tmux.killSession(tmuxPath, t.name); } catch { /* already dead — still remove below */ }
+    claudeTracker.forgetSession(t.name);
     index.removeSession(t.hash, t.name, cfg.killedLimit);
   }
   refreshSidebar();
@@ -3626,11 +3634,15 @@ async function cmdRestoreKilled(
     refreshSidebar();
     return;
   }
+  // The killed pane is gone, so it no longer holds its conversation. A Kill
+  // from another window (or an older build) leaves that claim behind, which
+  // would make Start skip the conversation and open a clean shell.
+  claudeTracker.forgetSession(entry.name);
   refreshSidebar();
   await cmdStart(index, registry, claudeTracker, undefined, restored.name);
 }
 
-async function cmdKillWorkspace(index: SessionIndex): Promise<void> {
+async function cmdKillWorkspace(index: SessionIndex, claudeTracker: ClaudeTracker): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const ws = currentWorkspace();
@@ -3656,12 +3668,13 @@ async function cmdKillWorkspace(index: SessionIndex): Promise<void> {
   if (confirm !== 'Kill All') return;
   for (const s of mine) {
     await tmux.killSession(tmuxPath, s.name);
+    claudeTracker.forgetSession(s.name);
     index.removeSession(s.workspaceHash, s.name, cfg.killedLimit);
   }
   refreshSidebar();
 }
 
-async function cmdKillStale(index: SessionIndex): Promise<void> {
+async function cmdKillStale(index: SessionIndex, claudeTracker: ClaudeTracker): Promise<void> {
   const tmuxPath = await requireTmux();
   if (!tmuxPath) return;
   const cfg = getConfig();
@@ -3684,6 +3697,7 @@ async function cmdKillStale(index: SessionIndex): Promise<void> {
   if (confirm !== 'Prune') return;
   for (const s of stale) {
     await tmux.killSession(tmuxPath, s.name);
+    claudeTracker.forgetSession(s.name);
     index.removeSession(s.workspaceHash, s.name, cfg.killedLimit);
   }
   refreshSidebar();
