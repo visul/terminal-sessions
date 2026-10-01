@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.34.1] — 2026-10-01
+
+### Fixed
+- **Restore opened a killed session as an empty shell.** After **Kill**, the extension still counted the killed session as the owner of its conversation, so **Restore** skipped the conversation and started a clean shell. Kill, Kill All, Kill Stale and multi-select Kill now release the conversation, and Restore also releases it for sessions killed before this fix or from another window. When a session does start empty because its conversation is open elsewhere, the warning now names that session instead of saying the transcript was deleted.
+
 ## [0.34.0] — 2026-10-01
 
 ### Added
