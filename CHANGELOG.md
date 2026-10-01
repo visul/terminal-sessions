@@ -6,11 +6,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the
 
 ## [Unreleased]
 
+### Added
+- **Alert When Done.** Right-click a session or its tab → **Alert When Done** for the one task you are waiting on. When it finishes you hear a longer sound, a macOS ringtone (`terminalSessions.notificationSoundAlert`, default `Crystals`), and a dialog with **Show terminal** stays until you click it. Clicking the dialog stops the sound. **Alert When Done Sound...** (view `⋯` menu, and the right-click of a session with the alert on) plays each sound as you move through the list. Short turns and the cooldown no longer hide that finish. The row shows `🔔`. It is the opposite of **Mute Notifications**, so turning on one turns off the other.
+- **Mark as Seen on the terminal tab.** The sidebar's **Dismiss (Mark as Seen)** is now **Mark as Seen**, and it is also on the tab's right-click menu. It clears the tab's green or red in both clear modes, including *Clear After 30 Minutes*, where nothing could clear it before. It shows on every row whose tab is still coloured, not only on unread rows.
+
 ### Changed
 - **One Rename for the session, its tab and its conversation.** A session could carry three names that drifted apart: the sidebar row, the terminal tab and the conversation. Now **Rename…** on a sidebar row and VS Code's own **Rename…** on the tab do the same thing: the row and the tab get the new name together, and a notification asks whether the session's current conversation gets it too. For Claude, **Yes** writes the name the way `/rename` does, so `claude --resume` shows it and a running Claude shows it in its prompt box from the next prompt. Other agents get the name in this extension's conversation lists. A name given inside the agent with `/rename` is only replaced after asking (**Replace** or **Keep**). The new setting `terminalSessions.renameConversation` answers the question for you (`always`, `never`); the default is `ask`. Nothing is renamed on its own, and names you already have are not touched.
 - **Rename Session and Rename Conversation… left the menus.** The sidebar row has **Rename…** instead, and the terminal tab uses VS Code's own **Rename…**. Conversations that no session holds any more are still renamed from the archive picker.
 
 ### Fixed
+- **A session turned green while its background agents were still working.** When Claude ends its turn and leaves background agents or teammates running, the tab and the row now stay magenta until those agents finish, and the done notification waits for the real end. Stop and Restart warn that the agents will be stopped. A background agent running a long command no longer counts as finished after two quiet minutes.
 - **A sidebar rename did not reach the open tab,** only the next re-attach. It now renames the tab at once.
 - **A window reload could undo a sidebar rename.** The restored tab still showed the old name, and that was read back as a rename. The extension now remembers the name each tab last had, so an unchanged tab no longer counts as renamed.
 - **A `/rename` in Claude could lose to an older name from the extension.** Claude's own resume list takes the newest name recorded in the conversation; the extension read its separate title file first. Both now agree, and a name given in the extension is recorded the same way.

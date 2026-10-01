@@ -41,7 +41,7 @@ import { getConfig, type TabStateStyle, type TabStateClear } from './config';
 import * as tmuxMod from './tmux';
 import { findTerminalForSession, sessionNameForTerminal } from './profile-provider';
 import { parseSessionName } from './workspace-id';
-import type { ClaudeTracker, ClaudeSnapshot } from './claude-tracker';
+import { agentsAtWork, type ClaudeTracker, type ClaudeSnapshot } from './claude-tracker';
 import { outcomeIsBad } from './outcome';
 import { TabColorDecorations, type MarkedTab } from './tab-color';
 
@@ -124,6 +124,9 @@ export function tabStateKind(
       // for an hour is exactly what this feature exists to surface.
       return { kind: 'waiting', ageMs: snap.waitingSince ? now - snap.waitingSince.getTime() : 0 };
     case 'idle': {
+      // The lead's turn ended but its background agents are still running:
+      // nothing is your turn yet, the lead resumes when they report back.
+      if (agentsAtWork(snap)) return { kind: 'working', ageMs: 0 };
       const at = snap.lastStopAt?.getTime();
       if (!at) return { kind: 'none', ageMs: 0 };
       // Relaunched since that stop (Start on a stopped row, `--resume` in a new
@@ -132,6 +135,8 @@ export function tabStateKind(
       if (snap.lastStartAt && snap.lastStartAt.getTime() > at) return { kind: 'none', ageMs: 0 };
       const dt = now - at;
       if (dt < 0) return { kind: 'none', ageMs: 0 };
+      // Mark as Seen clears the mark under either mode.
+      if (snap.tabClearedAt && snap.tabClearedAt.getTime() >= at) return { kind: 'none', ageMs: 0 };
       // 'seen': every finish gets the mark, even one you watched — the tab then
       // reads "done 2m ago" — and it leaves on your next visit to that terminal
       // after the finish (or Dismiss), however long that takes. The sidebar's

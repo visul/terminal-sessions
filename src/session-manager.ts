@@ -185,9 +185,27 @@ export class SessionIndex {
     this.reloadIfChanged();
     const ws = this.data.workspaces[hash];
     if (!ws?.sessions[sessionName]) return;
-    if (muted) ws.sessions[sessionName].muted = true;
-    else delete ws.sessions[sessionName].muted;
+    if (muted) {
+      ws.sessions[sessionName].muted = true;
+      delete ws.sessions[sessionName].alertOnDone;
+    } else delete ws.sessions[sessionName].muted;
     this.save();
+  }
+
+  /** Alert When Done on/off. Turning it on unmutes the session. */
+  setSessionAlertOnDone(hash: string, sessionName: string, on: boolean): void {
+    this.reloadIfChanged();
+    const ws = this.data.workspaces[hash];
+    if (!ws?.sessions[sessionName]) return;
+    if (on) {
+      ws.sessions[sessionName].alertOnDone = true;
+      delete ws.sessions[sessionName].muted;
+    } else delete ws.sessions[sessionName].alertOnDone;
+    this.save();
+  }
+
+  isSessionAlertOnDone(hash: string, sessionName: string): boolean {
+    return this.data.workspaces[hash]?.sessions[sessionName]?.alertOnDone === true;
   }
 
   /** Set or clear the unread ("finished since you looked") marker. */
@@ -950,6 +968,7 @@ export async function enrichSessions(
       sortOrder: meta?.sortOrder,
       attached: row.attached,
       muted: meta?.muted,
+      alertOnDone: meta?.alertOnDone,
       favorite: meta?.favorite,
       locked: meta?.locked,
       stopped: false,
@@ -1005,6 +1024,7 @@ export async function enrichSessions(
         sortOrder: meta.sortOrder,
         attached: false,
         muted: meta.muted,
+        alertOnDone: meta.alertOnDone,
         favorite: meta.favorite,
         locked: meta.locked,
         stopped: true,

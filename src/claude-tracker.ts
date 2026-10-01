@@ -18,7 +18,7 @@ import type { AgentId, AgentProvider } from './agents/types';
 import type { AgentRegistry } from './agents/registry';
 
 import {
-  notify, macosAlert, removeNotification, sessionFocusUrl, sessionGroupId,
+  notify, macosAlert, playAlertSound, removeNotification, sessionFocusUrl, sessionGroupId,
 } from './notifications';
 import { classifyOutcome, outcomeIsBad, type TurnOutcome } from './outcome';
 import { getConfig } from './config';
@@ -97,12 +97,37 @@ export interface ClaudeSnapshot {
   /** When the user last focused this session's terminal (window focused).
    *  The tab mark's 'seen' rule: a finish older than this has been looked at. */
   tabSeenAt?: Date;
+  /** When the user last ran Mark as Seen on this session. Clears the tab mark
+   *  in both clear modes, the 30-minute timer included. */
+  tabClearedAt?: Date;
   /** Agent process pid reported by its hook (OpenCode). While set, a dead pid
    *  resets the session to 'none' — OpenCode kills its plugin worker before
    *  the plugin's dispose (our SessionEnd) can run, so the exit is otherwise
    *  invisible. */
   agentPid?: number;
   agentPidCheckedAt?: number;
+}
+
+/** Background agents (`run_in_background` subagents, agent-team teammates)
+ *  still writing to their transcripts. The lead's turn can end while they
+ *  work, so an idle lead with any of these is not done yet: it gets woken
+ *  when they report back. Only agents found in the `subagents/` dir count:
+ *  their state comes from their own file's mtime and expires by itself,
+ *  while a Task parsed from the lead's transcript stays 'working' forever
+ *  when its turn was interrupted. */
+export function runningAgents(snap: { subagents?: SubagentSnapshot[] } | undefined): number {
+  return (snap?.subagents || [])
+    .filter(s => s.viaDir && (s.state === 'working' || s.state === 'tool')).length;
+}
+
+/** An idle lead whose background agents are still at work. */
+export function agentsAtWork(snap: Pick<ClaudeSnapshot, 'state' | 'subagents'> | undefined): boolean {
+  return snap?.state === 'idle' && runningAgents(snap) > 0;
+}
+
+/** Busy either way: a turn in progress, or one waiting on its agents. */
+export function isBusy(snap: Pick<ClaudeSnapshot, 'state' | 'subagents'> | undefined): boolean {
+  return snap?.state === 'working' || snap?.state === 'tool' || agentsAtWork(snap);
 }
 
 interface ClaudeEvent {
@@ -257,6 +282,7 @@ export class ClaudeTracker {
    *  sidebar's unread marker (set only for a finish you did NOT watch), this
    *  lets the tab mark show every finish and clear on the next visit. */
   private tabSeenAt = new Map<string, number>();
+  private tabClearedAt = new Map<string, number>();
   private _onChange = new vscode.EventEmitter<void>();
   readonly onChange = this._onChange.event;
 
@@ -278,6 +304,13 @@ export class ClaudeTracker {
     const parsed = parseSessionName(tmuxSession, cfg.sessionPrefix);
     if (!parsed) return false;
     return this.index.isSessionMuted(parsed.hash, tmuxSession);
+  }
+
+  private isSessionAlertOnDone(tmuxSession: string): boolean {
+    if (!this.index) return false;
+    const parsed = parseSessionName(tmuxSession, getConfig().sessionPrefix);
+    if (!parsed) return false;
+    return this.index.isSessionAlertOnDone(parsed.hash, tmuxSession);
   }
 
   start(): void {
@@ -403,7 +436,7 @@ export class ClaudeTracker {
       const snap = this.getSnapshot(name);
       if (!snap) continue;
       if (snap.state === 'waiting') waiting++;
-      else if (snap.state === 'working' || snap.state === 'tool') working++;
+      else if (isBusy(snap)) working++;
       if (snap.unread) unread++;
     }
     return { waiting, working, unread };
@@ -460,7 +493,9 @@ export class ClaudeTracker {
         n++;
       }
     }
-    if (n) this._onChange.fire();
+    const now = Date.now();
+    for (const name of this.snapshots.keys()) this.tabClearedAt.set(name, now);
+    this._onChange.fire();
     this.clearAllBanners();
     return n;
   }
@@ -477,6 +512,7 @@ export class ClaudeTracker {
       this.dismissedAt.set(tmuxSession, Date.now());
     }
     this.markSeen(tmuxSession);
+    this.tabClearedAt.set(tmuxSession, Date.now());
     void removeNotification(sessionGroupId(tmuxSession));
     this._onChange.fire();
   }
@@ -737,9 +773,13 @@ export class ClaudeTracker {
     // between turns. Everyone is exempt while their OWN transcript is still
     // moving — the lead going quiet says nothing about a subagent that wrote a
     // moment ago, and pinning a genuinely working one to idle for as long as
-    // the lead stays idle is worse than a stale spinner.
+    // the lead stays idle is worse than a stale spinner. Agents from the
+    // `subagents/` dir are exempt too: their state already expires with their
+    // own file (10 minutes for a pending tool), and an idle lead is the normal
+    // shape of a background agent running a long build.
     const stillAlive = (s: SubagentSnapshot): boolean =>
-      !!s.lastActivityAt && Date.now() - s.lastActivityAt.getTime() < SUBAGENT_ALIVE_MS;
+      !!s.viaDir
+      || (!!s.lastActivityAt && Date.now() - s.lastActivityAt.getTime() < SUBAGENT_ALIVE_MS);
     if (snap.state === 'idle' && snap.lastStopAt
         && Date.now() - snap.lastStopAt.getTime() > 120_000
         && snap.subagents?.some((s) => (s.state === 'working' || s.state === 'tool') && !stillAlive(s))) {
@@ -806,6 +846,7 @@ export class ClaudeTracker {
         this.map.get(tmuxSession)?.cwd,
         snap.lastStopAt?.getTime() ?? Date.now(),
         this.registry.providerForAgent(snap.agent),
+        agentsAtWork(snap),
       );
     }
 
@@ -817,6 +858,8 @@ export class ClaudeTracker {
     }
     const seenAt = this.tabSeenAt.get(tmuxSession);
     if (seenAt !== undefined) snap.tabSeenAt = new Date(seenAt);
+    const clearedAt = this.tabClearedAt.get(tmuxSession);
+    if (clearedAt !== undefined) snap.tabClearedAt = new Date(clearedAt);
     return snap;
   }
 
@@ -1325,7 +1368,9 @@ export class ClaudeTracker {
           this.lastDerived.set(e.tmuxSession, 'idle');
           this.noteFinished(e.tmuxSession, outcome);
         }
-        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider);
+        // Background agents still running: the lead is woken when they report
+        // back and its next Stop is the real finish, so no "done" banner yet.
+        this.triggerStopNotify(e.tmuxSession, e.cwd, tsMs, provider, runningAgents(t) > 0);
         break;
       }
       // SessionEnd is fully handled (and gated) before the ownership-transfer
@@ -1515,13 +1560,25 @@ export class ClaudeTracker {
     cwd: string | undefined,
     tsMs: number,
     provider: AgentProvider,
+    agentsRunning = false,
   ): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeStop) return;
+    if (agentsRunning) return;
     if (this.isSessionMuted(tmuxSession)) return;
     // Historical event replayed from the log at activation — apply state, skip
     // the stale "done" popup.
     if (Date.now() - tsMs > NOTIFY_STALE_MS) return;
+
+    // Alert When Done: the user asked to hear about THIS session, so every
+    // finish counts — no minimum duration, no cooldown. Its own sound, and a
+    // dialog that stays until clicked; clicking it also silences the sound.
+    if (this.isSessionAlertOnDone(tmuxSession)) {
+      const label = this.sessionLabel(tmuxSession, cwd, provider.displayName);
+      const stopSound = playAlertSound(cfg.notificationSoundAlert);
+      this.showModalAlert(`🔔 ${provider.displayName} done`, label, tmuxSession, stopSound);
+      return;
+    }
 
     // Skip sub-second Stops (Claude often fires on very quick turns)
     const prev = this.snapshots.get(tmuxSession);
@@ -1556,6 +1613,33 @@ export class ClaudeTracker {
     });
   }
 
+  /** Modal dialog, persistent until a button is clicked. `Show terminal`
+   *  raises the IDE and focuses the session's tab. */
+  private showModalAlert(title: string, message: string, tmuxSession: string, onClose?: () => void): void {
+    void (async () => {
+      const clicked = await macosAlert({
+        title,
+        message,
+        primaryButton: 'Show terminal',
+        secondaryButton: 'Dismiss',
+      });
+      onClose?.();
+      if (clicked === 'Show terminal') {
+        // Focus the IDE window first — osascript's alert is parented to
+        // Script Editor, so after the button click macOS keeps focus there
+        // unless we explicitly activate our app. `open -a <appName>` raises
+        // Cursor/VS Code regardless of the previous frontmost app.
+        if (process.platform === 'darwin') {
+          try {
+            await promisify(execFile)('/usr/bin/open', ['-a', vscode.env.appName]);
+          } catch { /* best effort */ }
+        }
+        // Then focus the matching terminal tab inside the IDE.
+        this.focusSession(tmuxSession);
+      }
+    })();
+  }
+
   private triggerWaitingNotify(e: ClaudeEvent, tsMs: number, provider: AgentProvider): void {
     const cfg = getConfig();
     if (!cfg.notifyOnClaudeWaiting) return;
@@ -1581,28 +1665,11 @@ export class ClaudeTracker {
       || process.platform === 'darwin'
       || process.platform === 'linux';
     if (cfg.waitingAlertStyle === 'alert' && canAlert) {
-      // Modal dialog (persistent until user clicks a button).
-      void (async () => {
-        const clicked = await macosAlert({
-          title: `🤖 ⚠ ${provider.displayName} needs approval`,
-          message: `${label}\n\n${approvalDetail(e.message, e.toolName)}`,
-          primaryButton: 'Show terminal',
-          secondaryButton: 'Dismiss',
-        });
-        if (clicked === 'Show terminal') {
-          // Focus the IDE window first — osascript's alert is parented to
-          // Script Editor, so after the button click macOS keeps focus there
-          // unless we explicitly activate our app. `open -a <appName>` raises
-          // Cursor/VS Code regardless of the previous frontmost app.
-          if (process.platform === 'darwin') {
-            try {
-              await promisify(execFile)('/usr/bin/open', ['-a', vscode.env.appName]);
-            } catch { /* best effort */ }
-          }
-          // Then focus the matching terminal tab inside the IDE.
-          this.focusSession(tmuxSession);
-        }
-      })();
+      this.showModalAlert(
+        `🤖 ⚠ ${provider.displayName} needs approval`,
+        `${label}\n\n${approvalDetail(e.message, e.toolName)}`,
+        tmuxSession,
+      );
     } else {
       // Banner notification with the distinct sound.
       // On remote extension hosts the banner is delivered as a VS Code

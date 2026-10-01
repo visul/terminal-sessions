@@ -12,10 +12,10 @@ import { refreshSidebar, collapseAllSessions, revealSessionInSidebar, setSidebar
 import { SessionInfo } from './types';
 import { humanAge, sleep } from './util';
 import { maybeOfferRestore } from './restore';
-import { notify, removeNotification, sessionGroupId } from './notifications';
+import { notify, removeNotification, sessionGroupId, playAlertSound, ALERT_SOUNDS } from './notifications';
 import { conversationTitle } from './conversation-title';
 import { maybeWarnMouseEnv, findMouseEnvLines, commentOutMouseEnv } from './mouse-clicks-guard';
-import { ClaudeTracker } from './claude-tracker';
+import { ClaudeTracker, isBusy, agentsAtWork, runningAgents } from './claude-tracker';
 import { ClaudeSearchIndex, SessionIndexEntry } from './claude-search';
 import { transcriptPathFor, findTranscriptBySessionId, readTranscriptCwd, readTranscriptSummary, writeClaudeCustomTitle, queueClaudeLiveTitle } from './claude-transcript';
 import { transcriptToMarkdown } from './transcript-render';
@@ -315,19 +315,28 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.fixClaudeRendering, () => cmdFixClaudeRendering()),
     vscode.commands.registerCommand(COMMAND.fixClaudeMouseEnv, () => cmdFixClaudeMouseEnv(ctx)),
     vscode.commands.registerCommand(COMMAND.pickNotificationMode, () => cmdPickNotificationMode()),
+    vscode.commands.registerCommand(COMMAND.pickAlertSound, () => cmdPickAlertSound()),
     vscode.commands.registerCommand(COMMAND.toggleAllAlerts, () => cmdSetAllAlerts(ctx)),
     vscode.commands.registerCommand(COMMAND.alertsEnable, () => cmdSetAllAlerts(ctx, true)),
     vscode.commands.registerCommand(COMMAND.alertsDisable, () => cmdSetAllAlerts(ctx, false)),
     vscode.commands.registerCommand(COMMAND.muteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, true)),
     vscode.commands.registerCommand(COMMAND.unmuteSession, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionMuted(index, item, selection, false)),
-    vscode.commands.registerCommand(COMMAND.dismissAttention, (item?: SessionTreeItem, selection?: vscode.TreeItem[]) => {
-      // Works from any row (incl. mirror rows in the pinned folders) and in bulk.
-      const rows = selectionTargets(selection) ?? (item ? [item] : []);
-      if (rows.length === 0) {
-        vscode.window.showErrorMessage('Use the sidebar context menu on a session.');
-        return;
+    vscode.commands.registerCommand(COMMAND.alertOnDoneOn, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionAlertOnDone(index, item, selection, true)),
+    vscode.commands.registerCommand(COMMAND.alertOnDoneOff, (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => cmdSetSessionAlertOnDone(index, item, selection, false)),
+    vscode.commands.registerCommand(COMMAND.dismissAttention, async (item?: SessionTreeItem | vscode.Terminal, selection?: vscode.TreeItem[]) => {
+      // Works from any row (incl. mirror rows in the pinned folders), in bulk,
+      // and from the terminal tab's own menu.
+      const rows = selectionTargets(selection);
+      if (rows) {
+        for (const r of rows) claudeTracker.dismiss(r.session.name);
+      } else {
+        const session = await resolveSessionInfoFromInvocation(item, index);
+        if (!session) {
+          vscode.window.showErrorMessage('Use the sidebar context menu or a terminal tab on a session.');
+          return;
+        }
+        claudeTracker.dismiss(session.name);
       }
-      for (const r of rows) claudeTracker.dismiss(r.session.name);
       refreshSidebar();
     }),
     vscode.commands.registerCommand(COMMAND.markAllSeen, () => {
@@ -450,6 +459,41 @@ async function cmdPickNotificationMode(): Promise<void> {
   vscode.window.showInformationMessage(
     `Notifications: ${NOTIF_MODES.find(m => m.mode === pick.mode)?.label}.`,
   );
+}
+
+/** Pick the Alert When Done sound. Moving through the list plays each one, so
+ *  the choice is made by ear; leaving the picker stops the preview. */
+async function cmdPickAlertSound(): Promise<void> {
+  const current = getConfig().notificationSoundAlert;
+  interface Pick extends vscode.QuickPickItem { sound: string }
+  const items: Pick[] = ALERT_SOUNDS.map(s => ({
+    label: s.name === current ? `$(check) ${s.name}` : `     ${s.name}`,
+    description: s.long ? 'ringtone, up to 8 s' : 'short, played 3 times',
+    sound: s.name,
+  }));
+  const qp = vscode.window.createQuickPick<Pick>();
+  qp.items = items;
+  qp.placeholder = 'Alert When Done sound (each one plays as you move to it)';
+  qp.activeItems = items.filter(i => i.sound === current);
+  let stop: (() => void) | undefined;
+  let opened = false;
+  qp.onDidChangeActive(active => {
+    // The first activation is the picker opening on the current sound: stay quiet.
+    if (!opened) { opened = true; return; }
+    stop?.();
+    stop = active[0] ? playAlertSound(active[0].sound) : undefined;
+  });
+  const picked = await new Promise<Pick | undefined>(resolve => {
+    qp.onDidAccept(() => { resolve(qp.selectedItems[0]); qp.hide(); });
+    qp.onDidHide(() => resolve(undefined));
+    qp.show();
+  });
+  stop?.();
+  qp.dispose();
+  if (!picked || picked.sound === current) return;
+  await vscode.workspace.getConfiguration('terminalSessions')
+    .update('notificationSoundAlert', picked.sound, vscode.ConfigurationTarget.Global);
+  vscode.window.showInformationMessage(`Alert When Done sound: ${picked.sound}.`);
 }
 
 /** Every channel the bell in the view title governs. `waitingAlertStyle` is a
@@ -862,6 +906,31 @@ async function cmdSetSessionMuted(
   );
 }
 
+async function cmdSetSessionAlertOnDone(
+  index: SessionIndex,
+  item: SessionTreeItem | vscode.Terminal | undefined,
+  selection: vscode.TreeItem[] | undefined,
+  on: boolean,
+): Promise<void> {
+  const verb = on ? 'alert when done' : 'normal notifications';
+  const many = selectionTargets(selection);
+  if (many) {
+    bulkApply(many, (hash, name) => index.setSessionAlertOnDone(hash, name, on), n => `${n} sessions: ${verb}.`);
+    return;
+  }
+  const session = await resolveSessionInfoFromInvocation(item, index);
+  if (!session) {
+    vscode.window.showErrorMessage('Use the sidebar context menu or a terminal tab on a session.');
+    return;
+  }
+  const parsed = parseSessionName(session.name, getConfig().sessionPrefix);
+  if (!parsed) return;
+  index.setSessionAlertOnDone(parsed.hash, session.name, on);
+  refreshSidebar();
+  void syncActiveTerminalContext(index);
+  vscode.window.showInformationMessage(`${session.label || session.name}: ${verb}.`);
+}
+
 /** Set the favorite star. Persisted in the index; drives the .fav
  *  contextValue token (which star action shows), the ★ description hint and
  *  membership in the Favorite Sessions folder. Works from mirror rows in the
@@ -954,14 +1023,16 @@ async function cmdSetSessionLocked(
  *  tab's session, so it keys off the active terminal (the one being acted on).
  *    terminalSessions.activeTerminalLocked   — Kill Session ↔ Unlock, Lock shown when false
  *    terminalSessions.activeTerminalMuted    — Mute ↔ Unmute Notifications
+ *    terminalSessions.activeTerminalAlert    — Alert When Done ↔ Stop Alerting
  *    terminalSessions.activeTerminalYolo     — 'on' | 'off' | 'none' → Switch to Normal / YOLO / hidden
  *    terminalSessions.activeTerminalForkable — Fork Conversation shown
  *  Every key falls to its "safe" value on a resolve miss; the commands re-check
  *  the real state, so a momentarily stale key only degrades to "warn on click". */
 export async function syncActiveTerminalContext(index: SessionIndex): Promise<void> {
-  const set = (locked: boolean, muted: boolean, yolo: 'on' | 'off' | 'none', forkable: boolean): void => {
+  const set = (locked: boolean, muted: boolean, yolo: 'on' | 'off' | 'none', forkable: boolean, alert = false): void => {
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalLocked', locked);
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalMuted', muted);
+    void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalAlert', alert);
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalYolo', yolo);
     void vscode.commands.executeCommand('setContext', 'terminalSessions.activeTerminalForkable', forkable);
   };
@@ -969,7 +1040,7 @@ export async function syncActiveTerminalContext(index: SessionIndex): Promise<vo
   if (!t) { set(false, false, 'none', false); return; }
   const s = await resolveSessionInfoFromInvocation(t, index);
   if (!s) { set(false, false, 'none', false); return; }
-  set(Boolean(s.locked), Boolean(s.muted), s.yoloCapable ? (s.yolo ? 'on' : 'off') : 'none', Boolean(s.forkable));
+  set(Boolean(s.locked), Boolean(s.muted), s.yoloCapable ? (s.yolo ? 'on' : 'off') : 'none', Boolean(s.forkable), Boolean(s.alertOnDone));
 }
 
 /** Inline padlock button on a locked row. It is a deliberate no-op on the lock
@@ -1413,6 +1484,7 @@ async function resolveSessionInfoFromInvocation(
     lastActiveAt: meta?.lastActiveAt ? new Date(meta.lastActiveAt) : undefined,
     attached: true,
     muted: meta?.muted,
+    alertOnDone: meta?.alertOnDone,
     favorite: meta?.favorite,
     locked: meta?.locked,
     stopped: false,
@@ -1684,10 +1756,7 @@ async function cmdRestartAll(
   }
 
   const n = targets.length;
-  const busy = targets.filter(t => {
-    const state = claudeTracker.getSnapshot(t.name)?.state;
-    return state === 'working' || state === 'tool';
-  }).length;
+  const busy = targets.filter(t => isBusy(claudeTracker.getSnapshot(t.name))).length;
   const busyLine = busy > 0
     ? `\n\n${busy} ${busy === 1 ? 'is' : 'are'} working and will lose the current step.`
     : '';
@@ -1798,8 +1867,7 @@ async function cmdSwitchYolo(
 
   // A session mid-tool-call loses that work when the process dies, so it is
   // always worth a prompt — regardless of direction or the confirm setting.
-  const state = claudeTracker.getSnapshot(target.name)?.state;
-  const busy = state === 'working' || state === 'tool';
+  const busy = isBusy(claudeTracker.getSnapshot(target.name));
   const cfg = getConfig();
 
   if (want && (cfg.confirmYoloSwitch || busy)) {
@@ -2016,9 +2084,13 @@ async function cmdStop(
 
   // Confirm only if Claude is actively working/tool — silent otherwise.
   const snap = claudeTracker.getSnapshot(name);
-  if (snap && (snap.state === 'working' || snap.state === 'tool')) {
+  if (isBusy(snap)) {
+    const n = runningAgents(snap);
+    const why = agentsAtWork(snap)
+      ? `${n} background agent${n === 1 ? ' is' : 's are'} still running and will be stopped.`
+      : 'Claude is currently working — its turn will be interrupted.';
     const confirm = await vscode.window.showWarningMessage(
-      `Stop session ${labelDisplay}? Claude is currently working — its turn will be interrupted.`,
+      `Stop session ${labelDisplay}? ${why}`,
       { modal: true }, 'Stop',
     );
     if (confirm !== 'Stop') return;

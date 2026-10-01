@@ -136,7 +136,7 @@ permission prompt, or failed. On the native tab itself the same two states
 are VS Code's own spinner while the agent works and one `⊗` mark once it is
 your turn — the tab never tries to tell finished from blocked from failed, the
 sidebar does that. A finished session's mark follows the sidebar's
-unread rule: it stays until you focus that terminal (or Dismiss it), so
+unread rule: it stays until you focus that terminal (or Mark as Seen), so
 `🟢 40m` reads "finished 40 minutes ago and you have not looked yet", and a
 turn you watched finish never gets one. Prefer a plain clock instead? The
 view's `⋯` menu switches to *Clear After 30 Minutes*, and back. A session
@@ -183,7 +183,8 @@ orders them by VS Code's group names, so the vertical order differs).
  │ Rename…                                           │
  │ Change Icon… / Change Color…                      │
  │ Mute / Unmute Notifications                       │
- │ Dismiss (Mark as Seen)                            │
+ │ Alert When Done / Stop Alert When Done            │
+ │ Mark as Seen                                      │
  ├─ Lifecycle ──────────────────────────────────────┤
  │ Start Session              (stopped rows)         │
  │ Restart Session (kill + fresh shell)              │
@@ -211,7 +212,10 @@ orders them by VS Code's group names, so the vertical order differs).
 - **Move to Group…**, **Change Icon / Color** — the row is yours to
   organize; names and colours survive restarts.
 - **Mute Notifications** — silence one noisy session without touching the rest.
-- **Dismiss (Mark as Seen)** — clear the unread verdict without opening the tab.
+- **Alert When Done** — the opposite of Mute: this session's finish plays a
+  longer sound and opens a dialog that stays until you click it.
+- **Mark as Seen** — clear the unread verdict and the tab's colour without
+  opening the tab. The session stays where it is.
 - **Switch to YOLO Mode** — relaunch the same conversation with the agent's
   auto-approve flag, or switch back. The row grows a `🚨` while it is on.
 - **Lock (Protect from Kill)** — Kill, "kill all", and auto-prune all refuse a
@@ -237,6 +241,8 @@ place of **Kill Session**.
  │ Switch to YOLO Mode (auto-approve)                │
  │ Switch to Normal Mode (ask before acting)         │
  │ Mute / Unmute Notifications                       │
+ │ Alert When Done / Stop Alert When Done            │
+ │ Mark as Seen                                      │
  ├───────────────────────────────────────────────────┤
  │ Fork Conversation (new parallel branch)           │
  │ View Conversation                                 │
@@ -357,7 +363,7 @@ Three moving pieces, each independent, composed to give you a persistent and obs
 - **Safe tab close** — closing a terminal tab detaches; session keeps running in the background
 - **Explicit kill** via command palette, right-click on sidebar item, or "Kill all for this workspace"
 - **Kill & Delete Data…** — right-click a session in the sidebar (or a terminal tab) to kill it AND permanently delete its conversations' on-disk data across every agent (Claude/Codex/Antigravity/Grok/OpenCode): transcripts, Claude sidecar dirs (subagents/tool-results/workflows), todos files, and per-session scratchpads under `/tmp/claude-*`. A modal confirmation shows exactly what's about to go (conversation count, file count, size on disk). Safety first: conversations still used by other sessions — live in another pane, or recorded as another session's resume history — are skipped and kept; every path is validated (strict UUID-named artifacts inside your home or the claude tmp dir only) and re-checked at delete time; symlinks are never followed. The session skips the graveyard — regular Kill stays reversible, this one doesn't
-- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Fork Conversation (Claude), View Conversation, Copy Last Conversation ID / Path, Lock/Unlock, Kill Session, Kill & Delete Data…, and Stop and Restart at the very end, below VS Code's own Kill Terminal. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
+- **Terminal tab menu** — right-click a terminal tab for the session actions without leaving the terminal: Add/Remove Favorite, Switch to YOLO/Normal Mode, Mute/Unmute Notifications, Alert When Done, Mark as Seen, Fork Conversation (Claude), View Conversation, Copy Last Conversation ID / Path, Lock/Unlock, Kill Session, Kill & Delete Data…, and Stop and Restart at the very end, below VS Code's own Kill Terminal. Right-clicking inside the terminal body also offers View Conversation and the two Copy actions. The state-dependent entries (YOLO, Mute, Lock, Fork) follow the **active** terminal, which is the one you right-click
 - **Auto-prune** stale sessions after configurable days (default 14)
 - **Reboot-safe rows** — sessions that were running when the machine shut down reappear as stopped rows after restart (with their conversation history), even if you skip the restore offer; nothing silently vanishes
 - **Lock a session against Kill** — right-click → **Lock (Protect from Kill)**; a padlock takes the Kill button's place and the session can no longer be killed — not from the row, not by "Kill all for this workspace", not by auto-prune — until you right-click → **Unlock (Allow Kill)**. The inline padlock is a deliberate indicator only (clicking it won't unlock), so an important long-runner survives an accidental click. Restart and Stop stay available
@@ -494,7 +500,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 ### Unread results & turn outcome
 - **Unread marker** — an agent that finishes while you're on another tab keeps a verdict on its row until you focus that terminal: teal filled check = done, red `✗ failed` / `✗ tests failed` / `⏳ rate limited`, amber `? asked you`. Persisted across window reloads; the activity-bar badge counts unread sessions. Toggle with `terminalSessions.unreadBadges`
 - **Outcome from the transcript, no LLM** — per-turn tool-result evidence (Claude `is_error`, `N failed`, `FAIL`, `npm ERR!`, `error TSxxxx`, rate-limit messages) classifies how the turn ended; idle rows show `idle 3m · ✗ tests failed` and the tooltip shows the decisive line. A bare non-zero exit is not evidence on its own (a `grep` that finds nothing exits 1), and declining a permission prompt is your decision, not a failed turn. The verdict stays in the sidebar: notifications only say done or needs you
-- **Dismiss (Mark as Seen)** — right-click a waiting/unread row (bulk OK). A dismissed waiting row shows as idle until the agent does anything new. Palette: `Terminal Sessions: Mark All Sessions as Seen`
+- **Mark as Seen** — right-click a waiting, unread or still-coloured row (bulk OK), or the terminal tab itself. The row's verdict and the tab's green or red leave at once, under either clear mode (on focus or after 30 minutes); the session stays in place. A dismissed waiting row shows as idle until the agent does anything new. Palette: `Terminal Sessions: Mark All Sessions as Seen`
 
 ### Notifications
 - **Done notification** — fires when an agent finishes a turn, for all five agents. Distinct from the waiting variant so you can glance at the sound/icon and know whether you need to act. It says done and nothing else: there are exactly two agent notifications, done and needs you, and whether the turn went well is read in the sidebar, next to its evidence. Min-duration filter (`claudeStopMinDurationSeconds`, `0` = every turn) prevents notification storms on short turns. Grok, which has no hooks, and any agent whose `Stop` hook went missing are announced from the transcript instead, so a finished turn is never silent just because a hook was absent
@@ -506,6 +512,7 @@ Two extra link detectors on top of VS Code's built-in one. Both read the **rende
 - **Works over Remote-SSH / Remote-WSL** — when the extension host runs on a remote machine (the tmux session lives on the server, Cursor runs on your laptop), OS native notifications posted from the remote can't reach your desktop. The extension auto-detects this via `vscode.env.remoteName` and routes through the VS Code API instead: waiting events become an IPC-forwarded warning toast (banner style) or a blocking modal dialog (`alert` style) that pops up in your local Cursor window. The `Show terminal` button still works the same way — click it and the extension iterates `vscode.window.terminals` on the remote extension host and focuses the matching tab in your local UI. No extra setup on the remote; libnotify/terminal-notifier are not used in remote mode because they would be useless
 - **Global on/off toggle** — the bell icon in the Terminal Sessions sidebar title bar is a master mute for every notification the extension sends: waiting and done (`notifyOnClaudeWaiting`, `notifyOnClaudeStop`). Muting remembers which channels were on, so unmuting restores that mix instead of switching everything on. When everything is off the icon switches to `$(bell-slash)`. Command Palette also has `Terminal Sessions: Toggle All Notifications (Global)`
 - **Per-session mute** — right-click a session → `Mute Notifications`. Done and waiting notifications for that session are silenced until you unmute, and a banner already on screen for it is withdrawn. Muted sessions display a `🔕` in the sidebar description. Useful for long-running experiments where you don't want beeps
+- **Alert When Done** — right-click a session or its tab → `Alert When Done` for the one task you are waiting on. Its finish plays `terminalSessions.notificationSoundAlert` (default `Crystals`, a macOS ringtone; a short system sound plays three times; pick it by ear with `Alert When Done Sound...` in the view's `⋯` menu or on the right-click of a session that has the alert on, each sound playing as you move to it) and opens a dialog with `Show terminal` that stays until clicked, and clicking it stops the sound; the minimum-duration filter and the cooldown do not apply. The row shows a `🔔`. Mute and Alert When Done exclude each other: turning one on turns the other off
 - **Where notifications appear** — `Where Notifications Appear…` in the view's `⋯` menu picks the delivery mode, each option with a line saying what it does and the current one ticked (setting: `terminalSessions.nativeNotifications`). `auto`: native when the editor is unfocused, toast when focused; `always`: native only; `both`: native banner plus a transient in-editor toast while the window has focus, for wide displays where a corner banner is easy to miss; `never`: toast only. On `auto` the toast half is not silent: it plays the same sound the banner would have (`terminalSessions.toastSound`), which matters because that is exactly the case where you are sitting at the keyboard. If you want every event in Notification Center regardless of focus, use `always`
 - **Your own entry in System Settings (macOS)** — `terminalSessions.brandedNotifier` (default off) posts from a small bundle of the extension's own, built on first use from your installed `terminal-notifier` and re-signed ad-hoc (needs the Xcode command line tools). Banners then carry the Terminal Sessions icon and get a **Terminal Sessions** entry under System Settings → Notifications, where you can switch them to persistent Alerts; plain `terminal-notifier` is never listed there, so its style cannot be changed at all. macOS asks once whether to allow it, and a dismissed prompt means no notifications until you allow them there, which is why it is off by default. If the bundle cannot be built, the normal path is used
 - **Waiting toasts fade on their own** — a VS Code warning toast is sticky and cannot be retracted by the extension, so behind a native banner it was a second thing to click away. When the banner already covered the event, the toast now clears after `terminalSessions.toastAutoDismissSeconds` (default 8, `0` to keep it sticky). A toast that is your only channel (`never`, or a remote workspace) stays and keeps its `Show terminal` button
@@ -699,6 +706,8 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | Right-click on a Notes row → `Delete Session Note` | Delete that session's note; the confirmation shows the text first |
 | Right-click on sidebar session → `Change Icon` / `Change Color` | Pick custom icon or theme color |
 | Right-click on sidebar session → `Mute Notifications` / `Unmute Notifications` | Per-session silencing |
+| Right-click on sidebar session or tab → `Alert When Done` | Louder finish for one session: its own longer sound and a dialog |
+| Right-click on sidebar session or tab → `Mark as Seen` | Clear the row's verdict and the tab's colour |
 | Right-click on sidebar session → `Lock (Protect from Kill)` / `Unlock (Allow Kill)` | Protect a session from Kill (padlock takes the Kill slot); Unlock to allow killing again |
 | Right-click on sidebar session → `Kill` | Terminate that session (hidden while the session is locked) |
 | Right-click on sidebar session → `Kill & Delete Data...` | Kill AND permanently delete the session's conversation data from disk, all agents (transcripts, sidecar dirs, todos, scratchpads). Shows what's deleted before confirming; conversations used by other sessions are kept; skips the Killed Sessions graveyard |
@@ -738,7 +747,7 @@ The extension runs on the workspace side (remote when connected over SSH, local 
 | `terminalSessions.showKilledFolder` | `true` | Show the pinned **Killed Sessions** folder (graveyard with Restore); hidden while empty |
 | `terminalSessions.showNotesFolder` | `true` | Show the pinned **Notes** folder (sessions carrying a note, most recently edited first); hidden while no note exists |
 | `terminalSessions.tabStateText` | `"on"` | Write the agent's state into the native terminal tab description: a spinner while it works, one mark once it is your turn. Needs `${progress}` in `terminal.integrated.tabs.description` (the extension offers to add it) |
-| `terminalSessions.tabStateClear` | `"seen"` | When a finished session's tab mark leaves: `seen` — until your next visit to that terminal after the finish, or Dismiss (every finish gets the mark, even one you watched); `timer` — 30 minutes after it finished. Also in the view's `⋯` menu |
+| `terminalSessions.tabStateClear` | `"seen"` | When a finished session's tab mark leaves: `seen` — until your next visit to that terminal after the finish, or Mark as Seen (every finish gets the mark, even one you watched); `timer` — 30 minutes after it finished, or Mark as Seen. Also in the view's `⋯` menu |
 | `terminalSessions.tabStateStyle` | `"blue"` | Glyph set for that state: `blue` 🔵🟢, `dark` ⚫🟢, `glyphs` `⟳✓⚠✗`, or `words` (`running` / `done 2m` / `needs you 12m`) |
 | `terminalSessions.activityLimit` | `50` | Max sessions listed in Recent Sessions |
 | `terminalSessions.killedLimit` | `50` | Max killed sessions kept in the graveyard (older entries fall off) |

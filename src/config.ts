@@ -29,6 +29,7 @@ export interface Config {
   nativeNotifications: NativeNotifMode;
   notificationSound: string;
   notificationSoundWaiting: string;
+  notificationSoundAlert: string;
   notificationGrouping: boolean;
   brandedNotifier: boolean;
   bannerTimeoutSeconds: number;
@@ -84,6 +85,7 @@ export function getConfig(): Config {
     nativeNotifications: c.get('nativeNotifications', 'auto') as NativeNotifMode,
     notificationSound: c.get('notificationSound', 'Glass'),
     notificationSoundWaiting: c.get('notificationSoundWaiting', 'Sosumi'),
+    notificationSoundAlert: c.get('notificationSoundAlert', 'Crystals'),
     notificationGrouping: c.get('notificationGrouping', true),
     brandedNotifier: c.get('brandedNotifier', false),
     bannerTimeoutSeconds: Math.max(0, c.get<number>('bannerTimeoutSeconds', 0)),
@@ -159,12 +161,15 @@ export const BRANCH_URI_SCHEME = 'terminal-sessions-branch';
 export const COMMAND = {
   toggleAllAlerts: 'terminalSessions.toggleAllAlerts',
   pickNotificationMode: 'terminalSessions.pickNotificationMode',
+  pickAlertSound: 'terminalSessions.pickAlertSound',
   alertsEnable: 'terminalSessions.alertsEnable',
   alertsDisable: 'terminalSessions.alertsDisable',
   muteSession: 'terminalSessions.muteSession',
   dismissAttention: 'terminalSessions.dismissAttention',
   markAllSeen: 'terminalSessions.markAllSeen',
   unmuteSession: 'terminalSessions.unmuteSession',
+  alertOnDoneOn: 'terminalSessions.alertOnDoneOn',
+  alertOnDoneOff: 'terminalSessions.alertOnDoneOff',
   favoriteOn: 'terminalSessions.favoriteOn',
   favoriteOff: 'terminalSessions.favoriteOff',
   toggleFavorite: 'terminalSessions.toggleFavorite',

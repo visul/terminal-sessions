@@ -686,4 +686,54 @@ function playToastSound(opts: NotifyOptions): void {
     .catch(() => { /* sound file missing or audio unavailable */ });
 }
 
+/** macOS ringtones (the iPhone tones), several seconds long where the system
+ *  sounds last under one. Only these names are accepted, so the setting can
+ *  never point the player at another file. */
+const RINGTONE_DIR = '/System/Library/PrivateFrameworks/ToneLibrary.framework/Versions/A/Resources/Ringtones';
+const ALERT_RINGTONES = new Set([
+  'Crystals', 'Apex', 'Chimes', 'Radar', 'Bell Tower', 'Sonar', 'Signal',
+  'Old Phone', 'Doorbell', 'Marimba',
+]);
+/** Every Alert When Done choice, ringtones first; mirrors the setting's enum. */
+export const ALERT_SOUNDS: { name: string; long: boolean }[] = [
+  ...[...ALERT_RINGTONES].map(name => ({ name, long: true })),
+  ...[...VALID_SOUNDS].map(name => ({ name, long: false })),
+];
+/** A long tone is cut here; the dialog's buttons cut it sooner. */
+const RINGTONE_MAX_SECONDS = 8;
+
+/** Alert When Done: a ringtone once, or a short system sound three times, so
+ *  it cannot be mistaken for an ordinary `done` chime. Returns a function that
+ *  stops it (the dialog calls it once clicked). Local desktops only; a remote
+ *  host has no speaker of ours to play on. */
+export function playAlertSound(sound: string): () => void {
+  let stopped = false;
+  let current: ChildProcess | undefined;
+  const stop = (): void => { stopped = true; current?.kill(); };
+  if (isRemoteExtensionHost()) return stop;
+  let args: string[][];
+  let bin: string;
+  if (process.platform === 'darwin') {
+    bin = '/usr/bin/afplay';
+    const tone = `${RINGTONE_DIR}/${sound}.m4r`;
+    args = ALERT_RINGTONES.has(sound) && fs.existsSync(tone)
+      ? [['-t', String(RINGTONE_MAX_SECONDS), tone]]
+      : Array(3).fill([`/System/Library/Sounds/${VALID_SOUNDS.has(sound) ? sound : 'Hero'}.aiff`]);
+  } else if (process.platform === 'linux') {
+    bin = '/usr/bin/canberra-gtk-play';
+    args = Array(3).fill(['-i', 'complete']);
+  } else {
+    return stop;
+  }
+  void (async () => {
+    for (const a of args) {
+      if (stopped) return;
+      await new Promise<void>(resolve => {
+        current = execFile(bin, a, () => resolve());
+      });
+    }
+  })();
+  return stop;
+}
+
 

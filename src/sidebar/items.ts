@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import { SessionInfo, KilledEntry } from '../types';
 import { humanAge } from '../util';
-import { ClaudeSnapshot } from '../claude-tracker';
+import { ClaudeSnapshot, agentsAtWork, isBusy } from '../claude-tracker';
+import { tabStateKind } from '../tab-state';
 import { SubagentSnapshot } from '../claude-transcript';
 import { outcomeLabel } from '../outcome';
-import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME } from '../config';
+import { STOPPED_URI_SCHEME, BRANCH_URI_SCHEME, getConfig } from '../config';
 
 /** Marker prefixed to a session row's label when that session has a note.
  *  Deliberately a label PREFIX and not a FileDecoration badge: a row owns a
@@ -199,7 +200,8 @@ function claudeStateDescription(snap: ClaudeSnapshot): string | undefined {
   const active = (snap.subagents || [])
     .filter((s) => s.state === 'working' || s.state === 'tool').length;
   const agentSuffix = active > 0 ? ` · 🤖 ${active} running` : '';
-  switch (snap.state) {
+  switch (agentsAtWork(snap) ? 'working' : snap.state) {
+    // An idle lead whose background agents still run reads as working.
     case 'working': {
       const since = snap.lastPromptAt ? formatElapsed(Date.now() - snap.lastPromptAt.getTime()) : '';
       return `working${since ? ' ' + since : ''}${agentSuffix}`;
@@ -232,6 +234,14 @@ function claudeStateDescription(snap: ClaudeSnapshot): string | undefined {
     case 'none':
       return undefined;
   }
+}
+
+/** The terminal tab still wears a done/failed/waiting mark, under either
+ *  clear mode. */
+function hasTabMark(snap: ClaudeSnapshot): boolean {
+  const cfg = getConfig();
+  return tabStateKind(snap, Date.now(), cfg.unreadBadges ? cfg.tabStateClear : 'timer').kind !== 'none'
+    && !isBusy(snap);
 }
 
 /** Short label distinguishing non-Claude agents in the row/tooltip. Empty for
@@ -272,7 +282,7 @@ export class SessionTreeItem extends vscode.TreeItem {
         ? true
         : detailsMode === 'collapsed'
         ? false // details exist as a collapsible row, but never auto-expand
-        : (claude!.state === 'working' || claude!.state === 'tool' || claude!.state === 'waiting');
+        : (isBusy(claude) || claude!.state === 'waiting');
       collapsible = shouldExpand
         ? vscode.TreeItemCollapsibleState.Expanded
         : vscode.TreeItemCollapsibleState.Collapsed;
@@ -356,14 +366,16 @@ export class SessionTreeItem extends vscode.TreeItem {
     // Stopped rows use a separate scheme and carry none of these.
     let cv = 'session';
     if (session.favorite) cv += '.fav';
+    // Mute and Alert When Done exclude each other, so they share one slot.
     if (session.muted) cv += '.muted';
+    else if (session.alertOnDone) cv += '.alert';
     if (session.forkable) cv += '.forkable';
     if (session.branchSetId) cv += '.branched';
     if (session.locked) cv += '.locked';
     if (session.yoloCapable) cv += session.yolo ? '.yoloOn' : '.yoloOff';
-    // Trailing `.attn` = row is asking for attention (unread result or a live
-    // waiting state): gates the Dismiss command.
-    if (claude && (claude.unread || claude.state === 'waiting')) cv += '.attn';
+    // Trailing `.attn` = row is asking for attention (unread result, a live
+    // waiting state, or a mark still on its terminal tab): gates Mark as Seen.
+    if (claude && (claude.unread || claude.state === 'waiting' || hasTabMark(claude))) cv += '.attn';
     this.contextValue = cv;
 
     // Fork branch-set members carry a resourceUri in the branch scheme so the
@@ -385,7 +397,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     // ★ leads the description so the favorite state is visible at rest — the
     // inline star action itself only appears on hover.
     const favHint = session.favorite ? '★ ' : '';
-    const mutedHint = session.muted ? ' · 🔕' : '';
+    const mutedHint = session.muted ? ' · 🔕' : session.alertOnDone ? ' · 🔔' : '';
     const lockHint = session.locked ? ' · 🔒' : '';
     // Auto-approve sessions act without asking, so the row says so at a glance.
     const yoloHint = session.yolo ? ' · 🚨' : '';
@@ -404,10 +416,15 @@ export class SessionTreeItem extends vscode.TreeItem {
     const customized = Boolean(session.icon || session.color || session.label);
     // Unread results get a distinct glyph per verdict so a row reads at a glance:
     // filled check (done), error (failed/red tests), question (agent asked you).
-    const unreadIcon = claude?.state === 'idle' && claude.unread
+    // An idle lead with background agents still running reads as working:
+    // same spinner, same colour, no verdict until they report back.
+    const atWork = agentsAtWork(claude);
+    const unreadIcon = claude?.state === 'idle' && claude.unread && !atWork
       ? (claude.unread === 'error' ? 'error' : claude.unread === 'asked' ? 'question' : 'pass-filled')
       : '';
-    const claudeIcon = unreadIcon || (claude ? STATE_ICONS[claude.state] : '');
+    const claudeIcon = atWork
+      ? STATE_ICONS.working
+      : unreadIcon || (claude ? STATE_ICONS[claude.state] : '');
     // Detached sessions get a hollow circle regardless of Claude state — a
     // clear visual cue that nobody's currently attached to the tmux session.
     // Claude state is still visible via the icon color below.
@@ -422,7 +439,8 @@ export class SessionTreeItem extends vscode.TreeItem {
         case 'working':   colorId = 'terminalSessions.workingIcon'; break;
         case 'tool':      colorId = 'terminalSessions.toolIcon'; break;
         case 'idle':
-          colorId = claude.unread === 'error' ? 'terminalSessions.unreadErrorIcon'
+          colorId = atWork ? 'terminalSessions.workingIcon'
+            : claude.unread === 'error' ? 'terminalSessions.unreadErrorIcon'
             : claude.unread === 'asked' ? 'terminalSessions.waitingIcon'
             : claude.unread === 'done' ? 'terminalSessions.unreadDoneIcon'
             : (session.color || 'terminalSessions.idleIcon');

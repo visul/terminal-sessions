@@ -23,6 +23,7 @@ export interface SessionInfo {
   sortOrder?: number;
   attached: boolean;
   muted?: boolean;  // when true, notifications are suppressed for this session
+  alertOnDone?: boolean;  // when true, a finish plays the alert sound and opens a dialog
   favorite?: boolean;  // when true, session shows in the Favorite Sessions folder (star toggle)
   locked?: boolean;  // when true, the session is protected from Kill (padlock shown; unlock to remove)
   stopped?: boolean;  // true when user clicked Stop; the tmux session is dead but the entry is kept
@@ -134,6 +135,9 @@ export interface SessionLabel {
   lastActiveAt?: string;
   sortOrder?: number;
   muted?: boolean;   // when true, suppress Claude Stop/Waiting notifications for this session
+  // When true, a finish plays the alert sound three times and opens a dialog
+  // that stays until clicked. Excludes `muted`: setting one clears the other.
+  alertOnDone?: boolean;
   // When true, the session is starred: listed in the pinned "Favorite Sessions"
   // folder and marked with a ★ on its row. Toggled by the inline star action.
   favorite?: boolean;
