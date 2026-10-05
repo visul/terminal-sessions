@@ -54,6 +54,8 @@ const TOOLTIPS = {
 } as const;
 /** Coalesces the re-query once the id set becomes complete. */
 const REFIRE_MS = 200;
+/** A census that never completes (or overflowed) is retried at most this often. */
+const RETRY_MS = 5_000;
 /** Window sessions this extension has already started in (newest first). */
 const SESSIONS_KEY = 'tabColorSessions-v2';
 const SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -91,6 +93,7 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
    *  (they predate an extension-host restart); never painted. */
   private readonly unordered = new Set<vscode.Terminal>();
   private refire?: NodeJS.Timeout;
+  private lastRecount = 0;
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(state: vscode.Memento) {
@@ -118,11 +121,18 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
   private recount(): void {
     this.ids.clear();
     this.overflowed = false;
+    this.lastRecount = Date.now();
     this.emitter.fire(undefined);
   }
 
   /** The sessions to paint, keyed by tmux session name. Repaints only when
-   *  the set (or the tab or colour behind one of them) actually changed. */
+   *  the set (or the tab or colour behind one of them) actually changed.
+   *
+   *  Called on every state tick, so it also unsticks the census: a close
+   *  races the tab list's own redraw, and a request that lands on the wrong
+   *  side of the recount (an id too many, or one never asked again) left
+   *  every tab uncoloured until the next terminal opened or closed. Count
+   *  again while there is something to paint and the count is off. */
   set(next: Map<string, MarkedTab>): void {
     const same = next.size === this.marked.size
       && Array.from(next).every(([k, v]) => {
@@ -130,7 +140,9 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
         return had?.term === v.term && had.kind === v.kind && had.why === v.why;
       });
     this.marked = next;
-    if (!same) this.emitter.fire(undefined);
+    const stuck = this.overflowed || this.ids.size !== listedTerminals().length;
+    if (next.size > 0 && stuck && Date.now() - this.lastRecount >= RETRY_MS) this.recount();
+    else if (!same) this.emitter.fire(undefined);
   }
 
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {

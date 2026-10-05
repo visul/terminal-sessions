@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.34.2] — 2026-10-05
+
+### Fixed
+- **Closing a terminal could take the colour off every other tab.** After a close the extension counts the tabs again to match each one to its session. When that count came out wrong, no tab name was coloured until another terminal opened or closed. A wrong count is now retried by itself, so the magenta and green come back within a few seconds.
+
 ## [0.34.1] — 2026-10-01
 
 ### Fixed
