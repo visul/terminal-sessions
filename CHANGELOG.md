@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.34.4] — 2026-10-05
+
+### Fixed
+- **Tab name colours still vanished after closing the active tab.** VS Code keeps asking for the closed tab's colour until a new tab opens, so the extension saw one tab more than there were terminals and stopped colouring, and the retry from 0.34.2 hit the same extra tab every time. The extension now works out which tab was closed and ignores it, so the magenta and green stay on the other tabs.
+
 ## [0.34.3] — 2026-10-05
 
 ### Added

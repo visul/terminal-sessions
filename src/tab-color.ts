@@ -38,6 +38,13 @@
 // id would shift every later rank. Terminals created hidden from the user
 // (`hideFromUser`, e.g. an agent's background shell) never get a row at
 // all, so they are left out of both sides of the count.
+//
+// A closed terminal's row can outlive it: after the active tab is closed,
+// the tab list keeps asking for its id on every repaint until a new tab
+// takes the row over. That id is one too many and would block the census
+// for good, so the close works out which id it was (its rank in the last
+// complete census) and that id is ignored from then on. Ids are never
+// reused within a window.
 
 import * as vscode from 'vscode';
 
@@ -94,6 +101,11 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
   private readonly unordered = new Set<vscode.Terminal>();
   private refire?: NodeJS.Timeout;
   private lastRecount = 0;
+  /** The last complete census: sorted ids and the terminals they map to. */
+  private censusIds: number[] = [];
+  private censusTerms: readonly vscode.Terminal[] = [];
+  /** Ids of closed terminals whose rows still ask; never counted. */
+  private readonly dead = new Set<number>();
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(state: vscode.Memento) {
@@ -109,9 +121,16 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
     if (hostRestart || inEditors) for (const t of vscode.window.terminals) this.unordered.add(t);
     this.disposables.push(
       vscode.window.registerFileDecorationProvider(this),
-      // A closed terminal leaves its id behind with no way to tell which one
-      // it was: start over, every rendered tab is asked again.
-      vscode.window.onDidCloseTerminal(t => { this.unordered.delete(t); this.recount(); }),
+      // Start over, every rendered tab is asked again. The closed terminal's
+      // id is known from the last complete census, so a row that outlives
+      // it cannot block the new count.
+      vscode.window.onDidCloseTerminal(t => {
+        // An unordered terminal's id is one of the smallest, but not which.
+        const at = this.unordered.has(t) ? -1 : this.censusTerms.indexOf(t);
+        if (at >= 0) this.dead.add(this.censusIds[at]);
+        this.unordered.delete(t);
+        this.recount();
+      }),
       // A new tab is drawn (and asked for) before this host hears of the
       // terminal, which reads as one id too many. Count again once it has.
       vscode.window.onDidOpenTerminal(() => this.recount()),
@@ -148,7 +167,7 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
   provideFileDecoration(uri: vscode.Uri): vscode.FileDecoration | undefined {
     if (uri.scheme !== TERMINAL_SCHEME) return undefined;
     const id = instanceIdOf(uri);
-    if (id === undefined) return undefined;
+    if (id === undefined || this.dead.has(id)) return undefined;
     const grew = !this.ids.has(id);
     this.ids.add(id);
     const terms = listedTerminals();
@@ -159,7 +178,11 @@ export class TabColorDecorations implements vscode.FileDecorationProvider, vscod
     if (this.ids.size > terms.length) this.overflowed = true;
     if (this.overflowed || this.ids.size < terms.length) return undefined;
     // Just became complete: the tabs asked before this one got nothing.
-    if (grew) this.scheduleRefire();
+    if (grew) {
+      this.censusIds = Array.from(this.ids).sort((a, b) => a - b);
+      this.censusTerms = terms;
+      this.scheduleRefire();
+    }
     if (this.marked.size === 0) return undefined;
     const rank = Array.from(this.ids).sort((a, b) => a - b).indexOf(id);
     // The oldest ids are the unordered terminals, listed first.
