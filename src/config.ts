@@ -11,7 +11,7 @@ export type TabStateTextMode = 'off' | 'on';
 /** Which glyph set that state is drawn with. */
 export type TabStateStyle = 'blue' | 'dark' | 'glyphs' | 'words';
 /** When a finished session's mark leaves the tab: once you look at it (the
- *  sidebar's unread rule) or 30 minutes after it finished. */
+ *  sidebar's unread rule) or `tabStateClearMinutes` after it finished. */
 export type TabStateClear = 'seen' | 'timer';
 export const TAB_STATE_STYLES: TabStateStyle[] = ['blue', 'dark', 'glyphs', 'words'];
 
@@ -64,7 +64,18 @@ export interface Config {
   renameConversation: 'ask' | 'always' | 'never';
   tabStateStyle: TabStateStyle;
   tabStateClear: TabStateClear;
+  /** Under the 'timer' clear mode: minutes a finished mark stays (1..1440). */
+  tabStateClearMinutes: number;
   tabStateDebug: boolean;
+}
+
+/** Longest a finished tab mark can be told to stay: one day. */
+export const MAX_CLEAR_MINUTES = 1440;
+
+/** Whole minutes in 1..MAX_CLEAR_MINUTES; anything unreadable is the default 30. */
+export function clampClearMinutes(v: unknown): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : 30;
+  return Math.min(MAX_CLEAR_MINUTES, Math.max(1, n));
 }
 
 export function getConfig(): Config {
@@ -135,6 +146,7 @@ export function getConfig(): Config {
     tabStateStyle: (TAB_STATE_STYLES as string[]).includes(c.get<string>('tabStateStyle', 'blue'))
       ? (c.get<string>('tabStateStyle', 'blue') as TabStateStyle) : 'blue',
     tabStateClear: c.get<string>('tabStateClear', 'seen') === 'timer' ? 'timer' : 'seen',
+    tabStateClearMinutes: clampClearMinutes(c.get<number>('tabStateClearMinutes', 30)),
     tabStateDebug: c.get<boolean>('tabStateDebug', false) === true,
   };
 }
@@ -252,7 +264,6 @@ export const COMMAND = {
   disableKilledFolder: 'terminalSessions.disableKilledFolder',
   enableTabState: 'terminalSessions.enableTabState',
   disableTabState: 'terminalSessions.disableTabState',
-  tabStateClearSeen: 'terminalSessions.tabStateClearSeen',
-  tabStateClearTimer: 'terminalSessions.tabStateClearTimer',
+  pickTabStateClear: 'terminalSessions.pickTabStateClear',
   restoreKilled: 'terminalSessions.restoreKilled',
 } as const;

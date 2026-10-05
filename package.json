@@ -2,7 +2,7 @@
   "name": "terminal-sessions",
   "displayName": "Terminal Sessions",
   "description": "Persistent terminal sessions for Cursor/VSCode via tmux — survive editor restart, workspace-scoped. Live AI-agent status in the sidebar for Claude Code, Codex, Antigravity, Grok, and OpenCode: working/tool/waiting state, context-window %, cost, last user/assistant messages. Browse, view, name, resume, and clean up every past conversation on your machine.",
-  "version": "0.34.2",
+  "version": "0.34.3",
   "publisher": "visul",
   "license": "MIT",
   "icon": "media/extension-icon.png",
@@ -396,7 +396,7 @@
             "Write the agent's state into the tab description."
           ],
           "default": "on",
-          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears after 30 minutes). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works and one mark (the `$(error)` glyph) the moment it is your turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well; it shows only when `${sequence}` sits NEXT TO `${progress}` in the template, and only on terminals restored across a window reload (VS Code records that title on nameless terminals alone). The tab's name is tinted too, magenta while the agent works and green once it is your turn. Requires the managed tmux config (`allow-passthrough on`)."
+          "markdownDescription": "Show each agent's state on its **native terminal tab**: 🔵 while it works, and 🟢 with an age the moment it hands control back — finished, blocked on a prompt, or stopped with a failure (a finished session clears when you look at it, or after a set number of minutes, see `terminalSessions.tabStateClear`). VS Code does not let an extension change a tab's icon or color after the tab exists, so the state is written into the pane as a terminal progress report (OSC 9;4) that VS Code renders through `${progress}` in #terminal.integrated.tabs.description# as a spinner while the agent works and one mark (the `$(error)` glyph) the moment it is your turn — the extension offers to add the variable (“Not now” asks again next start, “Never ask” is final); until it is there nothing is visible. The richer text form (glyph + age, `terminalSessions.tabStateStyle`) is written as an OSC 2 title as well; it shows only when `${sequence}` sits NEXT TO `${progress}` in the template, and only on terminals restored across a window reload (VS Code records that title on nameless terminals alone). The tab's name is tinted too, magenta while the agent works and green once it is your turn. Requires the managed tmux config (`allow-passthrough on`)."
         },
         "terminalSessions.renameConversation": {
           "type": "string",
@@ -443,10 +443,17 @@
           ],
           "enumDescriptions": [
             "Every finish gets the mark, even one you watched; it stays until your next visit to that terminal after the finish (or right-click → Mark as Seen), however long that takes.",
-            "The mark clears 30 minutes after the agent finished, whether you looked or not, or sooner with right-click → Mark as Seen."
+            "The mark clears #terminalSessions.tabStateClearMinutes# minutes after the agent finished (30 by default), whether you looked or not, or sooner with right-click → Mark as Seen."
           ],
           "default": "seen",
-          "markdownDescription": "When a finished session's mark leaves the terminal tab. A session blocked on a prompt keeps its mark either way, until you answer. Also in the view's `⋯` menu."
+          "markdownDescription": "When a finished session's mark leaves the terminal tab. A session blocked on a prompt keeps its mark either way, until you answer. Also in the view's `⋯` menu → **Tab Marks: When Green Clears...**"
+        },
+        "terminalSessions.tabStateClearMinutes": {
+          "type": "integer",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 1440,
+          "markdownDescription": "With #terminalSessions.tabStateClear# set to `timer`: how many minutes a finished session keeps its mark and green tab name. The view's `⋯` menu → **Tab Marks: When Green Clears...** offers 15, 30, 45, 60, 90 or a custom number."
         },
         "terminalSessions.activityLimit": {
           "type": "number",
@@ -900,13 +907,8 @@
         "category": "Terminal Sessions"
       },
       {
-        "command": "terminalSessions.tabStateClearSeen",
-        "title": "Tab Marks: Clear When Seen (instead of after 30 min)",
-        "category": "Terminal Sessions"
-      },
-      {
-        "command": "terminalSessions.tabStateClearTimer",
-        "title": "Tab Marks: Clear After 30 Minutes (instead of when seen)",
+        "command": "terminalSessions.pickTabStateClear",
+        "title": "Tab Marks: When Green Clears...",
         "category": "Terminal Sessions"
       },
       {
@@ -1420,13 +1422,8 @@
           "group": "3_tabs@0"
         },
         {
-          "command": "terminalSessions.tabStateClearTimer",
-          "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled && terminalSessions.tabStateClearSeen",
-          "group": "3_tabs@1"
-        },
-        {
-          "command": "terminalSessions.tabStateClearSeen",
-          "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled && !terminalSessions.tabStateClearSeen",
+          "command": "terminalSessions.pickTabStateClear",
+          "when": "view == terminalSessions.sessions && terminalSessions.tabStateEnabled",
           "group": "3_tabs@1"
         },
         {

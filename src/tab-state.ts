@@ -69,7 +69,8 @@ export const STYLES: Record<TabStateStyle, StateSymbols> = {
 /** Default set, kept as a named export for callers that don't care about style. */
 export const SYM = STYLES.blue;
 
-/** A finished session stops being "recent" after this long and its text clears. */
+/** Under the 'timer' clear mode, a finished session stops being "recent" after
+ *  this long unless `tabStateClearMinutes` says otherwise. */
 const DONE_TTL_MS = 30 * 60 * 1000;
 /** Max characters written into the description (it is truncated by the tab width). */
 const MAX_TEXT = 24;
@@ -113,6 +114,7 @@ export function tabStateKind(
   snap: ClaudeSnapshot | undefined,
   now = Date.now(),
   clear: TabStateClear = 'seen',
+  clearAfterMs = DONE_TTL_MS,
 ): { kind: TabStateKind; ageMs: number } {
   if (!snap) return { kind: 'none', ageMs: 0 };
   switch (snap.state) {
@@ -142,11 +144,11 @@ export function tabStateKind(
       // after the finish (or Dismiss), however long that takes. The sidebar's
       // unread marker is stricter (never set for a watched finish); using it
       // here made a turn that ended under your eyes never show green at all.
-      // 'timer': 30 minutes after it finished, looked or not.
+      // 'timer': `clearAfterMs` after it finished, looked or not.
       if (clear === 'seen') {
         if (snap.dismissed) return { kind: 'none', ageMs: 0 };
         if (snap.tabSeenAt && snap.tabSeenAt.getTime() >= at) return { kind: 'none', ageMs: 0 };
-      } else if (dt > DONE_TTL_MS) {
+      } else if (dt > clearAfterMs) {
         return { kind: 'none', ageMs: 0 };
       }
       return { kind: outcomeIsBad(snap.outcome) ? 'failed' : 'done', ageMs: dt };
@@ -184,9 +186,10 @@ export function formatTabState(
   now = Date.now(),
   style: TabStateStyle = 'blue',
   clear: TabStateClear = 'seen',
+  clearAfterMs = DONE_TTL_MS,
 ): string {
   const SYM = STYLES[style] ?? STYLES.blue;
-  const { kind, ageMs } = tabStateKind(snap, now, clear);
+  const { kind, ageMs } = tabStateKind(snap, now, clear, clearAfterMs);
   const withAge = (sym: string): string => {
     const age = shortAge(ageMs);
     return age ? `${sym} ${age}` : sym;
@@ -334,6 +337,7 @@ class TabStateWriter {
       const marked = new Map<string, MarkedTab>();
       // 'seen' needs the unread markers; with those disabled, fall back to the clock.
       const clear: TabStateClear = cfg.unreadBadges ? cfg.tabStateClear : 'timer';
+      const clearAfterMs = cfg.tabStateClearMinutes * 60_000;
       const debug = cfg.tabStateDebug;
       if (debug) this.dbg(`tick panes=${panes.length} terminals=${vscode.window.terminals.length}`);
       for (const p of panes) {
@@ -346,7 +350,7 @@ class TabStateWriter {
         }
         live.add(p.session);
         const snap = this.tracker.getSnapshot(p.session);
-        const kind = tabStateKind(snap, now, clear).kind;
+        const kind = tabStateKind(snap, now, clear, clearAfterMs).kind;
         // The name colour needs no tmux client: it is drawn by VS Code itself.
         if (kind === 'working' || progressFor(kind) === PROGRESS.error) {
           const why = kind as 'working' | 'waiting' | 'done' | 'failed';
@@ -359,7 +363,7 @@ class TabStateWriter {
           if (debug) this.dbg(`${p.session} skip: no tmux client attached`);
           continue;
         }
-        const text = formatTabState(snap, now, cfg.tabStateStyle, clear);
+        const text = formatTabState(snap, now, cfg.tabStateStyle, clear, clearAfterMs);
         const code = progressFor(kind);
         if (debug) {
           const t = (d?: Date): string => (d ? d.toISOString().slice(11, 23) : '-');
@@ -563,6 +567,7 @@ export function registerTabState(ctx: vscode.ExtensionContext, tracker: ClaudeTr
     const text = e.affectsConfiguration('terminalSessions.tabStateText');
     const style = e.affectsConfiguration('terminalSessions.tabStateStyle')
       || e.affectsConfiguration('terminalSessions.tabStateClear')
+      || e.affectsConfiguration('terminalSessions.tabStateClearMinutes')
       || e.affectsConfiguration('terminalSessions.unreadBadges');
     if (!text && !style) return;
     // Repaint at once: waiting up to a tick to see the style you just picked

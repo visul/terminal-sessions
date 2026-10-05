@@ -240,7 +240,8 @@ function claudeStateDescription(snap: ClaudeSnapshot): string | undefined {
  *  clear mode. */
 function hasTabMark(snap: ClaudeSnapshot): boolean {
   const cfg = getConfig();
-  return tabStateKind(snap, Date.now(), cfg.unreadBadges ? cfg.tabStateClear : 'timer').kind !== 'none'
+  const clear = cfg.unreadBadges ? cfg.tabStateClear : 'timer';
+  return tabStateKind(snap, Date.now(), clear, cfg.tabStateClearMinutes * 60_000).kind !== 'none'
     && !isBusy(snap);
 }
 

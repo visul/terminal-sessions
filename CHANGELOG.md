@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.34.3] — 2026-10-05
+
+### Added
+- **Choose how long a finished tab stays green.** The view's `⋯` menu → **Tab Marks: When Green Clears...** replaces the two switches. Pick *When I look at it*, or a timer of 15, 30, 45, 60 or 90 minutes after the finish, or *Custom...* for any number of minutes from 1 to 1440. Under a timer, looking at the tab does not clear it; only the time or **Mark as Seen** does. New setting `terminalSessions.tabStateClearMinutes` (default 30), so anyone already on the timer keeps 30 minutes.
+
 ## [0.34.2] — 2026-10-05
 
 ### Fixed

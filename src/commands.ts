@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES, NativeNotifMode } from './config';
+import { COMMAND, getConfig, setSortMode, setFilterMode, SidebarSortMode, SidebarFilterMode, SORT_MODES, NativeNotifMode, MAX_CLEAR_MINUTES, clampClearMinutes } from './config';
 import * as tmux from './tmux';
 import { SessionIndex, enrichSessions } from './session-manager';
 import { openTerminalForSession, findTerminalForSession, metaIconAndColor, sessionNameForTerminal, resolveTmuxNameForTerminalLive, nextSafeTabId } from './profile-provider';
@@ -395,8 +395,7 @@ export function registerCommands(
     vscode.commands.registerCommand(COMMAND.disableKilledFolder, () => cmdSetSpecialFolder('showKilledFolder', false)),
     vscode.commands.registerCommand(COMMAND.enableTabState, () => cmdSetTabStateOption('tabStateText', 'on')),
     vscode.commands.registerCommand(COMMAND.disableTabState, () => cmdSetTabStateOption('tabStateText', 'off')),
-    vscode.commands.registerCommand(COMMAND.tabStateClearSeen, () => cmdSetTabStateOption('tabStateClear', 'seen')),
-    vscode.commands.registerCommand(COMMAND.tabStateClearTimer, () => cmdSetTabStateOption('tabStateClear', 'timer')),
+    vscode.commands.registerCommand(COMMAND.pickTabStateClear, () => cmdPickTabStateClear()),
     vscode.commands.registerCommand(COMMAND.restoreKilled, (item?: KilledSessionItem) => cmdRestoreKilled(index, registry, claudeTracker, item)),
   );
   // Seed the ⋯-menu Enable/Disable labels for the two special folders.
@@ -459,6 +458,64 @@ async function cmdPickNotificationMode(): Promise<void> {
   vscode.window.showInformationMessage(
     `Notifications: ${NOTIF_MODES.find(m => m.mode === pick.mode)?.label}.`,
   );
+}
+
+/** The preset timers offered next to "when I look at it" and Custom. */
+const CLEAR_PRESETS = [15, 30, 45, 60, 90];
+
+/** How a finished tab loses its green: on your next look at it, or a set number
+ *  of minutes after the finish (looked or not). Mark as Seen clears it under
+ *  either, so the picker only chooses the automatic rule. */
+async function cmdPickTabStateClear(): Promise<void> {
+  const cfg = getConfig();
+  const minutes = cfg.tabStateClearMinutes;
+  const timer = cfg.tabStateClear === 'timer';
+  const custom = timer && !CLEAR_PRESETS.includes(minutes);
+  type Choice = { seen: true } | { minutes: number } | { custom: true };
+  interface Pick extends vscode.QuickPickItem { choice: Choice }
+  const mark = (on: boolean, label: string): string => (on ? `$(check) ${label}` : `     ${label}`);
+  const items: Pick[] = [
+    {
+      label: mark(!timer, 'When I look at it'),
+      description: cfg.unreadBadges ? 'stays until you open that terminal' : 'needs terminalSessions.unreadBadges on',
+      choice: { seen: true },
+    },
+    ...CLEAR_PRESETS.map(m => ({
+      label: mark(timer && m === minutes, `${m} minutes after it finished`),
+      choice: { minutes: m },
+    })),
+    {
+      label: mark(custom, custom ? `Custom: ${minutes} minutes` : 'Custom...'),
+      description: custom ? 'pick to change' : 'enter minutes',
+      choice: { custom: true },
+    },
+  ];
+  const pick = await vscode.window.showQuickPick(items, {
+    placeHolder: 'When should a finished tab lose its colour? (right-click → Mark as Seen clears it in any mode)',
+  });
+  if (!pick) return;
+  if ('seen' in pick.choice) {
+    if (timer) await cmdSetTabStateOption('tabStateClear', 'seen');
+    return;
+  }
+  let next: number;
+  if ('custom' in pick.choice) {
+    const typed = await vscode.window.showInputBox({
+      prompt: `Minutes a finished tab stays green (1-${MAX_CLEAR_MINUTES})`,
+      value: String(minutes),
+      validateInput: v => {
+        const n = Number(v.trim());
+        return Number.isInteger(n) && n >= 1 && n <= MAX_CLEAR_MINUTES
+          ? undefined : `A whole number from 1 to ${MAX_CLEAR_MINUTES}`;
+      },
+    });
+    if (typed === undefined) return;
+    next = clampClearMinutes(Number(typed.trim()));
+  } else {
+    next = pick.choice.minutes;
+  }
+  if (next !== minutes) await cmdSetTabStateOption('tabStateClearMinutes', next);
+  if (!timer) await cmdSetTabStateOption('tabStateClear', 'timer');
 }
 
 /** Pick the Alert When Done sound. Moving through the list plays each one, so
@@ -3556,13 +3613,15 @@ export async function syncSpecialFolderContexts(): Promise<void> {
   await vscode.commands.executeCommand('setContext', 'terminalSessions.killedFolderEnabled', cfg.showKilledFolder);
   // Agent state on the native terminal tabs: on/off, and how a mark clears.
   await vscode.commands.executeCommand('setContext', 'terminalSessions.tabStateEnabled', cfg.tabStateText === 'on');
-  await vscode.commands.executeCommand('setContext', 'terminalSessions.tabStateClearSeen', cfg.tabStateClear === 'seen');
 }
 
 /** Same scope rule as the folder toggles: write where the value is defined. */
-async function cmdSetTabStateOption(key: 'tabStateText' | 'tabStateClear', value: string): Promise<void> {
+async function cmdSetTabStateOption(
+  key: 'tabStateText' | 'tabStateClear' | 'tabStateClearMinutes',
+  value: string | number,
+): Promise<void> {
   const c = vscode.workspace.getConfiguration('terminalSessions');
-  const insp = c.inspect<string>(key);
+  const insp = c.inspect(key);
   const target = insp?.workspaceFolderValue !== undefined ? vscode.ConfigurationTarget.WorkspaceFolder
     : insp?.workspaceValue !== undefined ? vscode.ConfigurationTarget.Workspace
     : vscode.ConfigurationTarget.Global;
