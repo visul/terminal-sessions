@@ -4,6 +4,11 @@ All notable changes to the Terminal Sessions extension.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses semantic versioning once past 1.0.0.
 
+## [0.34.5] — 2026-10-06
+
+### Changed
+- **New name: AI Terminal Sessions.** The marketplace name and the description now say what the extension is for. The extension ID (`visul.terminal-sessions`), every setting and every command stay the same, so updates, settings and keybindings carry over untouched. The GitHub repository moved to https://github.com/visul/ai-terminal-sessions; the old address redirects there.
+
 ## [0.34.4] — 2026-10-05
 
 ### Fixed

@@ -1,4 +1,4 @@
-# Terminal Sessions
+# AI Terminal Sessions
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS_Code_Marketplace-install-0098FF?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=visul.terminal-sessions)
 [![Open VSX](https://img.shields.io/open-vsx/v/visul/terminal-sessions?label=Open%20VSX&color=c160ef)](https://open-vsx.org/extension/visul/terminal-sessions)
@@ -6,7 +6,7 @@
 
 **Install:** [VS Code Marketplace](https://marketplace.visualstudio.com/items?itemName=visul.terminal-sessions) for VS Code, or [Open VSX](https://open-vsx.org/extension/visul/terminal-sessions) for Cursor, Windsurf, and other editors that use the Open VSX registry. Both are on the same version. See [Install](#install) for VSIX and build-from-source.
 
-Persistent terminal sessions for Cursor and VS Code, with first-class awareness of your AI coding agents — **Claude Code, Codex, Antigravity (`agy`), Grok (xAI), and OpenCode**. Terminals survive full editor restart, organized per workspace, and the sidebar shows live agent state: working/tool/waiting, context usage, cost, last user and assistant messages. Browse, read, name, resume, and clean up every past conversation on your machine, across all five agents.
+AI Terminal Sessions gives Cursor and VS Code persistent terminal sessions, with first-class awareness of your AI coding agents — **Claude Code, Codex, Antigravity (`agy`), Grok (xAI), and OpenCode**. Terminals survive full editor restart, organized per workspace, and the sidebar shows live agent state: working/tool/waiting, context usage, cost, last user and assistant messages. Browse, read, name, resume, and clean up every past conversation on your machine, across all five agents.
 
 Every terminal is wrapped in a tmux session whose server runs independent of the editor. Quit Cursor, reboot the window, crash the renderer: Claude Code, dev servers, REPLs, migrations, SSH sessions keep running. Reopen the workspace and everything is where you left it.
 
