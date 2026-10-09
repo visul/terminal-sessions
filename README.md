@@ -834,4 +834,12 @@ See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT
+Copyright © 2026 [DontPayFull](https://www.dontpayfull.com) and contributors.
+Released under the [MIT License](LICENSE).
+
+---
+
+<p align="center">
+Made with ❤️ by the <a href="https://www.dontpayfull.com">DontPayFull</a> team<br>
+<sub>Coupons &amp; discount codes for 20,000+ stores</sub>
+</p>
